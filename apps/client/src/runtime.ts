@@ -43,7 +43,7 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     fetch: fetchImpl,
     invoke: <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args),
     createInProcessHandler: async () => {
-      const { createPortableHttpRuntime } = await import("@ai-native-flow/transport-http");
+      const { createPortableHttpRuntime } = await import("@ai-native-flow/transport-http/portable");
       const persistence = await createTauriSqliteRuntimePersistence(await getDatabase());
       return (await createPortableHttpRuntime({
         runStore: persistence.runStore,
