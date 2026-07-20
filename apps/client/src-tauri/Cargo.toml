@@ -32,5 +32,11 @@ uuid = { version = "1", features = ["v4"] }
 [profile.dev.package.scrypt]
 opt-level = 3
 
+[profile.release]
+strip = "symbols"
+lto = "thin"
+codegen-units = 8
+panic = "abort"
+
 [dev-dependencies]
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite"] }

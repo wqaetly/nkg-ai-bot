@@ -22,8 +22,8 @@ sidecar 执行 Flow，Android/iOS 使用不依赖 Node 的进程内 Runtime；�
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
 - `.github/workflows/desktop-sidecar.yml`：Windows、macOS、Linux 的 sidecar
   构建、鉴权 E2E 与目标三元组产物门禁。
-- `.github/workflows/mobile-build.yml`：Windows Android arm64 Debug APK 与 macOS
-  iOS arm64 Simulator Debug app 构建门禁；两者均不生成或携带桌面 sidecar。
+- `.github/workflows/mobile-build.yml`：Windows Android arm64 Release APK/AAB 与 macOS
+  iOS arm64 Simulator Release app 构建门禁；两者均不生成或携带桌面 sidecar。
 
 ## 开发
 
@@ -55,6 +55,10 @@ npm run android:init
 npm run android:build -- --target aarch64
 ```
 
+Android 默认构建 Release APK，并执行 40 MiB 体积门禁；显式调试构建使用
+`npm run android:build:debug -- --target aarch64`。同时生成商店 AAB 时追加 `--aab`。
+当前 arm64 实测基线为 14.83 MiB APK / 8.45 MiB AAB（未签名）。
+
 macOS/Xcode 环境中的 iOS 工程入口为：
 
 ```bash
@@ -62,11 +66,14 @@ npm run ios:init
 npm run ios:build
 ```
 
+iOS 默认构建 Release；调试构建使用 `npm run ios:build:debug`。
+
 Android Emulator 的可重复流式网络门禁：在一个终端启动仓库内的 OpenAI-compatible
 测试服务，确认 Debug APK 已安装并启动后，在另一个终端运行 WebView E2E（默认测试
 端口为 `18080`）：
 
 ```powershell
+npm run android:build:debug -- --target x86_64
 $env:NKG_MOCK_PORT = "18080"
 npm run mock:provider
 npm run android:e2e:chat

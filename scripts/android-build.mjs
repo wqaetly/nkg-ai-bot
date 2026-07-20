@@ -1,9 +1,15 @@
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { copyFile, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAndroidRustEnvironment } from "./rust-env.mjs";
+import {
+  assertApkSize,
+  createAndroidArtifactPlans,
+  parseAndroidBuildOptions,
+  selectExistingArtifact,
+} from "./android-build-plan.mjs";
 
 const TARGETS = {
   aarch64: { rust: "aarch64-linux-android", abi: "arm64-v8a", flavor: "arm64", gradle: "Arm64" },
@@ -20,11 +26,9 @@ const args = process.argv.slice(2);
 const targetName = optionValue(args, "--target") ?? "aarch64";
 const target = TARGETS[targetName];
 if (!target) throw new Error(`Unsupported --target ${targetName}`);
-const release = args.includes("--release");
-const profile = release ? "release" : "debug";
+const { profile, buildApk, buildAab, maxApkMiB } = parseAndroidBuildOptions(args);
+const release = profile === "release";
 const profileTitle = release ? "Release" : "Debug";
-const buildApk = args.includes("--apk") || !args.includes("--aab");
-const buildAab = args.includes("--aab");
 if (!existsSync(join(androidDir, "gradlew.bat"))) {
   throw new Error("Android project is missing. Run `npm run android:init` first.");
 }
@@ -68,12 +72,20 @@ await copyFile(rustLibrary, join(jniDirectory, "libnkg_ai_bot_lib.so"));
 const gradleTasks = [];
 if (buildApk) gradleTasks.push(`:app:assemble${target.gradle}${profileTitle}`);
 if (buildAab) gradleTasks.push(`:app:bundle${target.gradle}${profileTitle}`);
-const outputs = expectedOutputs(androidDir, target.flavor, profile, buildApk, buildAab);
+const artifactPlans = createAndroidArtifactPlans(
+  androidDir,
+  target.flavor,
+  profile,
+  buildApk,
+  buildAab,
+);
 // Gradle's incremental package task can append a new ZIP payload to an old
 // APK after the large JNI library changes, leaving unreachable bytes at the
 // front of the file. Remove only the exact generated artifacts before the
 // packaging task so output size and hashes remain deterministic.
-await Promise.all(outputs.map((output) => rm(output, { force: true })));
+await Promise.all(
+  artifactPlans.flatMap((plan) => plan.candidates).map((output) => rm(output, { force: true })),
+);
 await run(
   join(androidDir, "gradlew.bat"),
   [
@@ -86,29 +98,29 @@ await run(
   env,
 );
 
-for (const output of outputs) {
-  if (!existsSync(output)) throw new Error(`Gradle completed without producing ${output}`);
-  process.stdout.write(`Android artifact: ${output}\n`);
-}
-
-function expectedOutputs(root, flavor, buildProfile, apk, aab) {
-  const outputs = [];
-  if (apk) {
-    outputs.push(join(root, "app", "build", "outputs", "apk", flavor, buildProfile, `app-${flavor}-${buildProfile}.apk`));
+for (const plan of artifactPlans) {
+  const output = selectExistingArtifact(plan, existsSync);
+  if (!output) {
+    throw new Error(`Gradle completed without producing one of: ${plan.candidates.join(", ")}`);
   }
-  if (aab) {
-    outputs.push(
-      join(root, "app", "build", "outputs", "bundle", `${flavor}${profileTitle}`, `app-${flavor}-${buildProfile}.aab`),
-    );
+  const bytes = (await stat(output)).size;
+  const sizeMiB = bytes / (1024 * 1024);
+  if (plan.kind === "apk" && maxApkMiB !== undefined) {
+    assertApkSize(bytes, maxApkMiB);
   }
-  return outputs;
+  process.stdout.write(`Android ${plan.kind.toUpperCase()} artifact (${sizeMiB.toFixed(2)} MiB): ${output}\n`);
 }
 
 function optionValue(values, option) {
   const equal = values.find((value) => value.startsWith(`${option}=`));
   if (equal) return equal.slice(option.length + 1);
   const index = values.indexOf(option);
-  return index >= 0 ? values[index + 1] : undefined;
+  if (index < 0) return undefined;
+  const value = values[index + 1];
+  if (value === undefined || value.startsWith("--")) {
+    throw new Error(`${option} requires a value`);
+  }
+  return value;
 }
 
 function run(command, commandArgs, cwd, env) {

@@ -174,9 +174,14 @@ builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
     `completed:false` 关闭，半截回复未持久化，显式取消竞态归一化为友好的
     `AbortError`，恢复后的下一次聊天收到完整回复并写入 SQLite。E2E 脚本会自行清理
     DevTools forward 与 Provider reverse，且断言只检查本次新增消息。
-28. 已加入移动构建 CI：Windows runner 生成 Android arm64 Debug APK，macOS runner
-    生成无需发布签名的 iOS arm64 Simulator Debug app；两个任务都会执行移动构建契约，
-    且不会构建或上传桌面 Node sidecar。远端 runner 结果仍需在代码推送后确认。
+28. 已加入移动构建 CI：Windows runner 生成 Android arm64 Release APK/AAB，macOS runner
+    生成无需发布签名的 iOS arm64 Simulator Release app；两个任务都会执行移动构建契约，
+    且不会构建或上传桌面 Node sidecar。Android/iOS 远端 runner 已形成成功记录，Android
+    构建缓存也已成功保存。
+29. Android 构建默认使用 Release，显式 `--debug` 才生成调试包；Release APK 同时执行
+    40 MiB 体积预算。启用符号裁剪、Thin LTO、R8 和资源裁剪后，arm64 本地基线由
+    241.12 MiB Debug 降至 14.83 MiB Release APK / 8.45 MiB Release AAB；后续发布
+    尺寸只能以 Release APK/AAB 衡量。
 
 尚待实现：
 

@@ -53,16 +53,19 @@ describe("platform build configuration", () => {
       "utf8",
     );
 
-    expect(workflow).toContain("name: Android arm64 Debug APK");
+    expect(workflow).toContain("name: Android arm64 Release APK and AAB");
     expect(workflow).toContain("runs-on: windows-latest");
-    expect(workflow).toContain("npm run android:build -- --target aarch64 --apk");
+    expect(workflow).toContain("npm run android:build -- --target aarch64 --apk --aab --max-apk-mib 40");
     expect(workflow).toContain("CARGO_BUILD_JOBS: 4");
     expect(workflow).toContain("actions/cache@v4");
     expect(workflow).toContain("apps/client/src-tauri/target");
-    expect(workflow).toContain("name: iOS arm64 Simulator Debug app");
+    expect(workflow).toContain("apps/client/src-tauri/Cargo.toml");
+    expect(workflow).toContain("apps/client/src-tauri/gen/android/app/build.gradle.kts");
+    expect(workflow).toContain("name: iOS arm64 Simulator Release app");
     expect(workflow).toContain("runs-on: macos-15");
     expect(workflow).toContain("npm run ios:init -- --ci");
-    expect(workflow).toContain("npm run ios:build -- --debug --target aarch64-sim --ci");
+    expect(workflow).toContain("npm run ios:build -- --target aarch64-sim --ci");
+    expect(workflow).not.toContain("ios:build -- --debug");
     expect(workflow).not.toContain("npm run build:sidecar");
     expect(workflow).not.toContain("nkg-runtime-*");
   });

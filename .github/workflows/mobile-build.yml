@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   android:
-    name: Android arm64 Debug APK
+    name: Android arm64 Release APK and AAB
     runs-on: windows-latest
     timeout-minutes: 45
     env:
@@ -49,7 +49,7 @@ jobs:
             ~/.gradle/caches
             ~/.gradle/wrapper
             apps/client/src-tauri/target
-          key: android-arm64-${{ runner.os }}-${{ hashFiles('apps/client/src-tauri/Cargo.lock', 'scripts/android-*.mjs', 'scripts/rust-env.mjs') }}
+          key: android-arm64-${{ runner.os }}-${{ hashFiles('apps/client/src-tauri/Cargo.lock', 'apps/client/src-tauri/Cargo.toml', 'apps/client/src-tauri/gen/android/app/build.gradle.kts', 'apps/client/src-tauri/gen/android/gradle.properties', 'scripts/android-*.mjs', 'scripts/rust-env.mjs') }}
           restore-keys: |
             android-arm64-${{ runner.os }}-
 
@@ -72,18 +72,20 @@ jobs:
       - name: Verify mobile build contracts
         run: npm test -- --run apps/client/test/platformBuildConfig.test.ts
 
-      - name: Build Android APK
-        run: npm run android:build -- --target aarch64 --apk
+      - name: Build Android Release APK and AAB
+        run: npm run android:build -- --target aarch64 --apk --aab --max-apk-mib 40
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nkg-ai-bot-android-arm64-debug
-          path: apps/client/src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
+          name: nkg-ai-bot-android-arm64-release
+          path: |
+            apps/client/src-tauri/gen/android/app/build/outputs/apk/arm64/release/*.apk
+            apps/client/src-tauri/gen/android/app/build/outputs/bundle/arm64Release/*.aab
           if-no-files-found: error
           retention-days: 7
 
   ios:
-    name: iOS arm64 Simulator Debug app
+    name: iOS arm64 Simulator Release app
     runs-on: macos-15
     timeout-minutes: 45
 
@@ -115,12 +117,12 @@ jobs:
       - name: Generate iOS project
         run: npm run ios:init -- --ci
 
-      - name: Build iOS Simulator app
-        run: npm run ios:build -- --debug --target aarch64-sim --ci
+      - name: Build iOS Simulator Release app
+        run: npm run ios:build -- --target aarch64-sim --ci
 
       - uses: actions/upload-artifact@v4
         with:
-          name: nkg-ai-bot-ios-arm64-simulator-debug
+          name: nkg-ai-bot-ios-arm64-simulator-release
           path: apps/client/src-tauri/gen/apple/build/**/*.app/**
           if-no-files-found: error
           retention-days: 7
