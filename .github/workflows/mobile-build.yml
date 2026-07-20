@@ -17,6 +17,8 @@ jobs:
     name: Android arm64 Debug APK
     runs-on: windows-latest
     timeout-minutes: 45
+    env:
+      CARGO_BUILD_JOBS: 4
 
     steps:
       - uses: actions/checkout@v4
@@ -37,6 +39,19 @@ jobs:
           java-version: 17
 
       - uses: android-actions/setup-android@v3
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            ~/AppData/Local/nkg-ai-bot-build
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            apps/client/src-tauri/target
+          key: android-arm64-${{ runner.os }}-${{ hashFiles('apps/client/src-tauri/Cargo.lock', 'scripts/android-*.mjs', 'scripts/rust-env.mjs') }}
+          restore-keys: |
+            android-arm64-${{ runner.os }}-
 
       - name: Install Android SDK and Rust target
         shell: pwsh

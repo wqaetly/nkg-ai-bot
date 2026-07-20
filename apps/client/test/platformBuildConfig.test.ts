@@ -34,6 +34,14 @@ describe("platform build configuration", () => {
     expect(androidScript).toContain('writeFile(join(androidDir, "tauri.settings.gradle")');
     expect(androidScript).toContain('writeFile(join(appDir, "tauri.build.gradle.kts")');
     expect(androidScript).toContain("Cargo metadata did not contain the direct tauri dependency");
+    expect(androidScript).toContain("writeAndroidKotlinCodegen");
+    expect(androidScript).toContain('replaceAll("{{library}}", libraryName)');
+    const gradleProperties = await readFile(
+      new URL("../src-tauri/gen/android/gradle.properties", import.meta.url),
+      "utf8",
+    );
+    expect(gradleProperties).toContain("kotlin.incremental=false");
+    expect(gradleProperties).toContain("kotlin.compiler.execution.strategy=in-process");
     expect(rootPackage.scripts.tauri).toMatch(/ --$/);
     expect(rootPackage.scripts["ios:init"]).toContain("ios init");
     expect(rootPackage.scripts["ios:build"]).toContain("ios build");
@@ -48,6 +56,9 @@ describe("platform build configuration", () => {
     expect(workflow).toContain("name: Android arm64 Debug APK");
     expect(workflow).toContain("runs-on: windows-latest");
     expect(workflow).toContain("npm run android:build -- --target aarch64 --apk");
+    expect(workflow).toContain("CARGO_BUILD_JOBS: 4");
+    expect(workflow).toContain("actions/cache@v4");
+    expect(workflow).toContain("apps/client/src-tauri/target");
     expect(workflow).toContain("name: iOS arm64 Simulator Debug app");
     expect(workflow).toContain("runs-on: macos-15");
     expect(workflow).toContain("npm run ios:init -- --ci");
