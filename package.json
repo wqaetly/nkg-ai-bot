@@ -7,7 +7,8 @@
     "packages/*",
     "apps/*",
     "nkg-ai-flow/packages/*",
-    "nkg-ai-flow/packages/transports/*"
+    "nkg-ai-flow/packages/transports/*",
+    "nkg-ai-flow/apps/*"
   ],
   "scripts": {
     "test": "vitest run",
@@ -33,6 +34,7 @@
     "@yao-pkg/pkg": "^6.21.0",
     "esbuild": "^0.28.1",
     "extract-zip": "^2.0.1",
+    "tsx": "^4.20.4",
     "typescript": "^5.5.4",
     "vitest": "^4.1.8"
   },
