@@ -66,7 +66,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 | 前端 | Vite production build 通过，portable chunk gzip 约 21.32 KiB |
 | Android | 本地 arm64 Release APK 14.38 MiB；远端 APK/AAB gate 已连续通过 |
 | iOS | arm64 Simulator Release CI 通过 |
-| 桌面 | Windows/macOS/Linux sidecar、鉴权和共享契约 CI 通过 |
+| 桌面 | Windows 本地完整 NSIS Release 19.77 MiB；Windows/macOS/Linux CI 构建完整 Release 安装包并保留 sidecar 鉴权契约 |
 | 包边界 | 顶层干净 `npm ci`、公开 `@ai-native-flow/*` 导入和禁止深路径门禁通过 |
 | 自带 Flow | 3/3 结构校验通过（100%）；1/1 确定性 portable Flow 执行通过（100%） |
 
@@ -90,7 +90,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 
 | 优先级 | 缺口 | 风险/影响 | 建议验收 |
 |---|---|---|---|
-| P1 | 三桌面系统未构建完整 Tauri portable Release 应用 | sidecar 通过不代表安装包能启动 | CI 构建并启动最小 smoke |
+| P1 | 三桌面系统已构建完整 Tauri portable Release 安装包，但尚未启动 GUI smoke | 打包通过不代表 WebView 首屏和 IPC 可用 | 安装包启动最小 smoke |
 | P1 | Android/iOS 真机矩阵不足 | WebView、网络、挂起和密钥行为可能不同 | 同 Flow 真机 contract |
 | P1 | Runtime 仍在 UI 主线程 | 大图或 CPU 节点可能阻塞交互 | Worker 压测与取消/恢复 |
 | P2 | 两个自带 Flow 依赖外部 LLM/写文件或 Bash，未纳入离线执行分母 | 结构通过不等于外部集成通过 | 确定性 Provider/ToolHost fixture |
@@ -105,7 +105,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 2. 继续把五端共同的 persistence 和 ToolHost ports 下沉到 nkg-ai-flow；portable
    Runtime + HTTP composition、capability 与 fetch 注入已经下沉，Tauri 实现继续
    留在 nkg-ai-bot；
-3. 增加 Windows/macOS/Linux 完整 Tauri portable Release gate；
+3. 为 Windows/macOS/Linux 完整 Tauri portable Release 安装包增加启动 smoke；
 4. 增加 Android/iOS 真机相同 fixture、流式取消和前后台恢复 gate；
 5. 将 portable Runtime 放入 Web Worker，并设计主线程原生能力代理；
 6. Studio 接入 capability inspection；

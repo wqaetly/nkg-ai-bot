@@ -91,4 +91,23 @@ describe("platform build configuration", () => {
     expect(workflow).not.toContain("npm run build:sidecar");
     expect(workflow).not.toContain("nkg-runtime-*");
   });
+
+  it("builds complete desktop Release bundles on all three host systems", async () => {
+    const workflow = await readFile(
+      new URL("../../../.github/workflows/desktop-sidecar.yml", import.meta.url),
+      "utf8",
+    );
+
+    expect(workflow).toContain("name: Desktop Release gates");
+    expect(workflow).toContain("os: windows-latest");
+    expect(workflow).toContain("bundle: nsis");
+    expect(workflow).toContain("os: macos-latest");
+    expect(workflow).toContain("bundle: dmg");
+    expect(workflow).toContain("os: ubuntu-latest");
+    expect(workflow).toContain("bundle: deb");
+    expect(workflow).toContain("npm run tauri -- build --bundles ${{ matrix.bundle }}");
+    expect(workflow).toContain("apps/client/src-tauri/target");
+    expect(workflow).toContain("actions/cache@v4");
+    expect(workflow).not.toContain("tauri -- build --debug");
+  });
 });
