@@ -52,10 +52,10 @@ describe("platform build configuration", () => {
       new URL("../src-tauri/Cargo.toml", import.meta.url),
       "utf8",
     );
-    const rustEntry = await readFile(
+    const rustEntry = (await readFile(
       new URL("../src-tauri/src/lib.rs", import.meta.url),
       "utf8",
-    );
+    )).replaceAll("\r\n", "\n");
     const [commonDependencies, desktopDependencies] = cargoToml.split(
       '[target.\'cfg(not(any(target_os = "android", target_os = "ios")))\'.dependencies]',
     );
