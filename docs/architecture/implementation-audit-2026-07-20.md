@@ -63,7 +63,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 | nkg-ai-flow | 48 个测试文件、748 项测试通过，TypeScript typecheck 通过 |
 | 主项目 | 30 个测试文件、118 项测试通过，TypeScript typecheck 通过 |
 | Rust | migration、sidecar 校验和路径 scope 共 6 项测试通过 |
-| 前端 | Vite production build 通过，portable chunk gzip 约 21.32 KiB |
+| 前端 | Vite production build 通过；首屏主 chunk 由 1.06 MiB 降至 219.05 KiB（gzip 69.44 KiB），Runtime 独立异步 chunk gzip 190.05 KiB |
 | Android | 本地 arm64 Release APK 14.38 MiB；远端 APK/AAB gate 已连续通过 |
 | iOS | arm64 Simulator Release CI 通过 |
 | 桌面 | Windows 本地完整 NSIS Release 19.77 MiB；Windows/macOS/Linux CI 构建完整 Release 安装包并保留 sidecar 鉴权契约 |
@@ -97,7 +97,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 | P2 | Studio 未显示 capability badge | 用户只能在注册/运行时看到不兼容 | 编辑时预检和平台报告 |
 | P2 | 写文件与用户目录授权未实现 | 助理能力受限，但贸然开放会扩大攻击面 | 选择目录 + 预览 + 逐次确认 |
 | P2 | Runtime 事件/Run 保留策略未定义 | 长期使用可能导致 SQLite 增长 | 配额、归档与清理 contract |
-| P3 | 主前端 chunk 约 1.06 MiB（gzip 262 KiB） | 影响首屏，不是 APK 体积主因 | 路由/编辑器按需加载 |
+| P3 | Runtime 异步 chunk 约 834.79 KiB（gzip 190.05 KiB） | 首屏主 chunk 已降至 219.05 KiB，但 Runtime 解析仍有成本 | Worker 化时继续拆分节点目录 |
 
 ## 下一轮优化顺序
 

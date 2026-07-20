@@ -1,11 +1,13 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import type { AppPlatform, RuntimeBackendKind } from "@nkg-ai-bot/runtime-router";
-import { getRuntimeServices } from "./runtime";
 import { ProviderSettings } from "./ProviderSettings";
 import type { RuntimeCatalogFailure } from "./runtimeCatalog";
 import type { MobileRuntimeLifecycleState } from "./mobileRuntimeLifecycle";
-import { ChatPage } from "./ChatPage";
 import "./App.css";
+
+const ChatPage = lazy(() => import("./ChatPage").then((module) => ({
+  default: module.ChatPage,
+})));
 
 type BootState =
   | { phase: "starting" }
@@ -28,7 +30,8 @@ function App() {
     let active = true;
     let unsubscribeLifecycle: (() => void) | undefined;
 
-    void getRuntimeServices()
+    void import("./runtime")
+      .then(({ getRuntimeServices }) => getRuntimeServices())
       .then(({ services, platform, lifecycle }) => {
         if (!active) return;
         unsubscribeLifecycle = lifecycle.subscribe((state) => {
@@ -102,7 +105,11 @@ function App() {
         {view === "providers"
           ? <ProviderSettings />
           : view === "chat"
-            ? <ChatPage openProviders={() => setView("providers")} />
+            ? (
+                <Suspense fallback={<div className="loading-line"><span /> 正在载入对话…</div>}>
+                  <ChatPage openProviders={() => setView("providers")} />
+                </Suspense>
+              )
             : <RuntimePage boot={boot} />}
       </main>
     </div>
@@ -129,16 +136,16 @@ function RuntimePage({ boot }: { boot: BootState }) {
             <p className="section-label">当前里程碑</p>
             <h2>同一套 Flow API，按平台选择执行引擎</h2>
             <p className="hero-copy">
-              桌面端由 Rust 托管 Node sidecar；Android 与 iOS 使用进程内 Runtime。
-              UI 和业务层无需感知底层差异。
+              Android、iOS、Windows、macOS 与 Linux 默认使用同一进程内 Runtime；
+              桌面高级能力可显式切换到 Rust 托管的 Node sidecar。
             </p>
           </div>
           <div className="route-map" aria-label="运行时路由示意">
             <div className="route-node primary">统一 Runtime Router</div>
             <div className="route-lines"><i /><i /></div>
             <div className="route-targets">
-              <div><b>Desktop</b><span>Node sidecar</span></div>
-              <div><b>Mobile</b><span>In-process</span></div>
+              <div><b>Portable</b><span>五端进程内</span></div>
+              <div><b>Desktop power</b><span>显式 sidecar</span></div>
             </div>
           </div>
         </section>
@@ -203,13 +210,13 @@ function lifecycleLabel(phase: Exclude<MobileRuntimeLifecycleState["phase"], "fa
 }
 
 function SecurityBoundary({ boot }: { boot: BootState }) {
-  const isMobile = boot.phase === "ready" || boot.phase === "degraded"
-    ? boot.platform === "android" || boot.platform === "ios"
+  const isInProcess = boot.phase === "ready" || boot.phase === "degraded"
+    ? boot.backend === "in-process"
     : false;
 
   return (
     <ul className="check-list">
-      {isMobile ? (
+      {isInProcess ? (
         <>
           <li>Flow 在应用进程内执行，不开放本地端口</li>
           <li>模型请求通过原生 HTTP 能力发出</li>

@@ -2,7 +2,6 @@ import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { LocalChatSession } from "./chatSession";
 import { describeChatError } from "./chatError";
 import { providerSession } from "./providerSession";
-import { getRuntimeServices } from "./runtime";
 import type { LocalMessage } from "./storage/repositories";
 
 const CONVERSATION_ID = "default-chat";
@@ -19,7 +18,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
 
   useEffect(() => {
     let active = true;
-    void getRuntimeServices().then(({ client }) => {
+    void import("./runtime").then(({ getRuntimeServices }) => getRuntimeServices()).then(({ client }) => {
       if (!active) return;
       const next = new LocalChatSession(CONVERSATION_ID, client);
       setSession(next);
