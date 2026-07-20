@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import {
+  createTauriSqliteRuntimePersistence,
   createTauriRuntimeServices,
   type TauriRuntimeServices,
 } from "@nkg-ai-bot/tauri-runtime-adapter";
@@ -12,6 +13,7 @@ import { syncRuntimeCatalog, type RuntimeCatalogSyncResult } from "./runtimeCata
 import { RuntimeCatalogHydrator } from "./runtimeCatalogHydrator";
 import { MobileRuntimeLifecycle } from "./mobileRuntimeLifecycle";
 import { ensureBuiltinFlows } from "./builtinFlows";
+import { getDatabase } from "./storage/database";
 
 export interface StartedRuntimeServices {
   platform: AppPlatform;
@@ -39,7 +41,14 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     invoke: <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args),
     createMobileHandler: async () => {
       const { createNkgMobileRuntime } = await import("@nkg-ai-bot/tauri-runtime-adapter/mobile");
-      return (await createNkgMobileRuntime()).handler;
+      const persistence = await createTauriSqliteRuntimePersistence(await getDatabase());
+      return (await createNkgMobileRuntime({
+        runStore: persistence.runStore,
+        registryStore: persistence.registryStore,
+        artifactStore: persistence.artifactStore,
+        eventBus: persistence.eventBus,
+        variables: persistence.variables,
+      })).handler;
     },
   });
   await services.router.start();
