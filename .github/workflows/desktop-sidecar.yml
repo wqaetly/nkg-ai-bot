@@ -64,6 +64,12 @@ jobs:
       - name: Run platform-neutral contracts
         run: npm test -- --run
 
+      - name: Run complete nkg-ai-flow suite
+        run: npm run test:nkg
+
+      - name: Verify nkg-ai-flow browser bundle boundary
+        run: npm run test:nkg:browser
+
       - name: Audit bundled example Flows
         run: npm run test:example-flows
 

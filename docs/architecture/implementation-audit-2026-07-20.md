@@ -12,8 +12,8 @@
 - nkg-ai-flow 保持 Tauri 无关，并通过公开 package exports 提供 portable 能力。
 
 该结构适合继续做聊天、自定义提示词角色和 Flow 编排助理。当前主要风险已经不是
-“移动端没有 Node.js”，而是真机覆盖、完整桌面应用打包、长 Flow UI 隔离和高权限
-工具授权尚未完成。
+“移动端没有 Node.js”，而是真机覆盖、桌面安装包启动 smoke、长 Flow UI 隔离和
+高权限工具授权尚未完成。
 
 ## 当前组件边界
 
@@ -60,8 +60,8 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 
 | 维度 | 当前证据 |
 |---|---|
-| nkg-ai-flow | 48 个测试文件、748 项测试通过，TypeScript typecheck 通过 |
-| 主项目 | 30 个测试文件、118 项测试通过，TypeScript typecheck 通过 |
+| nkg-ai-flow | 49 个测试文件、750 项测试通过，TypeScript typecheck 与 browser bundle Node builtin 门禁通过 |
+| 主项目 | 31 个测试文件、121 项测试通过，TypeScript typecheck 通过 |
 | Rust | migration、sidecar 校验和路径 scope 共 6 项测试通过 |
 | 前端 | Vite production build 通过；首屏主 chunk 由 1.06 MiB 降至 219.05 KiB（gzip 69.44 KiB），Runtime 独立异步 chunk gzip 190.05 KiB |
 | Android | 本地 arm64 Release APK 14.38 MiB；远端 APK/AAB gate 已连续通过 |
@@ -102,9 +102,8 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 ## 下一轮优化顺序
 
 1. 为外部依赖型自带 Flow 增加确定性 Provider/ToolHost fixture，扩展现有审计；
-2. 继续把五端共同的 persistence 和 ToolHost ports 下沉到 nkg-ai-flow；portable
-   Runtime + HTTP composition、capability 与 fetch 注入已经下沉，Tauri 实现继续
-   留在 nkg-ai-bot；
+2. 下沉 Worker 消息与 lifecycle contract；persistence、HTTP、capability 和
+   ToolHost 的公共 ports 已在 nkg-ai-flow，Tauri 实现继续留在 nkg-ai-bot；
 3. 为 Windows/macOS/Linux 完整 Tauri portable Release 安装包增加启动 smoke；
 4. 增加 Android/iOS 真机相同 fixture、流式取消和前后台恢复 gate；
 5. 将 portable Runtime 放入 Web Worker，并设计主线程原生能力代理；
@@ -115,9 +114,11 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 
 - 结构合理性：**通过，允许继续产品开发**。
 - Android 发布体积：**通过，200+ MiB 问题已被 Release 基线消除**。
-- 五端语义一致性：**代码与 CI 基础通过，真机和完整桌面应用仍需补齐**。
+- 五端语义一致性：**代码、Simulator/Emulator 与 Release 安装包 CI 通过；真机和
+  桌面 GUI 启动 smoke 仍需补齐**。
 - nkg-ai-flow 自带 Flow 通过率：**已量化：结构 3/3、确定性可执行项 1/1；两个
   外部依赖型 Flow 已正确分类为 desktop-power，仍需确定性集成 fixture**。
-- 完全下沉跨平台能力到 submodule：**核心执行组合已完成（browser runtime、
-  capability、HTTP/fetch 注入及 `createPortableHttpRuntime`），宿主 persistence 与
-  ToolHost 实现按端留在主项目，公共 ports 与 fixture 仍可继续收口**。
+- 完全下沉跨平台能力到 submodule：**本轮目标完成**。核心执行组合（browser
+  runtime、capability、HTTP/fetch 注入及 `createPortableHttpRuntime`）和公共
+  persistence/ToolHost ports 均由 nkg-ai-flow 提供；Tauri 实现按端留在主项目，
+  后续 Worker/lifecycle contract 属于下一阶段性能演进。

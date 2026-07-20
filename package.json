@@ -12,6 +12,8 @@
   ],
   "scripts": {
     "test": "vitest run",
+    "test:nkg": "npm test --prefix nkg-ai-flow -- --run",
+    "test:nkg:browser": "npm run test:browser-bundle --prefix nkg-ai-flow",
     "test:example-flows": "npm run test:example-flows --prefix nkg-ai-flow",
     "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/tauri-runtime-adapter/tsconfig.json",
     "build:sidecar": "npm run build -w @nkg-ai-bot/runtime-sidecar",

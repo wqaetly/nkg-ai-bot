@@ -106,6 +106,8 @@ describe("platform build configuration", () => {
     expect(workflow).toContain("os: ubuntu-latest");
     expect(workflow).toContain("bundle: deb");
     expect(workflow).toContain("npm run tauri -- build --bundles ${{ matrix.bundle }}");
+    expect(workflow).toContain("npm run test:nkg");
+    expect(workflow).toContain("npm run test:nkg:browser");
     expect(workflow).toContain("apps/client/src-tauri/target");
     expect(workflow).toContain("actions/cache@v4");
     expect(workflow).not.toContain("tauri -- build --debug");
