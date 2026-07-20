@@ -30,6 +30,10 @@ describe("platform build configuration", () => {
     expect(clientPackage.scripts["build:frontend"]).not.toContain("sidecar");
     expect(androidScript).toContain('["run", "build:frontend", "-w", "@nkg-ai-bot/client"]');
     expect(androidScript).not.toContain('["run", "build", "-w", "@nkg-ai-bot/client"]');
+    expect(androidScript).toContain("writeAndroidGradleGlue");
+    expect(androidScript).toContain('writeFile(join(androidDir, "tauri.settings.gradle")');
+    expect(androidScript).toContain('writeFile(join(appDir, "tauri.build.gradle.kts")');
+    expect(androidScript).toContain("Cargo metadata did not contain the direct tauri dependency");
     expect(rootPackage.scripts.tauri).toMatch(/ --$/);
     expect(rootPackage.scripts["ios:init"]).toContain("ios init");
     expect(rootPackage.scripts["ios:build"]).toContain("ios build");
