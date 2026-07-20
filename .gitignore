@@ -1,0 +1,17 @@
+node_modules/
+dist/
+coverage/
+/artifacts/
+*.log
+*.tsbuildinfo
+.DS_Store
+apps/client/dist/
+apps/client/src-tauri/target/
+apps/client/src-tauri/binaries/*
+!apps/client/src-tauri/binaries/.gitkeep
+apps/runtime-sidecar/dist/
+
+# Local-only configuration and user secrets.
+.env
+.env.*
+!.env.example

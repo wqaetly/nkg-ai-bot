@@ -1,0 +1,37 @@
+{
+  "name": "nkg-ai-bot",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p packages/tauri-runtime-adapter/tsconfig.json",
+    "build:sidecar": "npm run build -w @nkg-ai-bot/runtime-sidecar",
+    "build:client": "npm run build -w @nkg-ai-bot/client",
+    "android:init": "npm run tauri -w @nkg-ai-bot/client -- android init",
+    "android:build": "node scripts/android-build.mjs",
+    "ios:init": "npm run tauri -w @nkg-ai-bot/client -- ios init",
+    "ios:build": "npm run tauri -w @nkg-ai-bot/client -- ios build",
+    "mock:provider": "node scripts/mock-openai-server.mjs",
+    "android:e2e:chat": "node scripts/android-chat-e2e.mjs",
+    "android:e2e:lifecycle": "node scripts/android-chat-e2e.mjs --lifecycle",
+    "tauri": "npm run tauri -w @nkg-ai-bot/client --",
+    "rust:check": "node scripts/cargo.mjs check --manifest-path apps/client/src-tauri/Cargo.toml",
+    "rust:test": "node scripts/cargo.mjs test --manifest-path apps/client/src-tauri/Cargo.toml"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@yao-pkg/pkg": "^6.21.0",
+    "esbuild": "^0.28.1",
+    "extract-zip": "^2.0.1",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

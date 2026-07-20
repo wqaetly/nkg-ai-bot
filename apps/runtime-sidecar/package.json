@@ -1,0 +1,15 @@
+{
+  "name": "@nkg-ai-bot/runtime-sidecar",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "bundle": "esbuild src/main.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/runtime-sidecar.mjs",
+    "build": "npm run bundle && node scripts/package-sidecar.mjs",
+    "test:e2e": "node scripts/test-sidecar.mjs"
+  },
+  "devDependencies": {
+    "@yao-pkg/pkg": "^6.21.0",
+    "esbuild": "^0.28.1"
+  }
+}

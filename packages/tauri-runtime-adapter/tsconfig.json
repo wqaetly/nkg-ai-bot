@@ -1,0 +1,7 @@
+{
+  "extends": "../../nkg-ai-flow/tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../../nkg-ai-flow"
+  },
+  "include": ["src/**/*.ts", "test/**/*.ts"]
+}

@@ -1,0 +1,111 @@
+name: Mobile build gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mobile-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  android:
+    name: Android arm64 Debug APK
+    runs-on: windows-latest
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            nkg-ai-flow/package-lock.json
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK and Rust target
+        shell: pwsh
+        run: |
+          $ndkVersion = "28.2.13676358"
+          sdkmanager "platforms;android-36" "build-tools;36.0.0" "ndk;$ndkVersion"
+          rustup target add aarch64-linux-android
+          $ndkHome = Join-Path $env:ANDROID_HOME "ndk\$ndkVersion"
+          "NDK_HOME=$ndkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "ANDROID_NDK_HOME=$ndkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Install nkg-ai-flow dependencies
+        run: npm ci --prefix nkg-ai-flow
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Verify mobile build contracts
+        run: npm test -- --run apps/client/test/platformBuildConfig.test.ts
+
+      - name: Build Android APK
+        run: npm run android:build -- --target aarch64 --apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nkg-ai-bot-android-arm64-debug
+          path: apps/client/src-tauri/gen/android/app/build/outputs/apk/arm64/debug/app-arm64-debug.apk
+          if-no-files-found: error
+          retention-days: 7
+
+  ios:
+    name: iOS arm64 Simulator Debug app
+    runs-on: macos-15
+    timeout-minutes: 45
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            nkg-ai-flow/package-lock.json
+
+      - name: Install Rust simulator target
+        run: rustup target add aarch64-apple-ios-sim
+
+      - name: Install nkg-ai-flow dependencies
+        run: npm ci --prefix nkg-ai-flow
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Verify mobile build contracts
+        run: npm test -- --run apps/client/test/platformBuildConfig.test.ts
+
+      - name: Generate iOS project
+        run: npm run ios:init -- --ci
+
+      - name: Build iOS Simulator app
+        run: npm run ios:build -- --debug --target aarch64-sim --ci
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nkg-ai-bot-ios-arm64-simulator-debug
+          path: apps/client/src-tauri/gen/apple/build/**/*.app/**
+          if-no-files-found: error
+          retention-days: 7

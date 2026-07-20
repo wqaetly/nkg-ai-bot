@@ -1,0 +1,61 @@
+name: Desktop sidecar gates
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-sidecar-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sidecar:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - windows-latest
+          - macos-latest
+          - ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            nkg-ai-flow/package-lock.json
+
+      - name: Install nkg-ai-flow dependencies
+        run: npm ci --prefix nkg-ai-flow
+
+      - name: Install application dependencies
+        run: npm ci
+
+      - name: Run platform-neutral contracts
+        run: npm test -- --run
+
+      - name: Build host sidecar
+        run: npm run build:sidecar
+
+      - name: Verify sidecar auth and readiness
+        run: npm run test:e2e -w @nkg-ai-bot/runtime-sidecar
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nkg-runtime-${{ runner.os }}-${{ runner.arch }}
+          path: apps/client/src-tauri/binaries/nkg-runtime-*
+          if-no-files-found: error
+          retention-days: 7

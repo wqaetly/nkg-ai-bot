@@ -1,0 +1,33 @@
+{
+  "name": "@nkg-ai-bot/client",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:tauri": "npm run sidecar:build && vite",
+    "build": "npm run sidecar:build && npm run build:frontend",
+    "build:frontend": "tsc -b && vite build",
+    "sidecar:build": "npm run build -w @nkg-ai-bot/runtime-sidecar",
+    "preview": "vite preview",
+    "tauri": "node ../../scripts/tauri.mjs"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0",
+    "@tauri-apps/api": "^2",
+    "@tauri-apps/plugin-http": "^2",
+    "@tauri-apps/plugin-sql": "^2",
+    "@tauri-apps/plugin-stronghold": "^2",
+    "@nkg-ai-bot/runtime-router": "0.0.1",
+    "@nkg-ai-bot/tauri-runtime-adapter": "0.0.1"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.8",
+    "@types/react-dom": "^19.1.6",
+    "@vitejs/plugin-react": "^4.6.0",
+    "typescript": "~5.8.3",
+    "vite": "^7.0.4",
+    "@tauri-apps/cli": "^2"
+  }
+}
