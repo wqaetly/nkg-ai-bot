@@ -3,7 +3,8 @@
 > 文档定位：供后续 AI Agent 和开发者直接执行的架构决策、实施路线与验收清单。
 > 编写日期：2026-07-20
 > 适用仓库：`nkg-ai-bot` 及其 Git submodule `nkg-ai-flow`
-> 相关文档：[`runtime-routing.md`](./runtime-routing.md)
+> 相关文档：[`runtime-routing.md`](./runtime-routing.md)、
+> [`implementation-audit-2026-07-20.md`](./implementation-audit-2026-07-20.md)
 
 ## 1. 执行摘要
 
@@ -84,7 +85,7 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 - `nkg-ai-flow/packages/runtime/src/nodes/builtin/agentTools.node.ts`
 - `nkg-ai-flow/packages/transport-http/src/handler.ts`
 
-截至本文编写时，已经具备以下基础：
+截至 2026-07-20 当前实现，已经具备以下基础：
 
 - `@ai-native-flow/runtime/browser` 入口；
 - browser-safe `createBrowserRuntime()`；
@@ -96,17 +97,21 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 - 桌面 sidecar 与移动进程内 Runtime 的基础 contract test；
 - browser bundle 无 Node builtin 的构建检查；
 - Tauri/Rust sidecar 生命周期和部分 SQLite、Stronghold、原生 HTTP 基础设施。
+- SQLite Runtime 持久化 adapter、五端默认 portable 路由和显式 desktop-power；
+- capability manifest、注册/执行 preflight 与移动只读 ToolHost；
+- HTTP/LLM 显式宿主 fetch 注入，不再覆盖全局 fetch；
+- `@ai-native-flow/*` 公共包边界和主仓库统一 workspace 锁文件；
+- Android arm64 Release 14.38 MiB APK / 8.21 MiB AAB 基线与 40 MiB 门禁。
 
 当前仍存在的主要结构性缺口：
 
-- 路由仍按平台写死：桌面选择 sidecar，移动选择 in-process；
-- `createMobileHandler`、`createNkgMobileRuntime` 等命名把 portable Runtime 错误地
-  限定为移动端；
-- `createBrowserRuntime()` 默认使用内存 Store，生产持久化 adapter 尚未完整接入；
-- Node-only 能力尚未形成正式 capability manifest 和加载前校验；
-- 桌面端尚未默认使用进程内 Runtime；
+- 完整桌面 Tauri portable Release 安装包尚未进入三系统 CI，当前桌面矩阵主要验证
+  sidecar 和共享契约；
+- iOS 仅有 arm64 Simulator Release，Android 主要是 Emulator，真机矩阵未完成；
+- Studio 尚未消费 capability inspection 展示 badge 与运行前兼容报告；
+- ToolHost 当前故意只读，用户选择目录、写文件预览/逐次确认尚未实现；
 - Flow 执行是否放入 Web Worker 尚未形成稳定实现和五端验证；
-- Android/iOS 真机流式响应、前后台恢复和签名构建仍需验证。
+- desktop-power 的产品定位、是否随包分发及最终移除条件尚未确认。
 
 注意：`nkg-ai-flow` 是 Git submodule，且本文编写时主仓库与子模块均存在未提交
 改动。任何 AI 在修改前都必须分别执行 `git status --short` 和
@@ -402,7 +407,7 @@ Studio 和自定义节点仍需 binding，文件、网络、数据库和密钥�
 - Store contract tests 同时覆盖内存实现和 Tauri/SQLite 实现；
 - 数据库错误转换为稳定 Runtime error，不泄露密钥或 SQL 内容。
 
-### Phase 3：完成原生 HTTP 与 Secret 注入
+### Phase 3：完成原生 HTTP 与 Secret 注入（主体已完成）
 
 目标：模型调用不受 WebView CORS 限制，API Key 不暴露给普通持久化层。
 
@@ -414,8 +419,7 @@ Studio 和自定义节点仍需 binding，文件、网络、数据库和密钥�
 - Rust HTTP adapter 支持流式 body、取消、超时和脱敏错误；
 - 统一转换为现有 `AiStreamEvent` / `NodeEvent`；
 - 对 URL scheme、凭据嵌入、loopback、局域网明文 HTTP 建立明确策略；
-- 当前全局替换 `globalThis.fetch` 可作为过渡方案，长期优先显式注入 HTTP client，
-  减少全局副作用。
+- HTTP client 已改为显式注入，禁止重新引入 `globalThis.fetch` 赋值；
 
 验收：
 
@@ -424,7 +428,7 @@ Studio 和自定义节点仍需 binding，文件、网络、数据库和密钥�
 - 日志、异常、数据库和导出包不出现 API Key；
 - CORS 不影响受支持的 Provider 请求。
 
-### Phase 4：Capability 校验与 ToolHost
+### Phase 4：Capability 校验与 ToolHost（只读基线已完成）
 
 目标：安全恢复 `tool` / `agent` 节点，而不重新引入隐式 Node 权限。
 
@@ -446,7 +450,7 @@ Studio 和自定义节点仍需 binding，文件、网络、数据库和密钥�
 - 任何工具调用不能绕过 allow-list 和路径 scope；
 - portable bundle 不因启用 ToolHost 而引入 `agentTools.node.ts`。
 
-### Phase 5：桌面默认切换到 portable
+### Phase 5：桌面默认切换到 portable（路由默认值已完成）
 
 目标：正式安装包的核心模式不再依赖 Node.js。
 

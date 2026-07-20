@@ -1,15 +1,18 @@
 # Runtime 路由架构
 
+> 当前实现证据、体积基线和剩余风险见
+> [`implementation-audit-2026-07-20.md`](./implementation-audit-2026-07-20.md)。
+
 ## 已确定的边界
 
 应用上层只依赖 `FlowRuntimeClient`，不感知 Flow 最终运行在 Node sidecar
 还是移动端进程内 Runtime。路由以 `nkg-ai-flow` 已有的 Fetch/HTTP 协议为
 统一契约：
 
-- Windows、macOS、Linux：原生宿主启动本地 Node sidecar，路由将相对路径
-  请求代理到随机 loopback 端口；
-- Android、iOS：不启动本地 HTTP 服务，同一个 `Request` 直接交给
-  browser-safe `createHttpHandler()`；
+- Windows、macOS、Linux、Android、iOS：默认使用 `portable`，同一个
+  `Request` 直接交给进程内 browser-safe `createHttpHandler()`；
+- Windows、macOS、Linux：只有显式选择 `desktop-power` 时才启动 Node
+  sidecar，并把相对路径请求代理到随机 loopback 端口；
 - invoke、stream、Run 查询、事件回放和取消均由同一客户端实现；
 - 平台判断由 Tauri 原生宿主显式注入，不使用 UA 猜测；
 - 当前适配代码属于 `nkg-ai-bot`，稳定且证明可复用后才考虑上移
@@ -19,8 +22,8 @@
 flowchart LR
   UI["Chat / Assistant UI"] --> Client["FlowRuntimeClient"]
   Client --> Router["RuntimeRouter"]
-  Router -->|"Windows / macOS / Linux"| Desktop["NodeSidecarBackend"]
-  Router -->|"Android / iOS"| Mobile["InProcessBackend"]
+  Router -->|"五端默认 portable"| Mobile["InProcessBackend"]
+  Router -->|"桌面显式 desktop-power"| Desktop["NodeSidecarBackend"]
   Desktop -->|"loopback + launch token"| Sidecar["nkg-ai-flow HTTP Runner"]
   Mobile -->|"Fetch Request, no socket"| Handler["browser-safe createHttpHandler"]
   Sidecar --> Runtime["nkg-ai-flow Runtime semantics"]
@@ -54,9 +57,10 @@ SQLite 重新注册全部 Flow，再执行这次新的用户操作。恢复期�
 并发启动的替代进程。聊天页会清除未持久化的半截回复，并明确提示当前操作不会自动
 重放；显式取消则显示为正常停止，而不是底层异常。
 
-`packages/tauri-runtime-adapter` 已提供应用组合入口：桌面端把
+`packages/tauri-runtime-adapter` 已提供应用组合入口：五端默认注入进程内
+handler factory；桌面增强模式再把
 `runtime_sidecar_start` / `runtime_sidecar_stop` 两个 Tauri command 适配为
-`SidecarLauncher`，移动端则接收 browser-safe handler factory。UI 只拿到
+`SidecarLauncher`。UI 只拿到
 同一个 `FlowRuntimeClient`。
 
 应用启动后，`runtimeCatalog` 从本地 SQLite 读取 Flow graph，并通过同一个
@@ -91,9 +95,10 @@ interface SidecarLauncher {
 5. sidecar 对每个请求验证 token，拒绝无 token 请求；
 6. stop、进程异常和主应用退出时清理状态与子进程。
 
-移动端 `createHandler()` 则负责创建 browser-safe Runtime、注册本地 Flow，
+默认 `createInProcessHandler()` 负责创建 browser-safe Runtime、注册本地 Flow，
 并返回 `@ai-native-flow/transport-http` 的 Fetch handler。它不得导入 Node
-builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
+builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可以发布
+`tool` / `agent` 契约，但必须由 capability 与宿主 ToolHost 决定能否执行。
 
 ## 本地数据与网络边界
 
@@ -101,8 +106,9 @@ builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
 - SQLite 只保存 `api_key_ref`，API Key 本体写入 Stronghold 加密快照；
 - Stronghold 由用户设置的本地 vault 密码解锁，代码中没有默认密码或云端恢复；
 - provider URL 只允许 HTTP/HTTPS 且禁止 URL 内嵌账号密码；
-- Android/iOS 在 Runtime 启动前将 `globalThis.fetch` 替换为 Tauri Rust HTTP
-  backend，因此 AI SDK 不依赖 WebView CORS；
+- Android/iOS 将 Tauri Rust HTTP backend 作为显式 `fetch` 依赖注入 Runtime、
+  HTTP 节点和 AI SDK Provider，不修改 `globalThis.fetch`，因此模型调用既不依赖
+  WebView CORS，也不会污染 WebView 中其他库；
 - 原生 HTTP scope 使用 `https://*:*` / `http://*:*`，允许用户自定义的 HTTPS 或
   HTTP provider 及非默认端口，包括本机与局域网服务；`http://*` 只覆盖默认端口，
   已由 Android 实机化 Emulator 门禁发现并回归锁定；HTTP 明文地址由用户主动配置，
@@ -115,8 +121,8 @@ builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
 已完成：
 
 1. `nkg-ai-flow` 已拆出 `@ai-native-flow/runtime/browser`；
-2. 移动端 builtin registry 默认排除 `agent` / `tool`，只有注入受限原生
-   `AgentToolHost` 后才启用；
+2. 五端 builtin registry 都发布 `agent` / `tool` 契约；执行权限由 capability
+   preflight 与受限 `AgentToolHost` 控制，缺少宿主时使用 deny-all host；
 3. Artifact hash 和 HTTP override version 已改用 Web Crypto；
 4. HTTP Runner 支持每次启动的 bearer token，发现页和 Runtime 路由均受保护；
 5. 同一 Flow graph 已分别通过 sidecar 路径与进程内路径 contract test；
@@ -154,9 +160,9 @@ builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
     executable bit；
 22. 桌面 sidecar 请求级崩溃恢复已实现：不重放失败请求、清理旧进程、下一请求重新
     启动；取消请求保持现有进程；
-23. 已加入 Windows/macOS/Linux CI matrix，执行平台无关 contract、宿主 sidecar
-    构建、Bearer 鉴权/ready E2E 并上传三元组产物。该工作流仍需在远端 runner 上形成
-    首次成功记录，不能替代真实 macOS 应用运行验收。
+23. Windows/macOS/Linux CI matrix 已连续通过平台无关 contract、宿主 sidecar
+    构建、Bearer 鉴权/ready E2E 并上传三元组产物；它仍不能替代完整 Tauri portable
+    Release 应用和真实桌面启动验收。
 24. Android 与 iOS 两个平台标识均通过同一真实进程内 Runtime contract：活动 Flow
     在挂起时转为 `cancelled`，内置聊天 Flow 通过 OpenAI-compatible HTTP/SSE 收到
     有序文本；这证明共享 TypeScript/Runtime 语义，不等同于 iOS 原生宿主验收。
@@ -186,10 +192,31 @@ builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
     desktop target 条件依赖；Android/iOS Cargo graph 均不再包含 Shell/open/shared_child，
     Android 生成的 Gradle 工程也只装配 `tauri-android`。裁剪后的 arm64 基线进一步降为
     14.34 MiB Release APK / 8.21 MiB Release AAB。
+31. Portable Runtime 已接入 SQLite `RunStore`、`RegistryStore`、`ArtifactStore`、
+    `EventStore` 与 `VariableStore`；Flow、Run、artifact、事件游标和 checkpoint 可跨
+    应用重启恢复，请求级 Provider 覆盖不会把 API Key 写入普通变量表。
+32. `RuntimeMode` 已统一为 `portable | desktop-power`；Windows、macOS、Linux、
+    Android、iOS 默认均为 portable，移动端显式请求 desktop-power 会立即拒绝。
+33. `nkg-ai-flow` 已实现 capability manifest、节点能力元数据、注册前和执行解析前
+    preflight；错误包含平台、节点 ID、节点类型和完整缺失能力清单。
+34. Tauri ToolHost 当前只开放应用本地 `tool-workspace` 中的 `list_files`、
+    `read_file`、`grep`；TypeScript 与 Rust 两侧分别校验 allow-list，Rust 额外拒绝
+    绝对路径、父目录、符号链接逃逸、写文件和进程启动。
+35. HTTP 与 LLM Provider 已改为显式注入宿主 fetch；Android/iOS 使用 Tauri 原生
+    HTTP，桌面 portable 使用宿主 Web fetch，全局 fetch 覆盖已删除并有回归测试。
+36. 主仓库仅通过 `@ai-native-flow/*` 公共 exports 消费 submodule；顶层统一 npm
+    workspace/lockfile 取代 CI 中重复的两次 `npm ci`，并有禁止源码深路径导入门禁。
+37. 当前本地 arm64 Release 基线为 14.38 MiB APK / 8.21 MiB AAB；历史 241.12 MiB
+    是包含符号与未优化依赖的 Debug APK，不再作为发布体积指标。
 
 尚待实现：
 
 1. Android 物理真机验证外部 Provider 流式模型响应，并复核已在 Emulator 通过的
    Stronghold、前后台取消/目录恢复策略；
-2. 在 macOS/Xcode 环境初始化并构建 iOS 工程，完成 iOS 真机同 Flow contract gate；
-3. 在 macOS 与 Linux 分别验证桌面 sidecar 打包；
+2. 完成 iOS 真机同 Flow contract gate；当前 CI 证据是 arm64 Simulator Release，
+   不是签名真机包；
+3. 在 Windows、macOS、Linux 构建完整 Tauri portable Release 应用；当前桌面矩阵
+   已验证 sidecar 和平台无关契约，但不能替代安装包启动验收；
+4. 将 portable Runtime 下沉到 Web Worker，验证长 Flow 不阻塞 UI；
+5. 为用户选择目录、写文件和其他高权限工具补充逐次确认；在此之前保持只读；
+6. 在 Studio 中消费 capability inspection，显示 badge 和运行前兼容性报告。
