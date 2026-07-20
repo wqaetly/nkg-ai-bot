@@ -60,7 +60,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 
 | 维度 | 当前证据 |
 |---|---|
-| nkg-ai-flow | 47 个测试文件、746 项测试通过，TypeScript typecheck 通过 |
+| nkg-ai-flow | 48 个测试文件、748 项测试通过，TypeScript typecheck 通过 |
 | 主项目 | 30 个测试文件、118 项测试通过，TypeScript typecheck 通过 |
 | Rust | migration、sidecar 校验和路径 scope 共 6 项测试通过 |
 | 前端 | Vite production build 通过，portable chunk gzip 约 21.32 KiB |
@@ -68,6 +68,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 | iOS | arm64 Simulator Release CI 通过 |
 | 桌面 | Windows/macOS/Linux sidecar、鉴权和共享契约 CI 通过 |
 | 包边界 | 顶层干净 `npm ci`、公开 `@ai-native-flow/*` 导入和禁止深路径门禁通过 |
+| 自带 Flow | 3/3 结构校验通过（100%）；1/1 确定性 portable Flow 执行通过（100%） |
 
 这些证据证明代码边界与 Release 构建可用，但不等同于五端真机产品验收。
 
@@ -92,7 +93,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 | P1 | 三桌面系统未构建完整 Tauri portable Release 应用 | sidecar 通过不代表安装包能启动 | CI 构建并启动最小 smoke |
 | P1 | Android/iOS 真机矩阵不足 | WebView、网络、挂起和密钥行为可能不同 | 同 Flow 真机 contract |
 | P1 | Runtime 仍在 UI 主线程 | 大图或 CPU 节点可能阻塞交互 | Worker 压测与取消/恢复 |
-| P1 | 自带 Flow fixture 通过率未单独统计 | 单元测试全绿不代表示例 Flow 可运行 | 建立 fixture 清单与通过率报告 |
+| P2 | 两个自带 Flow 依赖外部 LLM/写文件或 Bash，未纳入离线执行分母 | 结构通过不等于外部集成通过 | 确定性 Provider/ToolHost fixture |
 | P2 | Studio 未显示 capability badge | 用户只能在注册/运行时看到不兼容 | 编辑时预检和平台报告 |
 | P2 | 写文件与用户目录授权未实现 | 助理能力受限，但贸然开放会扩大攻击面 | 选择目录 + 预览 + 逐次确认 |
 | P2 | Runtime 事件/Run 保留策略未定义 | 长期使用可能导致 SQLite 增长 | 配额、归档与清理 contract |
@@ -100,7 +101,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 
 ## 下一轮优化顺序
 
-1. 建立 nkg-ai-flow 自带 Flow fixture runner，输出按节点类型和平台分类的通过率；
+1. 为外部依赖型自带 Flow 增加确定性 Provider/ToolHost fixture，扩展现有审计；
 2. 把五端共同的 persistence、capability、HTTP 和 ToolHost ports 继续下沉到
    nkg-ai-flow，Tauri 实现继续留在 nkg-ai-bot；
 3. 增加 Windows/macOS/Linux 完整 Tauri portable Release gate；
@@ -114,6 +115,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 - 结构合理性：**通过，允许继续产品开发**。
 - Android 发布体积：**通过，200+ MiB 问题已被 Release 基线消除**。
 - 五端语义一致性：**代码与 CI 基础通过，真机和完整桌面应用仍需补齐**。
-- nkg-ai-flow 自带 Flow 通过率：**尚未形成可量化报告，列为下一阶段 P1**。
+- nkg-ai-flow 自带 Flow 通过率：**已量化：结构 3/3、确定性可执行项 1/1；两个
+  外部依赖型 Flow 已正确分类为 desktop-power，仍需确定性集成 fixture**。
 - 完全下沉跨平台能力到 submodule：**已开始（browser runtime、capability、HTTP
   注入），尚未完成宿主 ports 与 fixture 验收闭环**。

@@ -42,6 +42,9 @@ jobs:
       - name: Run platform-neutral contracts
         run: npm test -- --run
 
+      - name: Audit bundled example Flows
+        run: npm run test:example-flows
+
       - name: Build host sidecar
         run: npm run build:sidecar
 

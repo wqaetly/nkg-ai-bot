@@ -67,6 +67,9 @@ jobs:
       - name: Verify mobile build contracts
         run: npm test -- --run apps/client/test/platformBuildConfig.test.ts
 
+      - name: Audit bundled example Flows
+        run: npm run test:example-flows
+
       - name: Build Android Release APK and AAB
         run: npm run android:build -- --target aarch64 --apk --aab --max-apk-mib 40
 
@@ -103,6 +106,9 @@ jobs:
 
       - name: Verify mobile build contracts
         run: npm test -- --run apps/client/test/platformBuildConfig.test.ts
+
+      - name: Audit bundled example Flows
+        run: npm run test:example-flows
 
       - name: Generate iOS project
         run: npm run ios:init -- --ci
