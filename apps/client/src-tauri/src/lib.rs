@@ -1,5 +1,7 @@
+#[cfg(desktop)]
 mod runtime_sidecar;
 
+#[cfg(desktop)]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
@@ -38,8 +40,7 @@ pub fn run() {
         },
     ];
 
-    tauri::Builder::default()
-        .plugin(tauri_plugin_shell::init())
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_http::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -54,13 +55,22 @@ pub fn run() {
                     .build(),
             )?;
             Ok(())
-        })
+        });
+
+    #[cfg(desktop)]
+    let builder = builder
+        .plugin(tauri_plugin_shell::init())
         .manage(RuntimeSidecarState::default())
         .invoke_handler(tauri::generate_handler![
             runtime_platform,
             runtime_sidecar_start,
             runtime_sidecar_stop
-        ])
+        ]);
+
+    #[cfg(mobile)]
+    let builder = builder.invoke_handler(tauri::generate_handler![runtime_platform]);
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running NKG AI Bot");
 }

@@ -47,6 +47,28 @@ describe("platform build configuration", () => {
     expect(rootPackage.scripts["ios:build"]).toContain("ios build");
   });
 
+  it("keeps desktop sidecar dependencies out of the mobile Rust graph", async () => {
+    const cargoToml = await readFile(
+      new URL("../src-tauri/Cargo.toml", import.meta.url),
+      "utf8",
+    );
+    const rustEntry = await readFile(
+      new URL("../src-tauri/src/lib.rs", import.meta.url),
+      "utf8",
+    );
+    const [commonDependencies, desktopDependencies] = cargoToml.split(
+      '[target.\'cfg(not(any(target_os = "android", target_os = "ios")))\'.dependencies]',
+    );
+
+    expect(commonDependencies).not.toContain("tauri-plugin-shell");
+    expect(commonDependencies).not.toMatch(/^tokio\s*=/m);
+    expect(commonDependencies).not.toMatch(/^url\s*=/m);
+    expect(commonDependencies).not.toMatch(/^uuid\s*=/m);
+    expect(desktopDependencies).toContain('tauri-plugin-shell = "2"');
+    expect(rustEntry).toContain("#[cfg(desktop)]\nmod runtime_sidecar;");
+    expect(rustEntry).toContain("#[cfg(mobile)]\n    let builder");
+  });
+
   it("builds Android and iOS on compatible CI hosts without packaging the sidecar", async () => {
     const workflow = await readFile(
       new URL("../../../.github/workflows/mobile-build.yml", import.meta.url),

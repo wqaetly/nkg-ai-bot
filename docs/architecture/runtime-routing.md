@@ -182,6 +182,10 @@ builtin、HTTP Runner、CLI、MCP、Bash 或子进程节点。
     40 MiB 体积预算。启用符号裁剪、Thin LTO、R8 和资源裁剪后，arm64 本地基线由
     241.12 MiB Debug 降至 14.83 MiB Release APK / 8.45 MiB Release AAB；后续发布
     尺寸只能以 Release APK/AAB 衡量。
+30. Desktop sidecar、Shell 插件及其 `serde` / `tokio` / `url` / `uuid` 依赖已改为
+    desktop target 条件依赖；Android/iOS Cargo graph 均不再包含 Shell/open/shared_child，
+    Android 生成的 Gradle 工程也只装配 `tauri-android`。裁剪后的 arm64 基线进一步降为
+    14.34 MiB Release APK / 8.21 MiB Release AAB。
 
 尚待实现：
 

@@ -57,7 +57,8 @@ npm run android:build -- --target aarch64
 
 Android 默认构建 Release APK，并执行 40 MiB 体积门禁；显式调试构建使用
 `npm run android:build:debug -- --target aarch64`。同时生成商店 AAB 时追加 `--aab`。
-当前 arm64 实测基线为 14.83 MiB APK / 8.45 MiB AAB（未签名）。
+当前 arm64 实测基线为 14.34 MiB APK / 8.21 MiB AAB（未签名）；移动 Cargo
+依赖图和生成的 Gradle 工程均不包含桌面 Shell/sidecar 模块。
 
 macOS/Xcode 环境中的 iOS 工程入口为：
 
