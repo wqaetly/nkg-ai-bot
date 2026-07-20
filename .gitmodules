@@ -1,0 +1,3 @@
+[submodule "nkg-ai-flow"]
+	path = nkg-ai-flow
+	url = https://github.com/wqaetly/nkg-ai-flow.git
