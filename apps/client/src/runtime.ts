@@ -8,7 +8,7 @@ import {
   createTauriRuntimeServices,
   type TauriRuntimeServices,
 } from "@nkg-ai-bot/tauri-runtime-adapter";
-import { installPlatformFetch } from "./nativeFetch";
+import { getPlatformFetch } from "./nativeFetch";
 import { ProviderFlowRuntimeClient } from "./providerFlowClient";
 import { providerSession } from "./providerSession";
 import { syncRuntimeCatalog, type RuntimeCatalogSyncResult } from "./runtimeCatalog";
@@ -37,9 +37,10 @@ export function getRuntimeServices(): Promise<StartedRuntimeServices> {
 
 async function startRuntime(): Promise<StartedRuntimeServices> {
   const platform = await invoke<AppPlatform>("runtime_platform");
-  await installPlatformFetch(platform);
+  const fetchImpl = await getPlatformFetch(platform);
   const services = createTauriRuntimeServices({
     platform,
+    fetch: fetchImpl,
     invoke: <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args),
     createInProcessHandler: async () => {
       const { createNkgPortableRuntime } = await import("@nkg-ai-bot/tauri-runtime-adapter/portable");
@@ -55,6 +56,7 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
           invoke: <T>(command: string, args?: Record<string, unknown>) =>
             invoke<T>(command, args),
         }),
+        fetch: fetchImpl,
       })).handler;
     },
   });
