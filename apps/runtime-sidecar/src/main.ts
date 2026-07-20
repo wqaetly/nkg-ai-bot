@@ -1,5 +1,5 @@
-import { AiSdkOpenAICompatibleLlmProvider } from "../../../nkg-ai-flow/packages/runtime/src/index.js";
-import { startHttpRunner } from "../../../nkg-ai-flow/packages/transports/http-runner/src/index.js";
+import { AiSdkOpenAICompatibleLlmProvider } from "@ai-native-flow/runtime";
+import { startHttpRunner } from "@ai-native-flow/transport-http-runner";
 
 const token = process.env.ANF_RUNTIME_TOKEN?.trim();
 if (!token) fatal("ANF_RUNTIME_TOKEN is required");

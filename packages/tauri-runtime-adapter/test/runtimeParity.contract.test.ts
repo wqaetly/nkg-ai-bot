@@ -1,16 +1,16 @@
 import { describe, expect, it, vi } from "vitest";
-import { defineFlow } from "../../../nkg-ai-flow/packages/flow-builder/src/index.js";
+import { defineFlow } from "@ai-native-flow/flow-builder";
 import {
   InMemoryArtifactStore,
   createRuntime,
   type LlmProvider,
-} from "../../../nkg-ai-flow/packages/runtime/src/index.js";
+} from "@ai-native-flow/runtime";
 import {
   createBrowserRuntime,
-} from "../../../nkg-ai-flow/packages/runtime/src/browser.js";
+} from "@ai-native-flow/runtime/browser";
 import {
   createHttpHandler,
-} from "../../../nkg-ai-flow/packages/transport-http/src/index.js";
+} from "@ai-native-flow/transport-http";
 import {
   createTauriRuntimeServices,
   type TauriInvoke,

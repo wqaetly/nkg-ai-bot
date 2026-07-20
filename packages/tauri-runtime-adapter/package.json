@@ -15,6 +15,14 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@ai-native-flow/event-bus": "0.0.1",
+    "@ai-native-flow/flow-ir": "0.0.1",
+    "@ai-native-flow/runtime": "0.0.1",
+    "@ai-native-flow/transport-http": "0.0.1",
+    "@ai-native-flow/variable-store": "0.0.1",
     "@nkg-ai-bot/runtime-router": "0.0.1"
+  },
+  "devDependencies": {
+    "@ai-native-flow/flow-builder": "0.0.1"
   }
 }

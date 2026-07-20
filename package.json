@@ -5,7 +5,9 @@
   "type": "module",
   "workspaces": [
     "packages/*",
-    "apps/*"
+    "apps/*",
+    "nkg-ai-flow/packages/*",
+    "nkg-ai-flow/packages/transports/*"
   ],
   "scripts": {
     "test": "vitest run",

@@ -11,5 +11,9 @@
   "devDependencies": {
     "@yao-pkg/pkg": "^6.21.0",
     "esbuild": "^0.28.1"
+  },
+  "dependencies": {
+    "@ai-native-flow/runtime": "0.0.1",
+    "@ai-native-flow/transport-http-runner": "0.0.1"
   }
 }

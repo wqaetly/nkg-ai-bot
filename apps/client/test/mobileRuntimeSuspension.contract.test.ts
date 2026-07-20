@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { defineFlow } from "../../../nkg-ai-flow/packages/flow-builder/src/index.js";
-import { createBrowserRuntime } from "../../../nkg-ai-flow/packages/runtime/src/browser.js";
+import { defineFlow } from "@ai-native-flow/flow-builder";
+import { createBrowserRuntime } from "@ai-native-flow/runtime/browser";
 import {
   createTauriRuntimeServices,
   type TauriInvoke,

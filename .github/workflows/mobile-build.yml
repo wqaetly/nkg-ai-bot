@@ -29,9 +29,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            nkg-ai-flow/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - uses: actions/setup-java@v4
         with:
@@ -62,9 +60,6 @@ jobs:
           $ndkHome = Join-Path $env:ANDROID_HOME "ndk\$ndkVersion"
           "NDK_HOME=$ndkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "ANDROID_NDK_HOME=$ndkHome" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
-
-      - name: Install nkg-ai-flow dependencies
-        run: npm ci --prefix nkg-ai-flow
 
       - name: Install application dependencies
         run: npm ci
@@ -98,15 +93,10 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            nkg-ai-flow/package-lock.json
+          cache-dependency-path: package-lock.json
 
       - name: Install Rust simulator target
         run: rustup target add aarch64-apple-ios-sim
-
-      - name: Install nkg-ai-flow dependencies
-        run: npm ci --prefix nkg-ai-flow
 
       - name: Install application dependencies
         run: npm ci

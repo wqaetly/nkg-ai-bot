@@ -1,13 +1,13 @@
-import type { FlowGraph } from "../../../nkg-ai-flow/packages/flow-ir/src/index.js";
+import type { FlowGraph } from "@ai-native-flow/flow-ir";
 import {
   createBrowserRuntime,
   type CreateBrowserRuntimeOptions,
   type Runtime,
-} from "../../../nkg-ai-flow/packages/runtime/src/browser.js";
+} from "@ai-native-flow/runtime/browser";
 import {
   createHttpHandler,
   type HttpHandler,
-} from "../../../nkg-ai-flow/packages/transport-http/src/index.js";
+} from "@ai-native-flow/transport-http";
 
 export interface CreateNkgPortableRuntimeOptions
   extends CreateBrowserRuntimeOptions {

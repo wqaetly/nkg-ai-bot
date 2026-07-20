@@ -34,12 +34,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-          cache-dependency-path: |
-            package-lock.json
-            nkg-ai-flow/package-lock.json
-
-      - name: Install nkg-ai-flow dependencies
-        run: npm ci --prefix nkg-ai-flow
+          cache-dependency-path: package-lock.json
 
       - name: Install application dependencies
         run: npm ci

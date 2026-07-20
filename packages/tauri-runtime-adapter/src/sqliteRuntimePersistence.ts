@@ -7,7 +7,7 @@ import {
   type EventStore,
   type NodeEvent,
   type NodeEventKind,
-} from "../../../nkg-ai-flow/packages/event-bus/src/index.js";
+} from "@ai-native-flow/event-bus";
 import {
   sha256HexPortable,
   type ArtifactStore,
@@ -16,14 +16,14 @@ import {
   type RunRecord,
   type RunStatus,
   type RunStore,
-} from "../../../nkg-ai-flow/packages/runtime/src/browser.js";
+} from "@ai-native-flow/runtime/browser";
 import {
   InMemoryVariableStore,
   type MutableVariableStore,
   type VariableEntry,
   type VariableMetadata,
   type VariableValue,
-} from "../../../nkg-ai-flow/packages/variable-store/src/browser.js";
+} from "@ai-native-flow/variable-store/browser";
 
 export interface SqliteRuntimeDatabase {
   execute(
