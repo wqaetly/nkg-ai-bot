@@ -4,7 +4,7 @@ import {
   createTauriRuntimeServices,
   type TauriInvoke,
 } from "../../../packages/tauri-runtime-adapter/src/index.js";
-import { createNkgMobileRuntime } from "../../../packages/tauri-runtime-adapter/src/nkgMobileRuntime.js";
+import { createNkgPortableRuntime } from "../../../packages/tauri-runtime-adapter/src/nkgPortableRuntime.js";
 import { BUILTIN_CHAT_FLOW } from "../src/builtinFlows";
 import { ProviderFlowRuntimeClient } from "../src/providerFlowClient";
 
@@ -34,11 +34,11 @@ describe("mobile Provider streaming contract", () => {
       const address = server.address();
       if (!address || typeof address === "string") throw new Error("mock Provider did not bind a TCP port");
 
-      const mobileRuntime = await createNkgMobileRuntime({ flows: [BUILTIN_CHAT_FLOW] });
+      const mobileRuntime = await createNkgPortableRuntime({ flows: [BUILTIN_CHAT_FLOW] });
       const services = createTauriRuntimeServices({
         platform,
         invoke: vi.fn() as TauriInvoke,
-        createMobileHandler: () => mobileRuntime.handler,
+        createInProcessHandler: () => mobileRuntime.handler,
       });
       const client = new ProviderFlowRuntimeClient(services.client, {
         createRunOptions: async (options: Record<string, unknown>) => ({

@@ -35,7 +35,7 @@ describe("createTauriRuntimeServices", () => {
     const services = createTauriRuntimeServices({
       platform: "ios",
       invoke,
-      createMobileHandler: () => async () => Response.json({ events: [] }),
+      createInProcessHandler: () => async () => Response.json({ events: [] }),
     });
 
     await services.client.getEvents("run-1");
@@ -44,7 +44,24 @@ describe("createTauriRuntimeServices", () => {
     expect(services.router.snapshot.backend).toBe("in-process");
   });
 
-  it("starts and authenticates the sidecar on Windows", async () => {
+  it("defaults Windows to the portable Runtime without invoking sidecar commands", async () => {
+    const invoke = vi.fn() as TauriInvoke;
+    const services = createTauriRuntimeServices({
+      platform: "windows",
+      invoke,
+      createInProcessHandler: () => async () => Response.json({ events: [] }),
+    });
+
+    await services.client.getEvents("run-1");
+
+    expect(invoke).not.toHaveBeenCalled();
+    expect(services.router.snapshot).toMatchObject({
+      mode: "portable",
+      backend: "in-process",
+    });
+  });
+
+  it("starts and authenticates the sidecar in explicit Windows desktop-power mode", async () => {
     const invokeMock = vi.fn(async (command: string) => {
       if (command === "runtime_sidecar_start") {
         return { baseUrl: "http://127.0.0.1:43210", token: "desktop-token" };
@@ -59,9 +76,9 @@ describe("createTauriRuntimeServices", () => {
     });
     const services = createTauriRuntimeServices({
       platform: "windows",
+      mode: "desktop-power",
       invoke,
       fetch,
-      createMobileHandler: () => { throw new Error("mobile should not boot"); },
     });
 
     await services.client.getEvents("run-1");

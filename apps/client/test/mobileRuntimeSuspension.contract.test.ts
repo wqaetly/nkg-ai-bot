@@ -5,7 +5,7 @@ import {
   createTauriRuntimeServices,
   type TauriInvoke,
 } from "../../../packages/tauri-runtime-adapter/src/index.js";
-import { createNkgMobileRuntime } from "../../../packages/tauri-runtime-adapter/src/nkgMobileRuntime.js";
+import { createNkgPortableRuntime } from "../../../packages/tauri-runtime-adapter/src/nkgPortableRuntime.js";
 import { ProviderFlowRuntimeClient } from "../src/providerFlowClient";
 
 describe("mobile runtime suspension contract", () => {
@@ -29,11 +29,11 @@ describe("mobile runtime suspension contract", () => {
       flow.connect(delay.out("out"), end.in("in"));
       const graph = JSON.parse(flow.dump());
 
-      const mobileRuntime = await createNkgMobileRuntime({ flows: [graph] });
+      const mobileRuntime = await createNkgPortableRuntime({ flows: [graph] });
       const services = createTauriRuntimeServices({
         platform,
         invoke: vi.fn() as TauriInvoke,
-        createMobileHandler: () => mobileRuntime.handler,
+        createInProcessHandler: () => mobileRuntime.handler,
       });
       const client = new ProviderFlowRuntimeClient(
         services.client,

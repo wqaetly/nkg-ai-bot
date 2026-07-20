@@ -42,8 +42,9 @@ describe("desktop runtime recovery contract", () => {
       .mockReturnValueOnce(replacement);
     const router = new RuntimeRouter({
       platform: "windows",
-      desktop: factory,
-      mobile: () => { throw new Error("mobile should not be created"); },
+      mode: "desktop-power",
+      desktopPower: factory,
+      portable: () => { throw new Error("portable should not be created"); },
     });
     await router.start();
     const runtime = new FlowRuntimeClient(router);

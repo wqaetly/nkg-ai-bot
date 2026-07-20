@@ -13,53 +13,87 @@ function backend(kind: RuntimeBackend["kind"]): RuntimeBackend {
 }
 
 describe("RuntimeRouter", () => {
-  it.each(["windows", "macos", "linux"] as const)(
-    "routes desktop platform %s to the Node sidecar",
+  it.each(["windows", "macos", "linux", "android", "ios"] as const)(
+    "defaults platform %s to the portable in-process Runtime",
     async (platform) => {
       const desktop = backend("node-sidecar");
-      const mobile = backend("in-process");
+      const portable = backend("in-process");
       const router = new RuntimeRouter({
         platform,
-        desktop: () => desktop,
-        mobile: () => mobile,
+        desktopPower: () => desktop,
+        portable: () => portable,
       });
 
       const response = await router.request("/health");
 
-      expect(await response.json()).toEqual({ path: "/health", kind: "node-sidecar" });
-      expect(desktop.start).toHaveBeenCalledOnce();
-      expect(mobile.start).not.toHaveBeenCalled();
-      expect(router.snapshot).toMatchObject({ state: "ready", backend: "node-sidecar" });
+      expect(await response.json()).toEqual({ path: "/health", kind: "in-process" });
+      expect(portable.start).toHaveBeenCalledOnce();
+      expect(desktop.start).not.toHaveBeenCalled();
+      expect(router.snapshot).toMatchObject({
+        state: "ready",
+        mode: "portable",
+        backend: "in-process",
+      });
       expect(router.snapshot.generation).toBe(1);
     },
   );
 
-  it.each(["android", "ios"] as const)(
-    "routes mobile platform %s to the in-process runtime",
+  it.each(["windows", "macos", "linux"] as const)(
+    "routes desktop platform %s to the sidecar only in explicit desktop-power mode",
     async (platform) => {
       const desktop = backend("node-sidecar");
-      const mobile = backend("in-process");
+      const portable = backend("in-process");
       const router = new RuntimeRouter({
         platform,
-        desktop: () => desktop,
-        mobile: () => mobile,
+        mode: "desktop-power",
+        desktopPower: () => desktop,
+        portable: () => portable,
       });
 
       await router.request("/health");
 
-      expect(mobile.start).toHaveBeenCalledOnce();
-      expect(desktop.start).not.toHaveBeenCalled();
-      expect(router.snapshot.backend).toBe("in-process");
+      expect(desktop.start).toHaveBeenCalledOnce();
+      expect(portable.start).not.toHaveBeenCalled();
+      expect(router.snapshot).toMatchObject({
+        mode: "desktop-power",
+        backend: "node-sidecar",
+      });
     },
   );
+
+  it.each(["android", "ios"] as const)(
+    "rejects desktop-power mode on %s before creating a backend",
+    (platform) => {
+      expect(() => new RuntimeRouter({
+        platform,
+        mode: "desktop-power",
+        desktopPower: () => backend("node-sidecar"),
+        portable: () => backend("in-process"),
+      })).toThrow(`desktop-power is not supported on ${platform}`);
+    },
+  );
+
+  it("keeps deprecated desktop/mobile factory names as migration aliases", async () => {
+    const portable = backend("in-process");
+    const router = new RuntimeRouter({
+      platform: "windows",
+      desktop: () => backend("node-sidecar"),
+      mobile: () => portable,
+    });
+
+    await router.start();
+
+    expect(portable.start).toHaveBeenCalledOnce();
+    expect(router.snapshot.mode).toBe("portable");
+  });
 
   it("deduplicates concurrent lazy starts and supports clean restart", async () => {
     const instance = backend("in-process");
     const factory = vi.fn(() => instance);
     const router = new RuntimeRouter({
       platform: "ios",
-      desktop: () => backend("node-sidecar"),
-      mobile: factory,
+      desktopPower: () => backend("node-sidecar"),
+      portable: factory,
     });
 
     await Promise.all([
@@ -88,8 +122,8 @@ describe("RuntimeRouter", () => {
       .mockReturnValueOnce(healthy);
     const router = new RuntimeRouter({
       platform: "android",
-      desktop: () => backend("node-sidecar"),
-      mobile: factory,
+      desktopPower: () => backend("node-sidecar"),
+      portable: factory,
     });
 
     await expect(router.start()).rejects.toThrow("boot failed");
@@ -104,8 +138,9 @@ describe("RuntimeRouter", () => {
     const wrong = backend("in-process");
     const router = new RuntimeRouter({
       platform: "windows",
-      desktop: () => wrong,
-      mobile: () => wrong,
+      mode: "desktop-power",
+      desktopPower: () => wrong,
+      portable: () => wrong,
     });
 
     await expect(router.start()).rejects.toThrow("Runtime backend mismatch");
@@ -120,8 +155,9 @@ describe("RuntimeRouter", () => {
       .mockReturnValueOnce(replacement);
     const router = new RuntimeRouter({
       platform: "macos",
-      desktop: factory,
-      mobile: () => backend("in-process"),
+      mode: "desktop-power",
+      desktopPower: factory,
+      portable: () => backend("in-process"),
     });
 
     await expect(router.request("/flows/chat/invoke", { method: "POST" }))
@@ -148,8 +184,9 @@ describe("RuntimeRouter", () => {
     const factory = vi.fn(() => instance);
     const router = new RuntimeRouter({
       platform: "windows",
-      desktop: factory,
-      mobile: () => backend("in-process"),
+      mode: "desktop-power",
+      desktopPower: factory,
+      portable: () => backend("in-process"),
     });
     const controller = new AbortController();
     controller.abort();

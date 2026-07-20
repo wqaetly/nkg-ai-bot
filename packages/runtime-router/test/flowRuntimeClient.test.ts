@@ -8,8 +8,8 @@ import { RuntimeTransportError, type RuntimeBackend } from "../src/contracts.js"
 function clientWith(handler: RuntimeHttpHandler): FlowRuntimeClient {
   const router = new RuntimeRouter({
     platform: "android",
-    desktop: () => { throw new Error("desktop should not be created"); },
-    mobile: () => createInProcessBackend({ createHandler: () => handler }),
+    desktopPower: () => { throw new Error("desktop-power should not be created"); },
+    portable: () => createInProcessBackend({ createHandler: () => handler }),
   });
   return new FlowRuntimeClient(router);
 }
@@ -159,8 +159,9 @@ describe("FlowRuntimeClient", () => {
     };
     const router = new RuntimeRouter({
       platform: "linux",
-      desktop: () => desktop,
-      mobile: () => { throw new Error("mobile should not be created"); },
+      mode: "desktop-power",
+      desktopPower: () => desktop,
+      portable: () => { throw new Error("portable should not be created"); },
     });
     const client = new FlowRuntimeClient(router);
 

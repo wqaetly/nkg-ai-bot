@@ -4,6 +4,7 @@ import {
   createInProcessBackend,
   createNodeSidecarBackend,
   type AppPlatform,
+  type RuntimeMode,
   type RuntimeHttpHandler,
   type SidecarDescriptor,
   type SidecarLauncher,
@@ -22,8 +23,11 @@ export interface TauriSidecarLauncherOptions {
 
 export interface CreateTauriRuntimeOptions {
   platform: AppPlatform;
+  mode?: RuntimeMode;
   invoke: TauriInvoke;
-  createMobileHandler: () => RuntimeHttpHandler | Promise<RuntimeHttpHandler>;
+  createInProcessHandler?: () => RuntimeHttpHandler | Promise<RuntimeHttpHandler>;
+  /** @deprecated Use `createInProcessHandler`. */
+  createMobileHandler?: () => RuntimeHttpHandler | Promise<RuntimeHttpHandler>;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -70,14 +74,22 @@ export function createTauriSidecarLauncher(
 export function createTauriRuntimeServices(
   options: CreateTauriRuntimeOptions,
 ): TauriRuntimeServices {
+  const createInProcessHandler =
+    options.createInProcessHandler ?? options.createMobileHandler;
+  if (!createInProcessHandler && options.mode !== "desktop-power") {
+    throw new Error("Portable Runtime requires createInProcessHandler");
+  }
   const router = new RuntimeRouter({
     platform: options.platform,
-    desktop: () => createNodeSidecarBackend({
+    ...(options.mode ? { mode: options.mode } : {}),
+    desktopPower: () => createNodeSidecarBackend({
       launcher: createTauriSidecarLauncher({ invoke: options.invoke }),
       ...(options.fetch ? { fetch: options.fetch } : {}),
     }),
-    mobile: () => createInProcessBackend({
-      createHandler: options.createMobileHandler,
+    portable: () => createInProcessBackend({
+      createHandler: createInProcessHandler ?? (() => {
+        throw new Error("Portable Runtime handler is not configured");
+      }),
     }),
   });
 

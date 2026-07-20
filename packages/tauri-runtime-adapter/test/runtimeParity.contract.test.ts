@@ -15,7 +15,7 @@ import {
   createTauriRuntimeServices,
   type TauriInvoke,
 } from "../src/index.js";
-import { createNkgMobileRuntime } from "../src/nkgMobileRuntime.js";
+import { createNkgPortableRuntime } from "../src/nkgPortableRuntime.js";
 
 describe("desktop/mobile Runtime routing contract", () => {
   it("executes the same Flow through sidecar and in-process routes", async () => {
@@ -65,19 +65,20 @@ describe("desktop/mobile Runtime routing contract", () => {
     });
     const desktop = createTauriRuntimeServices({
       platform: "windows",
+      mode: "desktop-power",
       invoke: invokeMock as unknown as TauriInvoke,
       fetch: (input, init) => desktopHandler(new Request(input, init)),
-      createMobileHandler: () => { throw new Error("mobile backend selected on desktop"); },
+      createInProcessHandler: () => { throw new Error("portable backend selected in desktop-power mode"); },
     });
 
-    const mobileRuntime = await createNkgMobileRuntime({
+    const mobileRuntime = await createNkgPortableRuntime({
       llmProvider: provider,
       flows: [graph],
     });
     const mobile = createTauriRuntimeServices({
       platform: "android",
       invoke: vi.fn() as TauriInvoke,
-      createMobileHandler: () => mobileRuntime.handler,
+      createInProcessHandler: () => mobileRuntime.handler,
     });
 
     const [desktopResult, mobileResult] = await Promise.all([

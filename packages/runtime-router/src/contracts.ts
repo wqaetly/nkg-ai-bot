@@ -7,6 +7,9 @@ export type AppPlatform =
 
 export type RuntimeBackendKind = "node-sidecar" | "in-process";
 
+/** Product-level execution mode; platform only constrains valid choices. */
+export type RuntimeMode = "portable" | "desktop-power";
+
 export type RuntimeRouterState =
   | "idle"
   | "starting"
@@ -27,12 +30,19 @@ export type RuntimeBackendFactory = () =>
 
 export interface RuntimeRouterOptions {
   platform: AppPlatform;
-  desktop: RuntimeBackendFactory;
-  mobile: RuntimeBackendFactory;
+  /** Defaults to portable on all five supported platforms. */
+  mode?: RuntimeMode;
+  portable?: RuntimeBackendFactory;
+  desktopPower?: RuntimeBackendFactory;
+  /** @deprecated Use `desktopPower`. */
+  desktop?: RuntimeBackendFactory;
+  /** @deprecated Use `portable`. */
+  mobile?: RuntimeBackendFactory;
 }
 
 export interface RuntimeRouterSnapshot {
   platform: AppPlatform;
+  mode: RuntimeMode;
   backend: RuntimeBackendKind;
   state: RuntimeRouterState;
   /** Increments after each successfully started backend instance. */

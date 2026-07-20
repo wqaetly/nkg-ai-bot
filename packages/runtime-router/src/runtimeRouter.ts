@@ -2,14 +2,16 @@ import type {
   RuntimeBackend,
   RuntimeBackendKind,
   RuntimeRouterOptions,
+  RuntimeMode,
   RuntimeRouterSnapshot,
   RuntimeRouterState,
 } from "./contracts.js";
 import { RuntimeTransportError } from "./contracts.js";
-import { selectRuntimeBackend } from "./platform.js";
+import { selectRuntimeBackend, selectRuntimeMode } from "./platform.js";
 
 export class RuntimeRouter {
   readonly platform: RuntimeRouterOptions["platform"];
+  readonly mode: RuntimeMode;
   readonly backendKind: RuntimeBackendKind;
 
   private stateValue: RuntimeRouterState = "idle";
@@ -23,12 +25,15 @@ export class RuntimeRouter {
 
   constructor(private readonly options: RuntimeRouterOptions) {
     this.platform = options.platform;
-    this.backendKind = selectRuntimeBackend(options.platform);
+    this.mode = selectRuntimeMode(options.platform, options.mode);
+    this.backendKind = selectRuntimeBackend(options.platform, this.mode);
+    this.resolveBackendFactory();
   }
 
   get snapshot(): RuntimeRouterSnapshot {
     return {
       platform: this.platform,
+      mode: this.mode,
       backend: this.backendKind,
       state: this.stateValue,
       generation: this.generationValue,
@@ -44,9 +49,7 @@ export class RuntimeRouter {
 
     this.stateValue = "starting";
     this.failure = undefined;
-    const factory = this.backendKind === "node-sidecar"
-      ? this.options.desktop
-      : this.options.mobile;
+    const factory = this.resolveBackendFactory();
 
     this.startPromise = (async () => {
       const backend = await factory();
@@ -72,6 +75,16 @@ export class RuntimeRouter {
     });
 
     return this.startPromise;
+  }
+
+  private resolveBackendFactory(): NonNullable<RuntimeRouterOptions["portable"]> {
+    const factory = this.mode === "desktop-power"
+      ? this.options.desktopPower ?? this.options.desktop
+      : this.options.portable ?? this.options.mobile;
+    if (!factory) {
+      throw new Error(`Runtime mode ${this.mode} has no configured backend factory`);
+    }
+    return factory;
   }
 
   async request(path: string, init?: RequestInit): Promise<Response> {
