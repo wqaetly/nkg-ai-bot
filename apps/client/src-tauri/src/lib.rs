@@ -1,8 +1,10 @@
 #[cfg(desktop)]
 mod runtime_sidecar;
+mod runtime_tools;
 
 #[cfg(desktop)]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
+use runtime_tools::runtime_tool_call;
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -69,12 +71,16 @@ pub fn run() {
         .manage(RuntimeSidecarState::default())
         .invoke_handler(tauri::generate_handler![
             runtime_platform,
+            runtime_tool_call,
             runtime_sidecar_start,
             runtime_sidecar_stop
         ]);
 
     #[cfg(mobile)]
-    let builder = builder.invoke_handler(tauri::generate_handler![runtime_platform]);
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        runtime_platform,
+        runtime_tool_call
+    ]);
 
     builder
         .run(tauri::generate_context!())

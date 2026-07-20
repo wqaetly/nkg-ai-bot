@@ -3,6 +3,8 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import {
   createTauriSqliteRuntimePersistence,
+  createTauriPortableCapabilities,
+  createTauriReadOnlyToolHost,
   createTauriRuntimeServices,
   type TauriRuntimeServices,
 } from "@nkg-ai-bot/tauri-runtime-adapter";
@@ -48,6 +50,11 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
         artifactStore: persistence.artifactStore,
         eventBus: persistence.eventBus,
         variables: persistence.variables,
+        capabilities: createTauriPortableCapabilities(platform),
+        toolHost: createTauriReadOnlyToolHost({
+          invoke: <T>(command: string, args?: Record<string, unknown>) =>
+            invoke<T>(command, args),
+        }),
       })).handler;
     },
   });

@@ -100,3 +100,4 @@ export function createTauriRuntimeServices(
 }
 
 export * from "./sqliteRuntimePersistence.js";
+export * from "./tauriToolHost.js";
