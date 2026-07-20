@@ -43,9 +43,9 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     fetch: fetchImpl,
     invoke: <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args),
     createInProcessHandler: async () => {
-      const { createNkgPortableRuntime } = await import("@nkg-ai-bot/tauri-runtime-adapter/portable");
+      const { createPortableHttpRuntime } = await import("@ai-native-flow/transport-http");
       const persistence = await createTauriSqliteRuntimePersistence(await getDatabase());
-      return (await createNkgPortableRuntime({
+      return (await createPortableHttpRuntime({
         runStore: persistence.runStore,
         registryStore: persistence.registryStore,
         artifactStore: persistence.artifactStore,

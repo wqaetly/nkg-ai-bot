@@ -102,8 +102,9 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 ## 下一轮优化顺序
 
 1. 为外部依赖型自带 Flow 增加确定性 Provider/ToolHost fixture，扩展现有审计；
-2. 把五端共同的 persistence、capability、HTTP 和 ToolHost ports 继续下沉到
-   nkg-ai-flow，Tauri 实现继续留在 nkg-ai-bot；
+2. 继续把五端共同的 persistence 和 ToolHost ports 下沉到 nkg-ai-flow；portable
+   Runtime + HTTP composition、capability 与 fetch 注入已经下沉，Tauri 实现继续
+   留在 nkg-ai-bot；
 3. 增加 Windows/macOS/Linux 完整 Tauri portable Release gate；
 4. 增加 Android/iOS 真机相同 fixture、流式取消和前后台恢复 gate；
 5. 将 portable Runtime 放入 Web Worker，并设计主线程原生能力代理；
@@ -117,5 +118,6 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 - 五端语义一致性：**代码与 CI 基础通过，真机和完整桌面应用仍需补齐**。
 - nkg-ai-flow 自带 Flow 通过率：**已量化：结构 3/3、确定性可执行项 1/1；两个
   外部依赖型 Flow 已正确分类为 desktop-power，仍需确定性集成 fixture**。
-- 完全下沉跨平台能力到 submodule：**已开始（browser runtime、capability、HTTP
-  注入），尚未完成宿主 ports 与 fixture 验收闭环**。
+- 完全下沉跨平台能力到 submodule：**核心执行组合已完成（browser runtime、
+  capability、HTTP/fetch 注入及 `createPortableHttpRuntime`），宿主 persistence 与
+  ToolHost 实现按端留在主项目，公共 ports 与 fixture 仍可继续收口**。

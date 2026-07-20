@@ -84,6 +84,7 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 - `nkg-ai-flow/packages/runtime/src/nodes/createBuiltinRunnerRegistry.ts`
 - `nkg-ai-flow/packages/runtime/src/nodes/builtin/agentTools.node.ts`
 - `nkg-ai-flow/packages/transport-http/src/handler.ts`
+- `nkg-ai-flow/packages/transport-http/src/portableRuntime.ts`
 
 截至 2026-07-20 当前实现，已经具备以下基础：
 
@@ -93,6 +94,8 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
   `LlmProvider`、`AgentToolHost`、hash 和 run ID；
 - browser builtin registry，默认不加载 `agentTools.node.ts`；
 - browser-safe Fetch handler；
+- nkg-ai-flow 原生 `createPortableHttpRuntime()` 组合入口，宿主无需自行拼装
+  browser Runtime、Flow 注册与 HTTP handler；
 - `InProcessBackend`、`NodeSidecarBackend` 和统一 `FlowRuntimeClient`；
 - 桌面 sidecar 与移动进程内 Runtime 的基础 contract test；
 - browser bundle 无 Node builtin 的构建检查；

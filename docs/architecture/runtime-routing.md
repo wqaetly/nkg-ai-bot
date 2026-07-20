@@ -95,8 +95,9 @@ interface SidecarLauncher {
 5. sidecar 对每个请求验证 token，拒绝无 token 请求；
 6. stop、进程异常和主应用退出时清理状态与子进程。
 
-默认 `createInProcessHandler()` 负责创建 browser-safe Runtime、注册本地 Flow，
-并返回 `@ai-native-flow/transport-http` 的 Fetch handler。它不得导入 Node
+默认 `createInProcessHandler()` 直接调用 nkg-ai-flow 提供的
+`createPortableHttpRuntime()`，负责创建 browser-safe Runtime、注册本地 Flow，
+并返回同包的 Fetch handler。它不得导入 Node
 builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可以发布
 `tool` / `agent` 契约，但必须由 capability 与宿主 ToolHost 决定能否执行。
 
