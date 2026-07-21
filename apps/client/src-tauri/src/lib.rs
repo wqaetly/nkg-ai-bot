@@ -1,8 +1,8 @@
-#[cfg(desktop)]
+#[cfg(all(desktop, feature = "desktop-power"))]
 mod runtime_sidecar;
 mod runtime_tools;
 
-#[cfg(desktop)]
+#[cfg(all(desktop, feature = "desktop-power"))]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
 use runtime_tools::runtime_tool_call;
 use tauri::Manager;
@@ -65,7 +65,7 @@ pub fn run() {
             Ok(())
         });
 
-    #[cfg(desktop)]
+    #[cfg(all(desktop, feature = "desktop-power"))]
     let builder = builder
         .plugin(tauri_plugin_shell::init())
         .manage(RuntimeSidecarState::default())
@@ -75,6 +75,12 @@ pub fn run() {
             runtime_sidecar_start,
             runtime_sidecar_stop
         ]);
+
+    #[cfg(all(desktop, not(feature = "desktop-power")))]
+    let builder = builder.invoke_handler(tauri::generate_handler![
+        runtime_platform,
+        runtime_tool_call
+    ]);
 
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![

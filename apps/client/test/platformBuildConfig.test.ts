@@ -26,7 +26,8 @@ describe("platform build configuration", () => {
       "utf8",
     )) as { scripts: Record<string, string> };
 
-    expect(clientPackage.scripts.build).toContain("sidecar:build");
+    expect(clientPackage.scripts.build).not.toContain("sidecar:build");
+    expect(clientPackage.scripts["build:desktop-power"]).toContain("sidecar:build");
     expect(clientPackage.scripts["build:frontend"]).not.toContain("sidecar");
     expect(androidScript).toContain('["run", "build:frontend", "-w", "@nkg-ai-bot/client"]');
     expect(androidScript).not.toContain('["run", "build", "-w", "@nkg-ai-bot/client"]');
@@ -47,6 +48,20 @@ describe("platform build configuration", () => {
     expect(rootPackage.scripts["ios:build"]).toContain("ios build");
   });
 
+  it("packages the Node sidecar only in the explicit desktop-power variant", async () => {
+    const base = JSON.parse(await readFile(
+      new URL("../src-tauri/tauri.conf.json", import.meta.url),
+      "utf8",
+    )) as { bundle?: { externalBin?: string[] } };
+    const power = JSON.parse(await readFile(
+      new URL("../src-tauri/tauri.desktop-power.conf.json", import.meta.url),
+      "utf8",
+    )) as { build?: { beforeBuildCommand?: string }; bundle?: { externalBin?: string[] } };
+    expect(base.bundle?.externalBin).toEqual([]);
+    expect(power.bundle?.externalBin).toEqual(["binaries/nkg-runtime"]);
+    expect(power.build?.beforeBuildCommand).toBe("npm run build:desktop-power");
+  });
+
   it("keeps desktop sidecar dependencies out of the mobile Rust graph", async () => {
     const cargoToml = await readFile(
       new URL("../src-tauri/Cargo.toml", import.meta.url),
@@ -60,12 +75,14 @@ describe("platform build configuration", () => {
       '[target.\'cfg(not(any(target_os = "android", target_os = "ios")))\'.dependencies]',
     );
 
-    expect(commonDependencies).not.toContain("tauri-plugin-shell");
+    expect(commonDependencies).not.toMatch(/^tauri-plugin-shell\s*=/m);
     expect(commonDependencies).not.toMatch(/^tokio\s*=/m);
     expect(commonDependencies).not.toMatch(/^url\s*=/m);
     expect(commonDependencies).not.toMatch(/^uuid\s*=/m);
-    expect(desktopDependencies).toContain('tauri-plugin-shell = "2"');
-    expect(rustEntry).toContain("#[cfg(desktop)]\nmod runtime_sidecar;");
+    expect(desktopDependencies).toContain('tauri-plugin-shell = { version = "2", optional = true }');
+    expect(rustEntry).toContain("#[cfg(all(desktop, feature = \"desktop-power\"))]\nmod runtime_sidecar;");
+    expect(cargoToml).toContain("desktop-power = [");
+    expect(desktopDependencies).toContain("optional = true");
     expect(rustEntry).toContain("#[cfg(mobile)]\n    let builder");
   });
 
