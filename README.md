@@ -2,9 +2,9 @@
 
 纯客户端、用户自备模型 API 配置的跨平台 AI 聊天与助理应用。
 
-项目使用 `nkg-ai-flow` 作为 Git submodule。桌面端通过本地 Node
-sidecar 执行 Flow，Android/iOS 使用不依赖 Node 的进程内 Runtime；上层
-通过统一协议路由调用两种宿主。
+项目使用 `nkg-ai-flow` 作为 Git submodule。Windows、macOS、Android、iOS 默认
+执行同一套不依赖 Node 的 portable Runtime；桌面 Node sidecar 仅作为用户显式开启的
+`desktop-power` 模式。上层通过统一协议路由调用两种宿主。
 
 ## 当前进度
 
@@ -20,10 +20,9 @@ sidecar 执行 Flow，Android/iOS 使用不依赖 Node 的进程内 Runtime；�
   本地 SQLite；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
-- `.github/workflows/desktop-sidecar.yml`：Windows、macOS、Linux 的 sidecar
-  构建、鉴权 E2E 与目标三元组产物门禁。
-- `.github/workflows/mobile-build.yml`：Windows Android arm64 Release APK/AAB 与 macOS
-  iOS arm64 Simulator Release app 构建门禁；两者均不生成或携带桌面 sidecar。
+- `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 产出 NSIS 与
+  Android APK/AAB，macOS 产出 DMG 与 App Store Connect IPA。发布过程不依赖
+  GitHub Actions，并复用本机 npm、Cargo、Gradle 与 Xcode 缓存。
 
 ## 开发
 
@@ -35,6 +34,35 @@ npm test
 npm run rust:check
 npm run build:client
 ```
+
+## 一键本地 Release
+
+准备好当前系统原生工具链后，在仓库根目录执行：
+
+```bash
+npm run release:local
+```
+
+脚本自动判断宿主系统，并执行完整测试、类型检查和 Release 构建：
+
+| 宿主 | 产物 |
+|---|---|
+| Windows | NSIS `.exe`、Android arm64 `.apk` / `.aab` |
+| macOS | macOS `.dmg`、iOS App Store Connect `.ipa` |
+
+所有产物会复制到 `artifacts/releases/<版本>/<平台-时间>/`，同目录的
+`manifest.json` 记录 Git commit、体积和 SHA-256。脚本不会清理 Cargo/Gradle/Xcode
+缓存；仅当 `package-lock.json` 变化时才重新执行 `npm ci`。
+
+首次在 macOS 生成 IPA 前，需要在 Xcode 登录 Apple Developer 账号，并为
+`com.nkg.ai.bot` 配置自动签名。仅检查构建计划或快速重打包可执行：
+
+```bash
+npm run release:local:plan
+npm run release:local:quick
+```
+
+完整参数与前置条件见 [`docs/local-release.md`](docs/local-release.md)。
 
 `build:client` 是桌面构建，会先生成当前宿主三元组的 Node sidecar；Android/iOS
 配置改用纯前端 `build:frontend`，不会生成或携带桌面 Node 二进制。桌面 sidecar 可单独
@@ -111,7 +139,7 @@ OpenAI-compatible SSE 流式响应；真机外部网络仍需在实际设备上�
 当前测试只扫描本项目 `packages/`，上游子模块保持自己的依赖、测试配置和
 发布节奏。
 
-当前验证基线：本项目 86 项测试、4 项 Rust 测试、SQLite migration、sidecar
-二进制鉴权 E2E、Windows Tauri debug application build 与 Android arm64 Debug APK
-通过；子模块 738 项测试、类型检查和生产构建通过，browser Runtime 实际 bundle
-不含 Node builtin import。
+当前验证基线：本项目 125 项测试、6 项 Rust 测试、SQLite migration、sidecar
+二进制鉴权 E2E、Windows NSIS Release 与 Android arm64 Release APK/AAB 通过；
+子模块 750 项测试、类型检查和生产构建通过，browser Runtime 实际 bundle 不含
+Node builtin import。macOS 的 DMG/IPA 仍需在已配置签名的真实 Mac 上执行本地发布脚本验收。

@@ -292,7 +292,7 @@ npx tsx packages/transports/http-runner/src/bin.ts
 | 向量记忆 | MVP 小规模向量 + 本地余弦检索 | 不引入云向量库；规模验证后再选 SQLite 扩展 |
 | 文件 | Tauri fs/dialog | 加密工作区、角色和 Flow 导入导出 |
 | 测试 | Vitest + React Testing Library + Rust tests + Playwright/WebDriver | Runtime、UI、原生 adapter 和桌面 E2E |
-| 发布 | GitHub Actions + Apple/Google/Microsoft/macOS 签名 | 四端构建、签名、商店发布和更新 |
+| 发布 | Windows/macOS 本地 Release 脚本 + 平台签名 | Windows 构建 NSIS/Android，Mac 构建 DMG/IPA；商店发布和更新 |
 
 ## 6. `nkg-ai-flow` 客户端化改造审查
 

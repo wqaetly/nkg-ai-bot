@@ -35,12 +35,11 @@ describe("nkg-ai-flow package boundary", () => {
     });
   });
 
-  it("uses the unified lockfile in every build workflow", () => {
-    for (const workflow of ["mobile-build.yml", "desktop-sidecar.yml"]) {
-      const contents = readFileSync(join(root, ".github", "workflows", workflow), "utf8");
-      expect(contents).not.toContain("npm ci --prefix nkg-ai-flow");
-      expect(contents).not.toContain("nkg-ai-flow/package-lock.json");
-    }
+  it("uses the unified lockfile in the local Release entry", () => {
+    const contents = readFileSync(join(root, "scripts", "local-release.mjs"), "utf8");
+    expect(contents).toContain('["ci", "--prefer-offline", "--no-audit", "--no-fund"]');
+    expect(contents).not.toContain("npm ci --prefix nkg-ai-flow");
+    expect(contents).not.toContain("nkg-ai-flow/package-lock.json");
   });
 });
 
