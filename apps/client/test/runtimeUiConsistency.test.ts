@@ -1,21 +1,37 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
-describe("runtime UI consistency", () => {
-  it("describes the configured backend instead of inferring behavior from platform", async () => {
+describe("chat-first UI consistency", () => {
+  it("keeps the app focused on chat and OpenAI settings", async () => {
     const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 
-    expect(source).toContain('boot.backend === "in-process"');
-    expect(source).toContain("五端进程内");
-    expect(source).toContain("显式 sidecar");
-    expect(source).not.toContain("const isMobile =");
+    expect(source).toContain('lazy(() => import("./ChatPage")');
+    expect(source).toContain("<ProviderSettings");
+    expect(source).toContain('aria-label="OpenAI 设置"');
+    expect(source).not.toContain("运行时基座");
+    expect(source).not.toContain("角色");
+    expect(source).not.toContain("助理");
   });
 
-  it("loads the Runtime composition as a split production chunk", async () => {
-    const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+  it("loads Runtime on demand and implements the core conversation interactions", async () => {
+    const source = await readFile(new URL("../src/ChatPage.tsx", import.meta.url), "utf8");
 
     expect(source).toContain('import("./runtime")');
     expect(source).not.toContain('from "./runtime"');
-    expect(source).toContain('lazy(() => import("./ChatPage")');
+    expect(source).toContain("listConversations()");
+    expect(source).toContain("deleteConversation(id)");
+    expect(source).toContain('event.key === "Enter" && !event.shiftKey');
+    expect(source).toContain("abortRef.current?.abort()");
+    expect(source).toContain("scrollIntoView");
+  });
+
+  it("uses a desktop sidebar and converts it to an off-canvas mobile drawer", async () => {
+    const styles = await readFile(new URL("../src/App.css", import.meta.url), "utf8");
+
+    expect(styles).toContain("width: 286px");
+    expect(styles).toContain("@media (max-width: 720px)");
+    expect(styles).toContain("transform: translateX(-105%)");
+    expect(styles).toContain(".conversation-sidebar.open { transform: translateX(0); }");
+    expect(styles).toContain("env(safe-area-inset-bottom)");
   });
 });

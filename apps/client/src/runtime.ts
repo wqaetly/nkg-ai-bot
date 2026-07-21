@@ -23,6 +23,12 @@ import {
 } from "./capabilityPolicy";
 import { listFlows } from "./storage/repositories";
 import { getDatabase } from "./storage/database";
+import { recoverInterruptedLearningJobs } from "./learningJobs";
+import {
+  ensureBuiltinAssistantSkill,
+  recoverInterruptedAssistantRuns,
+} from "./assistantSkills";
+import { recoverInterruptedEvalRuns } from "./evaluationRepository";
 
 export interface StartedRuntimeServices {
   platform: AppPlatform;
@@ -68,7 +74,11 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     }),
   });
   await services.router.start();
+  await recoverInterruptedLearningJobs();
   await ensureBuiltinFlows();
+  await ensureBuiltinAssistantSkill();
+  await recoverInterruptedAssistantRuns();
+  await recoverInterruptedEvalRuns();
   const catalog = await syncRuntimeCatalog(services.client);
   const capabilityReports = (await listFlows()).map((flow) =>
     analyzeFlowCapabilities(flow.graph, platform));

@@ -1,312 +1,52 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import type { AppPlatform, RuntimeBackendKind } from "@nkg-ai-bot/runtime-router";
 import { ProviderSettings } from "./ProviderSettings";
-import type { RuntimeCatalogFailure } from "./runtimeCatalog";
-import type { MobileRuntimeLifecycleState } from "./mobileRuntimeLifecycle";
-import {
-  capabilityAuthorizer,
-  capabilityLabel,
-  type FlowCapabilityReport,
-} from "./capabilityPolicy";
 import "./App.css";
 
 const ChatPage = lazy(() => import("./ChatPage").then((module) => ({
   default: module.ChatPage,
 })));
 
-type BootState =
-  | { phase: "starting" }
-  | {
-      phase: "ready" | "degraded";
-      platform: AppPlatform;
-      backend: RuntimeBackendKind;
-      registeredFlows: number;
-      totalFlows: number;
-      catalogFailures: RuntimeCatalogFailure[];
-      lifecycle: Exclude<MobileRuntimeLifecycleState["phase"], "failed">;
-      capabilityReports: FlowCapabilityReport[];
-    }
-  | { phase: "failed"; message: string };
-
 function App() {
-  const [boot, setBoot] = useState<BootState>({ phase: "starting" });
-  const [view, setView] = useState<"runtime" | "chat" | "providers">("runtime");
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
-    let active = true;
-    let unsubscribeLifecycle: (() => void) | undefined;
-
-    void import("./runtime")
-      .then(({ getRuntimeServices }) => getRuntimeServices())
-      .then(({ services, platform, lifecycle, capabilityReports }) => {
-        if (!active) return;
-        unsubscribeLifecycle = lifecycle.subscribe((state) => {
-          if (!active) return;
-          if (state.phase === "failed") {
-            setBoot({ phase: "failed", message: state.message });
-            return;
-          }
-          setBoot({
-            phase: state.catalog.failures.length === 0 ? "ready" : "degraded",
-            platform,
-            backend: services.router.backendKind,
-            registeredFlows: state.catalog.registered,
-            totalFlows: state.catalog.total,
-            catalogFailures: state.catalog.failures,
-            lifecycle: state.phase,
-            capabilityReports,
-          });
-        });
-      })
-      .catch((error: unknown) => {
-        if (active) {
-          setBoot({
-            phase: "failed",
-            message: error instanceof Error ? error.message : String(error),
-          });
-        }
-      });
-
-    return () => {
-      active = false;
-      unsubscribeLifecycle?.();
+    if (!settingsOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setSettingsOpen(false);
     };
-  }, []);
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [settingsOpen]);
 
   return (
-    <div className="app-shell">
-      <aside className="sidebar">
-        <div className="brand">
-          <span className="brand-mark">N</span>
-          <div>
-            <strong>NKG AI Bot</strong>
-            <small>Local-first runtime</small>
-          </div>
+    <main className="app-shell">
+      <Suspense fallback={<AppLoading />}>
+        <ChatPage openProviders={() => setSettingsOpen(true)} />
+      </Suspense>
+
+      {settingsOpen ? (
+        <div className="settings-layer" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
+          <section
+            aria-label="OpenAI 设置"
+            aria-modal="true"
+            className="settings-dialog"
+            role="dialog"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <ProviderSettings onClose={() => setSettingsOpen(false)} />
+          </section>
         </div>
+      ) : null}
+    </main>
+  );
+}
 
-        <nav aria-label="主导航">
-          <button className={`nav-item ${view === "runtime" ? "active" : ""}`} type="button" onClick={() => setView("runtime")}>
-            <span>✦</span> 运行时
-          </button>
-          <button className={`nav-item ${view === "chat" ? "active" : ""}`} type="button" onClick={() => setView("chat")}>
-            <span>◌</span> 对话
-          </button>
-          <button className="nav-item" type="button" disabled>
-            <span>◇</span> 角色
-          </button>
-          <button className="nav-item" type="button" disabled>
-            <span>⌘</span> 助理
-          </button>
-          <button className={`nav-item ${view === "providers" ? "active" : ""}`} type="button" onClick={() => setView("providers")}>
-            <span>⚙</span> 模型服务
-          </button>
-        </nav>
-
-        <div className="privacy-note">
-          <span className="privacy-dot" />
-          数据仅保留在本机
-        </div>
-      </aside>
-
-      <main className="workspace">
-        {view === "providers"
-          ? <ProviderSettings />
-          : view === "chat"
-            ? (
-                <Suspense fallback={<div className="loading-line"><span /> 正在载入对话…</div>}>
-                  <ChatPage openProviders={() => setView("providers")} />
-                </Suspense>
-              )
-            : <RuntimePage boot={boot} />}
-      </main>
+function AppLoading() {
+  return (
+    <div className="app-loading" role="status">
+      <span className="brand-orb">N</span>
+      <span>正在载入本地对话…</span>
     </div>
-  );
-}
-
-function RuntimePage({ boot }: { boot: BootState }) {
-  const status = runtimeStatusLabel(boot);
-  return (
-    <>
-        <header>
-          <div>
-            <p className="eyebrow">CROSS-PLATFORM FOUNDATION</p>
-            <h1>运行时基座</h1>
-          </div>
-          <span className={`status-pill ${status.className}`}>
-            <span />
-            {status.label}
-          </span>
-        </header>
-
-        <section className="hero-card">
-          <div>
-            <p className="section-label">当前里程碑</p>
-            <h2>同一套 Flow API，按平台选择执行引擎</h2>
-            <p className="hero-copy">
-              Android、iOS、Windows、macOS 与 Linux 默认使用同一进程内 Runtime；
-              桌面高级能力可显式切换到 Rust 托管的 Node sidecar。
-            </p>
-          </div>
-          <div className="route-map" aria-label="运行时路由示意">
-            <div className="route-node primary">统一 Runtime Router</div>
-            <div className="route-lines"><i /><i /></div>
-            <div className="route-targets">
-              <div><b>Portable</b><span>五端进程内</span></div>
-              <div><b>Desktop power</b><span>显式 sidecar</span></div>
-            </div>
-          </div>
-        </section>
-
-        <section className="runtime-grid">
-          <article>
-            <p className="section-label">启动状态</p>
-            <RuntimeStatus boot={boot} />
-          </article>
-          <article>
-            <p className="section-label">安全边界</p>
-            <SecurityBoundary boot={boot} />
-          </article>
-        </section>
-        <CapabilityPanel boot={boot} />
-    </>
-  );
-}
-
-function CapabilityPanel({ boot }: { boot: BootState }) {
-  const [, refresh] = useState(0);
-  useEffect(() => capabilityAuthorizer.subscribe(() => refresh((value) => value + 1)), []);
-  if (boot.phase === "starting" || boot.phase === "failed") return null;
-  return (
-    <section className="capability-panel">
-      <div className="capability-heading">
-        <div>
-          <p className="section-label">Flow 能力与授权</p>
-          <h2>按 Flow 隔离原生能力</h2>
-        </div>
-        <span>{boot.capabilityReports.length} 个 Flow</span>
-      </div>
-      <div className="capability-list">
-        {boot.capabilityReports.map((report) => {
-          const pending = report.authorizationRequired.filter((capability) =>
-            !capabilityAuthorizer.isAuthorized(report.flowId, capability));
-          return (
-            <article key={`${report.flowId}@${report.flowVersion}`}>
-              <div className="capability-title">
-                <strong>{report.label}</strong>
-                <small>{report.flowId}@{report.flowVersion}</small>
-              </div>
-              <div className="capability-badges">
-                {report.required.length === 0
-                  ? <span className="capability-badge ready">无需额外能力</span>
-                  : report.required.map((capability) => (
-                    <span
-                      className={`capability-badge ${
-                        report.unavailable.includes(capability)
-                          ? "blocked"
-                          : pending.includes(capability)
-                            ? "pending"
-                            : "ready"
-                      }`}
-                      key={capability}
-                    >
-                      {capabilityLabel(capability)}
-                    </span>
-                  ))}
-              </div>
-              {report.unavailable.length > 0 ? (
-                <p className="capability-note">当前 portable 后端不提供：{report.unavailable.map(capabilityLabel).join("、")}</p>
-              ) : null}
-              {report.authorizationRequired.length > 0 ? (
-                pending.length > 0 ? (
-                  <button
-                    type="button"
-                    className="secondary-button"
-                    onClick={() => capabilityAuthorizer.grant(report.flowId, pending)}
-                  >授权此 Flow：{pending.map(capabilityLabel).join("、")}</button>
-                ) : (
-                  <button
-                    type="button"
-                    className="text-button"
-                    onClick={() => capabilityAuthorizer.revoke(report.flowId)}
-                  >撤销此 Flow 的文件授权</button>
-                )
-              ) : null}
-            </article>
-          );
-        })}
-      </div>
-    </section>
-  );
-}
-
-function RuntimeStatus({ boot }: { boot: BootState }) {
-  if (boot.phase === "failed") {
-    return <p className="error-message">{boot.message}</p>;
-  }
-  if (boot.phase === "starting") {
-    return <div className="loading-line"><span /> 正在等待原生宿主完成握手…</div>;
-  }
-  return (
-    <dl className="runtime-details">
-      <div><dt>平台</dt><dd>{boot.platform}</dd></div>
-      <div><dt>执行后端</dt><dd>{boot.backend}</dd></div>
-      <div><dt>生命周期</dt><dd>{lifecycleLabel(boot.lifecycle)}</dd></div>
-      <div><dt>本地 Flow</dt><dd>{boot.registeredFlows} / {boot.totalFlows}</dd></div>
-      {boot.catalogFailures.length === 0 ? null : (
-        <div className="catalog-warning">
-          <dt>同步警告</dt>
-          <dd>{boot.catalogFailures.map((failure) => `${failure.name}: ${failure.message}`).join("；")}</dd>
-        </div>
-      )}
-    </dl>
-  );
-}
-
-function runtimeStatusLabel(boot: BootState): { className: string; label: string } {
-  if (boot.phase === "starting") return { className: "starting", label: "正在启动" };
-  if (boot.phase === "failed") return { className: "failed", label: "启动或恢复失败" };
-  if (boot.lifecycle === "suspended" || boot.lifecycle === "suspending") {
-    return { className: "suspended", label: "已挂起" };
-  }
-  if (boot.lifecycle === "resuming") return { className: "resuming", label: "正在恢复" };
-  return boot.phase === "degraded"
-    ? { className: "degraded", label: "部分可用" }
-    : { className: "ready", label: "运行中" };
-}
-
-function lifecycleLabel(phase: Exclude<MobileRuntimeLifecycleState["phase"], "failed">): string {
-  switch (phase) {
-    case "active": return "前台运行";
-    case "degraded": return "前台运行（目录降级）";
-    case "suspending": return "正在挂起";
-    case "suspended": return "后台挂起";
-    case "resuming": return "正在恢复";
-  }
-}
-
-function SecurityBoundary({ boot }: { boot: BootState }) {
-  const isInProcess = boot.phase === "ready" || boot.phase === "degraded"
-    ? boot.backend === "in-process"
-    : false;
-
-  return (
-    <ul className="check-list">
-      {isInProcess ? (
-        <>
-          <li>Flow 在应用进程内执行，不开放本地端口</li>
-          <li>模型请求通过原生 HTTP 能力发出</li>
-          <li>API Key 加密保存在 Stronghold</li>
-          <li>前端不开放通用 Shell 权限</li>
-        </>
-      ) : (
-        <>
-          <li>sidecar 仅监听 127.0.0.1</li>
-          <li>每次启动生成临时 Bearer Token</li>
-          <li>前端不开放通用 Shell 权限</li>
-          <li>应用退出时回收子进程</li>
-        </>
-      )}
-    </ul>
   );
 }
 

@@ -46,6 +46,30 @@ pub fn run() {
             sql: include_str!("../migrations/0003_runtime_persistence.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "create_local_learning_schema",
+            sql: include_str!("../migrations/0004_local_learning.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 5,
+            description: "create_resumable_learning_jobs",
+            sql: include_str!("../migrations/0005_learning_jobs.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 6,
+            description: "create_versioned_assistant_skills",
+            sql: include_str!("../migrations/0006_assistant_skills.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 7,
+            description: "create_local_evaluation_pipeline",
+            sql: include_str!("../migrations/0007_evaluation.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()
@@ -116,6 +140,22 @@ mod migration_tests {
             .execute(&pool)
             .await
             .expect("apply runtime persistence migration");
+        sqlx::raw_sql(include_str!("../migrations/0004_local_learning.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply local learning migration");
+        sqlx::raw_sql(include_str!("../migrations/0005_learning_jobs.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply learning jobs migration");
+        sqlx::raw_sql(include_str!("../migrations/0006_assistant_skills.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply assistant skills migration");
+        sqlx::raw_sql(include_str!("../migrations/0007_evaluation.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply evaluation migration");
 
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
             .fetch_all(&pool)
@@ -128,9 +168,21 @@ mod migration_tests {
             tables,
             vec![
                 "app_settings",
+                "artifact_candidates",
+                "assistant_active",
+                "assistant_run_links",
+                "assistant_skill_usage",
+                "assistant_versions",
                 "assistants",
                 "conversations",
+                "eval_case_results",
+                "eval_cases",
+                "eval_runs",
                 "flows",
+                "learning_candidates",
+                "learning_jobs",
+                "memory_items",
+                "message_feedback",
                 "messages",
                 "provider_profiles",
                 "roles",
@@ -185,6 +237,18 @@ mod migration_tests {
             .execute(&pool)
             .await
             .expect("apply runtime persistence migration");
+        sqlx::raw_sql(include_str!("../migrations/0004_local_learning.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply local learning migration");
+        sqlx::raw_sql(include_str!("../migrations/0005_learning_jobs.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply learning jobs migration");
+        sqlx::raw_sql(include_str!("../migrations/0006_assistant_skills.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply assistant skills migration");
 
         sqlx::query("INSERT INTO runtime_runs (run_id, flow_id, status, created_at, record_json) VALUES ('r1', 'f1', 'queued', '2026-01-01T00:00:00.000Z', '{}')")
             .execute(&pool)
@@ -290,5 +354,131 @@ mod migration_tests {
             .execute(&pool).await.is_err());
         assert!(sqlx::query("INSERT INTO runtime_events (run_id, event_sequence, flow_id, flow_version, node_sequence, timestamp, kind, payload_json) VALUES ('missing', 1, 'f1', '1.0.0', 1, 'now', 'run_started', '{}')")
             .execute(&pool).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn local_learning_schema_keeps_candidates_reviewable_and_memories_bounded() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_message_touch_trigger.sql"),
+            include_str!("../migrations/0003_runtime_persistence.sql"),
+            include_str!("../migrations/0004_local_learning.sql"),
+            include_str!("../migrations/0005_learning_jobs.sql"),
+            include_str!("../migrations/0006_assistant_skills.sql"),
+            include_str!("../migrations/0007_evaluation.sql"),
+        ] {
+            sqlx::raw_sql(migration)
+                .execute(&pool)
+                .await
+                .expect("apply migration");
+        }
+
+        sqlx::query("INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', '', 1, 1)")
+            .execute(&pool).await.expect("insert conversation");
+        sqlx::query("INSERT INTO messages (id, conversation_id, sequence, role, content_json, created_at) VALUES ('m1', 'c1', 0, 'user', '\"用户喜欢蓝色\"', 2)")
+            .execute(&pool).await.expect("insert source message");
+        sqlx::query("INSERT INTO learning_candidates (id, kind, source_message_id, source_conversation_id, proposal_json, status, created_at, updated_at) VALUES ('candidate-1', 'memory_fact', 'm1', 'c1', '{\"content\":\"用户喜欢蓝色\",\"confidence\":1}', 'pending', 3, 3)")
+            .execute(&pool).await.expect("insert reviewable candidate");
+        sqlx::query("INSERT INTO memory_items (id, content, content_key, source_message_id, confidence, status, created_at, updated_at) VALUES ('memory-1', '用户喜欢蓝色', '用户喜欢蓝色', 'm1', 1, 'active', 4, 4)")
+            .execute(&pool).await.expect("insert approved memory");
+        sqlx::query("INSERT INTO message_feedback (id, message_id, conversation_id, rating, created_at, updated_at) VALUES ('feedback-1', 'm1', 'c1', 'positive', 5, 5)")
+            .execute(&pool).await.expect("insert message feedback");
+        sqlx::query("INSERT INTO learning_jobs (id, type, source_conversation_id, source_message_id, status, checkpoint_json, created_at, updated_at) VALUES ('job-1', 'reflection', 'c1', 'm1', 'running', '{\"phase\":\"running\"}', 6, 6)")
+            .execute(&pool).await.expect("insert resumable learning job");
+        sqlx::query("INSERT INTO learning_candidates (id, kind, source_message_id, source_conversation_id, job_id, proposal_json, status, created_at, updated_at) VALUES ('candidate-2', 'memory_fact', 'm1', 'c1', 'job-1', '{\"content\":\"用户喜欢蓝色\",\"confidence\":1}', 'pending', 7, 7)")
+            .execute(&pool).await.expect("link candidate to learning job");
+
+        assert!(sqlx::query("INSERT INTO memory_items (id, content, content_key, confidence, status, created_at, updated_at) VALUES ('bad-confidence', 'bad', 'bad', 2, 'active', 1, 1)")
+            .execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE learning_candidates SET status='applied-without-review' WHERE id='candidate-1'")
+            .execute(&pool).await.is_err());
+        assert!(sqlx::query("INSERT INTO message_feedback (id, message_id, conversation_id, rating, created_at, updated_at) VALUES ('bad-feedback', 'missing', 'c1', 'positive', 1, 1)")
+            .execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE learning_jobs SET status='unknown' WHERE id='job-1'")
+            .execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE learning_jobs SET checkpoint_json='not-json' WHERE id='job-1'")
+            .execute(&pool).await.is_err());
+        sqlx::query("UPDATE learning_jobs SET status='interrupted', checkpoint_json='{\"phase\":\"interrupted\"}', runtime_run_id=NULL, updated_at=8 WHERE status='running'")
+            .execute(&pool).await.expect("recover abandoned running job");
+        let recovered: String = sqlx::query_scalar("SELECT status FROM learning_jobs WHERE id='job-1'")
+            .fetch_one(&pool).await.expect("read recovered job");
+        assert_eq!(recovered, "interrupted");
+        let foreign_key_violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&pool).await.expect("check learning foreign keys");
+        assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[tokio::test]
+    async fn assistant_skills_are_immutable_versioned_and_traceable() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0002_message_touch_trigger.sql"),
+            include_str!("../migrations/0003_runtime_persistence.sql"),
+            include_str!("../migrations/0004_local_learning.sql"),
+            include_str!("../migrations/0005_learning_jobs.sql"),
+            include_str!("../migrations/0006_assistant_skills.sql"),
+            include_str!("../migrations/0007_evaluation.sql"),
+        ] {
+            sqlx::raw_sql(migration).execute(&pool).await.expect("apply migration");
+        }
+
+        sqlx::query("INSERT INTO flows (id, version, name, graph_json, created_at, updated_at) VALUES ('chat', '1.0.0', 'Chat', '{}', 1, 1), ('chat', '2.0.0', 'Chat v2', '{}', 2, 2)")
+            .execute(&pool).await.expect("insert flow versions");
+        sqlx::query("INSERT INTO assistants (id, name, description, flow_id, flow_version, created_at, updated_at) VALUES ('assistant', 'Assistant', '', 'chat', '1.0.0', 1, 1)")
+            .execute(&pool).await.expect("insert assistant identity");
+        sqlx::query("INSERT INTO assistant_versions (assistant_id, version, name, system_prompt, flow_id, flow_version, capabilities_json, activation_hints_json, created_at) VALUES ('assistant', '1.0.0', 'Assistant', 'Prompt v1', 'chat', '1.0.0', '[]', '[]', 1), ('assistant', '2.0.0', 'Assistant', 'Prompt v2', 'chat', '2.0.0', '[]', '[]', 2)")
+            .execute(&pool).await.expect("insert immutable assistant versions");
+        assert!(sqlx::query("UPDATE assistant_versions SET system_prompt='mutated' WHERE assistant_id='assistant' AND version='1.0.0'")
+            .execute(&pool).await.is_err());
+
+        sqlx::query("INSERT INTO assistant_active (assistant_id, active_version, previous_version, pinned, updated_at) VALUES ('assistant', '1.0.0', NULL, 1, 3)")
+            .execute(&pool).await.expect("activate first version");
+        sqlx::query("UPDATE assistant_active SET previous_version=active_version, active_version='2.0.0', updated_at=4 WHERE assistant_id='assistant'")
+            .execute(&pool).await.expect("promote second version");
+        let pointer: (String, Option<String>) = sqlx::query_as("SELECT active_version, previous_version FROM assistant_active WHERE assistant_id='assistant'")
+            .fetch_one(&pool).await.expect("read assistant pointers");
+        assert_eq!(pointer, ("2.0.0".to_string(), Some("1.0.0".to_string())));
+
+        sqlx::query("INSERT INTO assistant_skill_usage (assistant_id, assistant_version, use_count, success_count, failure_count, updated_at) VALUES ('assistant', '2.0.0', 1, 1, 0, 5)")
+            .execute(&pool).await.expect("insert usage counters");
+        sqlx::query("INSERT INTO conversations (id, title, assistant_id, assistant_version, created_at, updated_at) VALUES ('c-skill', '', 'assistant', '2.0.0', 5, 5)")
+            .execute(&pool).await.expect("bind conversation version");
+        assert!(sqlx::query("INSERT INTO conversations (id, title, assistant_id, assistant_version, created_at, updated_at) VALUES ('c-bad', '', 'assistant', '9.9.9', 5, 5)")
+            .execute(&pool).await.is_err());
+        sqlx::query("INSERT INTO messages (id, conversation_id, sequence, role, content_json, created_at) VALUES ('m-user', 'c-skill', 0, 'user', '\"hello\"', 6), ('m-assistant', 'c-skill', 1, 'assistant', '\"hi\"', 7)")
+            .execute(&pool).await.expect("insert linked messages");
+        sqlx::query("INSERT INTO assistant_run_links (id, runtime_run_id, conversation_id, user_message_id, assistant_message_id, assistant_id, assistant_version, flow_id, flow_version, status, created_at, updated_at, completed_at) VALUES ('link-1', 'run-1', 'c-skill', 'm-user', 'm-assistant', 'assistant', '2.0.0', 'chat', '2.0.0', 'succeeded', 6, 7, 7)")
+            .execute(&pool).await.expect("link trajectory to assistant version");
+        assert!(sqlx::query("INSERT INTO assistant_run_links (id, conversation_id, user_message_id, assistant_id, assistant_version, flow_id, flow_version, status, created_at, updated_at) VALUES ('link-bad', 'c-skill', 'm-user', 'assistant', '2.0.0', 'chat', '1.0.0', 'running', 6, 6)")
+            .execute(&pool).await.is_err());
+
+        sqlx::query("INSERT INTO eval_cases (id, assistant_id, assistant_version, input_json, assertions_json, source, enabled, created_at, updated_at) VALUES ('case-1', 'assistant', '2.0.0', '\"hello\"', '{\"mustContain\":[\"hi\"]}', 'golden', 1, 8, 8)")
+            .execute(&pool).await.expect("insert frozen eval case");
+        sqlx::query("INSERT INTO artifact_candidates (id, kind, assistant_id, base_version, proposed_version, proposal_json, status, created_at, updated_at) VALUES ('candidate-prompt', 'assistant_prompt_patch', 'assistant', '2.0.0', '2.0.1', '{\"systemPrompt\":\"Better\"}', 'pending', 9, 9)")
+            .execute(&pool).await.expect("insert artifact candidate");
+        assert!(sqlx::query("UPDATE artifact_candidates SET status='published' WHERE id='candidate-prompt'")
+            .execute(&pool).await.is_err());
+        sqlx::query("INSERT INTO eval_runs (id, candidate_id, status, baseline_score, candidate_score, gates_json, summary_json, created_at, updated_at, completed_at) VALUES ('eval-1', 'candidate-prompt', 'passed', 0.5, 1.0, '[{\"id\":\"regression\",\"passed\":true}]', '{}', 10, 11, 11)")
+            .execute(&pool).await.expect("insert completed evaluation");
+        sqlx::query("INSERT INTO eval_case_results (eval_run_id, case_id, variant, status, output_text, score, assertions_json, created_at) VALUES ('eval-1', 'case-1', 'baseline', 'succeeded', 'hello', 0.5, '[]', 10), ('eval-1', 'case-1', 'candidate', 'succeeded', 'hi', 1.0, '[]', 10)")
+            .execute(&pool).await.expect("insert paired evaluation results");
+        sqlx::query("UPDATE artifact_candidates SET status='passed', latest_eval_run_id='eval-1' WHERE id='candidate-prompt'")
+            .execute(&pool).await.expect("pass evaluated candidate");
+        sqlx::query("UPDATE artifact_candidates SET status='published' WHERE id='candidate-prompt'")
+            .execute(&pool).await.expect("publish only after pass");
+
+        let foreign_key_violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
+            .fetch_one(&pool).await.expect("check assistant foreign keys");
+        assert_eq!(foreign_key_violations, 0);
     }
 }

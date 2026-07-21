@@ -15,6 +15,7 @@
     "tauri:desktop-power": "node ../../scripts/tauri.mjs build --features desktop-power --config src-tauri/tauri.desktop-power.conf.json"
   },
   "dependencies": {
+    "@ai-native-flow/flow-validator": "0.0.1",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "@tauri-apps/api": "^2",

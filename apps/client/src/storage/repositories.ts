@@ -32,6 +32,7 @@ export interface LocalConversation extends Timestamps {
   title: string;
   roleId?: string;
   assistantId?: string;
+  assistantVersion?: string;
 }
 
 export type LocalMessageRole = "system" | "user" | "assistant" | "tool";
@@ -48,7 +49,7 @@ export interface LocalMessage {
 type RoleRow = { id: string; name: string; system_prompt: string; avatar_uri: string | null; created_at: number; updated_at: number };
 type FlowRow = { id: string; version: string; name: string; graph_json: string; created_at: number; updated_at: number };
 type AssistantRow = { id: string; name: string; description: string; flow_id: string; flow_version: string; created_at: number; updated_at: number };
-type ConversationRow = { id: string; title: string; role_id: string | null; assistant_id: string | null; created_at: number; updated_at: number };
+type ConversationRow = { id: string; title: string; role_id: string | null; assistant_id: string | null; assistant_version: string | null; created_at: number; updated_at: number };
 type MessageRow = { id: string; conversation_id: string; sequence: number; role: LocalMessageRole; content_json: string; created_at: number };
 
 export async function listRoles(client?: DatabaseClient): Promise<LocalRole[]> {
@@ -134,21 +135,67 @@ export async function deleteAssistant(id: string, client?: DatabaseClient): Prom
 export async function listConversations(client?: DatabaseClient): Promise<LocalConversation[]> {
   const database = client ?? await getDatabase();
   const rows = await database.select<ConversationRow[]>("SELECT * FROM conversations ORDER BY updated_at DESC");
-  return rows.map((row) => ({ id: row.id, title: row.title, ...(row.role_id ? { roleId: row.role_id } : {}), ...(row.assistant_id ? { assistantId: row.assistant_id } : {}), createdAt: row.created_at, updatedAt: row.updated_at }));
+  return rows.map(mapConversation);
+}
+
+export async function getStoredFlow(
+  id: string,
+  version: string,
+  client?: DatabaseClient,
+): Promise<StoredFlow | undefined> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<FlowRow[]>(
+    "SELECT * FROM flows WHERE id=$1 AND version=$2",
+    [id, version],
+  );
+  return row ? {
+    id: row.id,
+    version: row.version,
+    name: row.name,
+    graph: JSON.parse(row.graph_json) as unknown,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  } : undefined;
+}
+
+/** Published Flow versions are immutable; authoring drafts continue to use upsertFlow. */
+export async function publishFlowVersion(
+  input: Pick<StoredFlow, "id" | "version" | "name" | "graph">,
+  client?: DatabaseClient,
+): Promise<void> {
+  requireText(input.id, "Flow id"); requireText(input.version, "Flow version"); requireText(input.name, "Flow name");
+  assertFlowIdentity(input.graph, input.id, input.version);
+  const database = client ?? await getDatabase();
+  if (await getStoredFlow(input.id, input.version, database)) {
+    throw new Error("Flow version already exists and cannot be overwritten during publishing");
+  }
+  const now = Date.now();
+  await database.execute(
+    `INSERT INTO flows (id, version, name, graph_json, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $5)`,
+    [input.id, input.version, input.name.trim(), JSON.stringify(input.graph), now],
+  );
+}
+
+export async function getConversation(id: string, client?: DatabaseClient): Promise<LocalConversation | undefined> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<ConversationRow[]>("SELECT * FROM conversations WHERE id=$1", [id]);
+  return row ? mapConversation(row) : undefined;
 }
 
 export async function upsertConversation(
-  input: Pick<LocalConversation, "id" | "title" | "roleId" | "assistantId">,
+  input: Pick<LocalConversation, "id" | "title" | "roleId" | "assistantId" | "assistantVersion">,
   client?: DatabaseClient,
 ): Promise<void> {
   requireText(input.id, "Conversation id");
   const database = client ?? await getDatabase(); const now = Date.now();
   await database.execute(
-    `INSERT INTO conversations (id, title, role_id, assistant_id, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $5)
+    `INSERT INTO conversations (id, title, role_id, assistant_id, assistant_version, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $6)
      ON CONFLICT(id) DO UPDATE SET title=excluded.title, role_id=excluded.role_id,
-       assistant_id=excluded.assistant_id, updated_at=excluded.updated_at`,
-    [input.id, input.title.trim(), input.roleId ?? null, input.assistantId ?? null, now],
+       assistant_id=excluded.assistant_id, assistant_version=excluded.assistant_version,
+       updated_at=excluded.updated_at`,
+    [input.id, input.title.trim(), input.roleId ?? null, input.assistantId ?? null, input.assistantVersion ?? null, now],
   );
 }
 
@@ -182,6 +229,18 @@ export async function appendMessage(
 
 function requireText(value: string, label: string): void {
   if (!value.trim()) throw new Error(`${label} is required`);
+}
+
+function mapConversation(row: ConversationRow): LocalConversation {
+  return {
+    id: row.id,
+    title: row.title,
+    ...(row.role_id ? { roleId: row.role_id } : {}),
+    ...(row.assistant_id ? { assistantId: row.assistant_id } : {}),
+    ...(row.assistant_version ? { assistantVersion: row.assistant_version } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 
 function assertFlowIdentity(graph: unknown, id: string, version: string): void {
