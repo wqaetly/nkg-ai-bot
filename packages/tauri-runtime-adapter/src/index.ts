@@ -6,6 +6,7 @@ import {
   type AppPlatform,
   type RuntimeMode,
   type RuntimeHttpHandler,
+  type RuntimeBackend,
   type SidecarDescriptor,
   type SidecarLauncher,
 } from "@nkg-ai-bot/runtime-router";
@@ -28,6 +29,8 @@ export interface CreateTauriRuntimeOptions {
   createInProcessHandler?: () => RuntimeHttpHandler | Promise<RuntimeHttpHandler>;
   /** @deprecated Use `createInProcessHandler`. */
   createMobileHandler?: () => RuntimeHttpHandler | Promise<RuntimeHttpHandler>;
+  /** Preferred portable backend; used for Worker-hosted Runtime composition. */
+  createPortableBackend?: () => RuntimeBackend | Promise<RuntimeBackend>;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -76,8 +79,8 @@ export function createTauriRuntimeServices(
 ): TauriRuntimeServices {
   const createInProcessHandler =
     options.createInProcessHandler ?? options.createMobileHandler;
-  if (!createInProcessHandler && options.mode !== "desktop-power") {
-    throw new Error("Portable Runtime requires createInProcessHandler");
+  if (!createInProcessHandler && !options.createPortableBackend && options.mode !== "desktop-power") {
+    throw new Error("Portable Runtime requires createPortableBackend or createInProcessHandler");
   }
   const router = new RuntimeRouter({
     platform: options.platform,
@@ -86,11 +89,11 @@ export function createTauriRuntimeServices(
       launcher: createTauriSidecarLauncher({ invoke: options.invoke }),
       ...(options.fetch ? { fetch: options.fetch } : {}),
     }),
-    portable: () => createInProcessBackend({
+    portable: options.createPortableBackend ?? (() => createInProcessBackend({
       createHandler: createInProcessHandler ?? (() => {
         throw new Error("Portable Runtime handler is not configured");
       }),
-    }),
+    })),
   });
 
   return {
@@ -101,3 +104,5 @@ export function createTauriRuntimeServices(
 
 export * from "./sqliteRuntimePersistence.js";
 export * from "./tauriToolHost.js";
+export * from "./workerCapabilityBroker.js";
+export * from "./workerRuntimeBackend.js";

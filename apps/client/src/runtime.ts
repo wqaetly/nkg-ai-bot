@@ -2,8 +2,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import {
-  createTauriSqliteRuntimePersistence,
-  createTauriPortableCapabilities,
+  attachTauriCapabilityBroker,
+  createWorkerRuntimeBackend,
   createTauriReadOnlyToolHost,
   createTauriRuntimeServices,
   type TauriRuntimeServices,
@@ -15,7 +15,6 @@ import { syncRuntimeCatalog, type RuntimeCatalogSyncResult } from "./runtimeCata
 import { RuntimeCatalogHydrator } from "./runtimeCatalogHydrator";
 import { MobileRuntimeLifecycle } from "./mobileRuntimeLifecycle";
 import { ensureBuiltinFlows } from "./builtinFlows";
-import { getDatabase } from "./storage/database";
 
 export interface StartedRuntimeServices {
   platform: AppPlatform;
@@ -42,23 +41,20 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     platform,
     fetch: fetchImpl,
     invoke: <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args),
-    createInProcessHandler: async () => {
-      const { createPortableHttpRuntime } = await import("@ai-native-flow/transport-http");
-      const persistence = await createTauriSqliteRuntimePersistence(await getDatabase());
-      return (await createPortableHttpRuntime({
-        runStore: persistence.runStore,
-        registryStore: persistence.registryStore,
-        artifactStore: persistence.artifactStore,
-        eventBus: persistence.eventBus,
-        variables: persistence.variables,
-        capabilities: createTauriPortableCapabilities(platform),
-        toolHost: createTauriReadOnlyToolHost({
+    createPortableBackend: () => createWorkerRuntimeBackend({
+      createWorker: () => new Worker(
+        new URL("./runtime.worker.ts", import.meta.url),
+        { type: "module", name: "nkg-portable-runtime" },
+      ),
+      attachCapabilities: (worker) => attachTauriCapabilityBroker(
+        worker,
+        createTauriReadOnlyToolHost({
           invoke: <T>(command: string, args?: Record<string, unknown>) =>
             invoke<T>(command, args),
         }),
-        fetch: fetchImpl,
-      })).handler;
-    },
+        fetchImpl,
+      ),
+    }),
   });
   await services.router.start();
   await ensureBuiltinFlows();
