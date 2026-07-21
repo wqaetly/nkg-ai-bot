@@ -15,6 +15,12 @@ import { syncRuntimeCatalog, type RuntimeCatalogSyncResult } from "./runtimeCata
 import { RuntimeCatalogHydrator } from "./runtimeCatalogHydrator";
 import { MobileRuntimeLifecycle } from "./mobileRuntimeLifecycle";
 import { ensureBuiltinFlows } from "./builtinFlows";
+import {
+  analyzeFlowCapabilities,
+  capabilityAuthorizer,
+  type FlowCapabilityReport,
+} from "./capabilityPolicy";
+import { listFlows } from "./storage/repositories";
 
 export interface StartedRuntimeServices {
   platform: AppPlatform;
@@ -22,6 +28,7 @@ export interface StartedRuntimeServices {
   client: ProviderFlowRuntimeClient;
   catalog: RuntimeCatalogSyncResult;
   lifecycle: MobileRuntimeLifecycle;
+  capabilityReports: FlowCapabilityReport[];
 }
 
 let startup: Promise<StartedRuntimeServices> | undefined;
@@ -53,12 +60,15 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
             invoke<T>(command, args),
         }),
         fetchImpl,
+        ({ flowId, capability }) => capabilityAuthorizer.isAuthorized(flowId, capability),
       ),
     }),
   });
   await services.router.start();
   await ensureBuiltinFlows();
   const catalog = await syncRuntimeCatalog(services.client);
+  const capabilityReports = (await listFlows()).map((flow) =>
+    analyzeFlowCapabilities(flow.graph, platform));
   const catalogHydrator = new RuntimeCatalogHydrator(
     services.router,
     () => syncRuntimeCatalog(services.client),
@@ -91,5 +101,6 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     catalog,
     client,
     lifecycle,
+    capabilityReports,
   };
 }

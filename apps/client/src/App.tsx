@@ -3,6 +3,11 @@ import type { AppPlatform, RuntimeBackendKind } from "@nkg-ai-bot/runtime-router
 import { ProviderSettings } from "./ProviderSettings";
 import type { RuntimeCatalogFailure } from "./runtimeCatalog";
 import type { MobileRuntimeLifecycleState } from "./mobileRuntimeLifecycle";
+import {
+  capabilityAuthorizer,
+  capabilityLabel,
+  type FlowCapabilityReport,
+} from "./capabilityPolicy";
 import "./App.css";
 
 const ChatPage = lazy(() => import("./ChatPage").then((module) => ({
@@ -19,6 +24,7 @@ type BootState =
       totalFlows: number;
       catalogFailures: RuntimeCatalogFailure[];
       lifecycle: Exclude<MobileRuntimeLifecycleState["phase"], "failed">;
+      capabilityReports: FlowCapabilityReport[];
     }
   | { phase: "failed"; message: string };
 
@@ -32,7 +38,7 @@ function App() {
 
     void import("./runtime")
       .then(({ getRuntimeServices }) => getRuntimeServices())
-      .then(({ services, platform, lifecycle }) => {
+      .then(({ services, platform, lifecycle, capabilityReports }) => {
         if (!active) return;
         unsubscribeLifecycle = lifecycle.subscribe((state) => {
           if (!active) return;
@@ -48,6 +54,7 @@ function App() {
             totalFlows: state.catalog.total,
             catalogFailures: state.catalog.failures,
             lifecycle: state.phase,
+            capabilityReports,
           });
         });
       })
@@ -160,7 +167,75 @@ function RuntimePage({ boot }: { boot: BootState }) {
             <SecurityBoundary boot={boot} />
           </article>
         </section>
+        <CapabilityPanel boot={boot} />
     </>
+  );
+}
+
+function CapabilityPanel({ boot }: { boot: BootState }) {
+  const [, refresh] = useState(0);
+  useEffect(() => capabilityAuthorizer.subscribe(() => refresh((value) => value + 1)), []);
+  if (boot.phase === "starting" || boot.phase === "failed") return null;
+  return (
+    <section className="capability-panel">
+      <div className="capability-heading">
+        <div>
+          <p className="section-label">Flow 能力与授权</p>
+          <h2>按 Flow 隔离原生能力</h2>
+        </div>
+        <span>{boot.capabilityReports.length} 个 Flow</span>
+      </div>
+      <div className="capability-list">
+        {boot.capabilityReports.map((report) => {
+          const pending = report.authorizationRequired.filter((capability) =>
+            !capabilityAuthorizer.isAuthorized(report.flowId, capability));
+          return (
+            <article key={`${report.flowId}@${report.flowVersion}`}>
+              <div className="capability-title">
+                <strong>{report.label}</strong>
+                <small>{report.flowId}@{report.flowVersion}</small>
+              </div>
+              <div className="capability-badges">
+                {report.required.length === 0
+                  ? <span className="capability-badge ready">无需额外能力</span>
+                  : report.required.map((capability) => (
+                    <span
+                      className={`capability-badge ${
+                        report.unavailable.includes(capability)
+                          ? "blocked"
+                          : pending.includes(capability)
+                            ? "pending"
+                            : "ready"
+                      }`}
+                      key={capability}
+                    >
+                      {capabilityLabel(capability)}
+                    </span>
+                  ))}
+              </div>
+              {report.unavailable.length > 0 ? (
+                <p className="capability-note">当前 portable 后端不提供：{report.unavailable.map(capabilityLabel).join("、")}</p>
+              ) : null}
+              {report.authorizationRequired.length > 0 ? (
+                pending.length > 0 ? (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => capabilityAuthorizer.grant(report.flowId, pending)}
+                  >授权此 Flow：{pending.map(capabilityLabel).join("、")}</button>
+                ) : (
+                  <button
+                    type="button"
+                    className="text-button"
+                    onClick={() => capabilityAuthorizer.revoke(report.flowId)}
+                  >撤销此 Flow 的文件授权</button>
+                )
+              ) : null}
+            </article>
+          );
+        })}
+      </div>
+    </section>
   );
 }
 

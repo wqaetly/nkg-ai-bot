@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defineFlow } from "@ai-native-flow/flow-builder";
 import { createPortableRuntime } from "@ai-native-flow/runtime";
 import {
@@ -58,6 +58,39 @@ describe("Worker Runtime adapter", () => {
     expect(response.status).toBe(201);
     expect(response.headers.get("x-native")).toBe("yes");
     expect(await response.text()).toBe("native-response");
+    detach();
+  });
+
+  it("denies native tools when the Flow-scoped authorization is absent", async () => {
+    const { client, host } = linkedEndpoints();
+    const nativeCall = vi.fn();
+    const detach = attachTauriCapabilityBroker(
+      client,
+      { async callTool(...args) { nativeCall(...args); return { ok: true }; } },
+      globalThis.fetch,
+      ({ flowId, capability }) => flowId === "approved" && capability === "filesystem.read",
+    );
+    const result = await createBrokeredAgentToolHost(host).callTool(
+      { tool: "read_file", args: { path: "fixture.txt" } },
+      {
+        workingDir: "app-data",
+        allowedTools: ["read_file"],
+        allowBash: false,
+        timeoutMs: 1_000,
+        maxOutputChars: 1_000,
+        runtime: {
+          flowId: "denied",
+          flowVersion: "1.0.0",
+          runId: "run-1",
+          nodeId: "reader",
+        },
+      },
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      output: { code: "runtime.capability_not_authorized", capability: "filesystem.read" },
+    });
+    expect(nativeCall).not.toHaveBeenCalled();
     detach();
   });
 

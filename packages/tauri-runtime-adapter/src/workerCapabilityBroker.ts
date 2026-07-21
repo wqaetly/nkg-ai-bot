@@ -51,6 +51,20 @@ interface ToolEnvironment {
   timeoutMs: number;
   maxOutputChars: number;
   context?: Record<string, unknown>;
+  runtime?: {
+    flowId: string;
+    flowVersion: string;
+    runId: string;
+    nodeId: string;
+  };
+}
+
+export interface CapabilityAuthorizationScope {
+  flowId: string;
+  flowVersion: string;
+  runId: string;
+  nodeId: string;
+  capability: "filesystem.read" | "filesystem.write" | "process.spawn";
 }
 
 /** Worker-side host: forwards native tool calls to the UI/Tauri broker. */
@@ -135,6 +149,7 @@ export function attachTauriCapabilityBroker(
   endpoint: RuntimeWorkerEndpoint,
   toolHost: AgentToolHost,
   fetchImpl: typeof fetch = globalThis.fetch,
+  authorize?: (scope: CapabilityAuthorizationScope) => boolean | Promise<boolean>,
 ): () => void {
   const listener = (event: { data: unknown }) => {
     if (!event.data || typeof event.data !== "object") return;
@@ -177,7 +192,23 @@ export function attachTauriCapabilityBroker(
       !capabilityRequest.call ||
       !capabilityRequest.env
     ) return;
-    void toolHost.callTool(capabilityRequest.call, capabilityRequest.env).then(
+    const capability = toolCapability(capabilityRequest.call.tool);
+    const runtime = capabilityRequest.env.runtime;
+    const authorization = authorize && capability
+      ? runtime
+        ? authorize({ ...runtime, capability })
+        : false
+      : true;
+    void Promise.resolve(authorization).then((authorized) => {
+      if (!authorized) {
+        return {
+          ok: false,
+          error: `capability ${capability} is not authorized for flow ${runtime?.flowId ?? "unknown"}`,
+          output: { code: "runtime.capability_not_authorized", capability },
+        } satisfies AgentToolResult;
+      }
+      return toolHost.callTool(capabilityRequest.call!, capabilityRequest.env!);
+    }).then(
       (result) => respond(endpoint, capabilityRequest.requestId!, result),
       (cause) => respond(endpoint, capabilityRequest.requestId!, {
         ok: false,
@@ -187,6 +218,15 @@ export function attachTauriCapabilityBroker(
   };
   endpoint.addEventListener("message", listener);
   return () => endpoint.removeEventListener?.("message", listener);
+}
+
+function toolCapability(
+  tool: AgentToolName,
+): CapabilityAuthorizationScope["capability"] | undefined {
+  if (["list_files", "read_file", "grep"].includes(tool)) return "filesystem.read";
+  if (["edit_file", "write_files"].includes(tool)) return "filesystem.write";
+  if (tool === "run_bash") return "process.spawn";
+  return undefined;
 }
 
 function respond(

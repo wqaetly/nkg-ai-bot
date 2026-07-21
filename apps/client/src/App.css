@@ -151,6 +151,22 @@ button:disabled { cursor: wait; opacity: .55; }
 .chat-composer textarea { width: 100%; min-height: 70px; max-height: 180px; padding: 12px 13px; border: 1px solid #d8dcd6; border-radius: 12px; outline: none; resize: vertical; color: #202722; background: #fff; }
 .chat-composer textarea:focus { border-color: #87964a; box-shadow: 0 0 0 3px rgba(135, 150, 74, .12); }
 
+.capability-panel { margin-top: 14px; padding: 24px; border: 1px solid #e6e8e1; border-radius: 18px; background: #fff; }
+.capability-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.capability-heading h2 { margin: 3px 0 0; font-size: 21px; }
+.capability-heading > span { color: #747b73; font-size: 12px; }
+.capability-list { display: grid; gap: 10px; margin-top: 18px; }
+.capability-list article { display: grid; gap: 10px; padding: 16px; border: 1px solid #eceee9; border-radius: 13px; background: #fafaf7; }
+.capability-title { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.capability-title small, .capability-note { color: #747b73; font-size: 11px; }
+.capability-badges { display: flex; flex-wrap: wrap; gap: 7px; }
+.capability-badge { padding: 5px 8px; border-radius: 999px; font-size: 11px; font-weight: 700; }
+.capability-badge.ready { color: #45612a; background: #e7efd7; }
+.capability-badge.pending { color: #795f13; background: #f7edcb; }
+.capability-badge.blocked { color: #913f32; background: #f8e8e3; }
+.capability-note { margin: 0; color: #913f32; }
+.capability-list button { justify-self: start; }
+
 @media (max-width: 860px) {
   .app-shell { grid-template-columns: 196px 1fr; }
   .runtime-grid { grid-template-columns: 1fr; }
