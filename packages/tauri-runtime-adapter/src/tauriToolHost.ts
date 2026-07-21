@@ -3,12 +3,12 @@ import type {
   AgentToolHost,
   AgentToolName,
   AgentToolResult,
-} from "@ai-native-flow/runtime/browser";
+} from "@ai-native-flow/runtime";
 import {
   PORTABLE_CORE_CAPABILITIES,
   createRuntimeCapabilityManifest,
   type RuntimeCapabilityManifest,
-} from "@ai-native-flow/runtime/browser";
+} from "@ai-native-flow/runtime";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import type { TauriInvoke } from "./index.js";
 

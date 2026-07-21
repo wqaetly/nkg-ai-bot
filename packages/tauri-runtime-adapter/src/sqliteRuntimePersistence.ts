@@ -16,7 +16,7 @@ import {
   type RunRecord,
   type RunStatus,
   type RunStore,
-} from "@ai-native-flow/runtime/browser";
+} from "@ai-native-flow/runtime";
 import {
   InMemoryVariableStore,
   type MutableVariableStore,

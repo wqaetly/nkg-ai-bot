@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { RUN_RECORD_SCHEMA_VERSION, type FlowVersionRef, type RunRecord } from "@ai-native-flow/runtime/browser";
+import { RUN_RECORD_SCHEMA_VERSION, type FlowVersionRef, type RunRecord } from "@ai-native-flow/runtime";
 import {
   RuntimePersistenceError,
   TauriSqliteArtifactStore,

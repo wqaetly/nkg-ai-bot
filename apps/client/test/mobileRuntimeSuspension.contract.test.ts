@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { defineFlow } from "@ai-native-flow/flow-builder";
-import { createBrowserRuntime } from "@ai-native-flow/runtime/browser";
+import { createRuntime } from "@ai-native-flow/runtime";
 import {
   createTauriRuntimeServices,
   type TauriInvoke,
@@ -12,7 +12,7 @@ describe("mobile runtime suspension contract", () => {
   it.each(["android", "ios"] as const)(
     "cancels a real in-process nkg-ai-flow run when the %s app is suspended",
     async (platform) => {
-      const definitionRuntime = createBrowserRuntime();
+      const definitionRuntime = createRuntime();
       const flow = defineFlow({
         id: "mobile_suspend_contract",
         version: "1.0.0",

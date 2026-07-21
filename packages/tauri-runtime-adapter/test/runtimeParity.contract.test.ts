@@ -6,8 +6,8 @@ import {
   type LlmProvider,
 } from "@ai-native-flow/runtime";
 import {
-  createBrowserRuntime,
-} from "@ai-native-flow/runtime/browser";
+  createNodeRuntime,
+} from "@ai-native-flow/runtime/node";
 import {
   createHttpHandler,
 } from "@ai-native-flow/transport-http";
@@ -24,7 +24,7 @@ describe("desktop/mobile Runtime routing contract", () => {
         return { text: `route:${request.prompt}` };
       },
     };
-    const definitionRuntime = createBrowserRuntime({ llmProvider: provider });
+    const definitionRuntime = createRuntime({ llmProvider: provider });
     const flow = defineFlow({
       id: "route_contract",
       version: "1.0.0",
@@ -46,7 +46,7 @@ describe("desktop/mobile Runtime routing contract", () => {
     flow.connect(llm.out("out"), end.in("in"));
     const graph = JSON.parse(flow.dump());
 
-    const desktopRuntime = createRuntime({
+    const desktopRuntime = createNodeRuntime({
       llmProvider: provider,
       artifactStore: new InMemoryArtifactStore(),
     });
