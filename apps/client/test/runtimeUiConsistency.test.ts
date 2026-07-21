@@ -2,12 +2,12 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("chat-first UI consistency", () => {
-  it("keeps the app focused on chat and OpenAI settings", async () => {
+  it("keeps the app focused on chat plus model and web search settings", async () => {
     const source = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
 
     expect(source).toContain('lazy(() => import("./ChatPage")');
     expect(source).toContain("<ProviderSettings");
-    expect(source).toContain('aria-label="OpenAI 设置"');
+    expect(source).toContain('aria-label="模型与联网设置"');
     expect(source).not.toContain("运行时基座");
     expect(source).not.toContain("角色");
     expect(source).not.toContain("助理");

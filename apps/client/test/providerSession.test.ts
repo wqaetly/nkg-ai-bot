@@ -1,6 +1,15 @@
 import { describe, expect, it, vi } from "vitest";
-import { fetchCompatibleModels, ProviderSession, type ProviderDataStore } from "../src/providerSession";
-import type { ProviderProfile, ProviderProfileInput } from "../src/storage/database";
+import {
+  fetchCompatibleModels,
+  fetchSearxngResults,
+  ProviderSession,
+  type ProviderDataStore,
+} from "../src/providerSession";
+import type {
+  ProviderProfile,
+  ProviderProfileInput,
+  WebSearchConfig,
+} from "../src/storage/database";
 import type { ApiKeyVault } from "../src/storage/secretVault";
 
 class MemoryVault implements ApiKeyVault {
@@ -14,6 +23,7 @@ class MemoryVault implements ApiKeyVault {
 
 class MemoryStore implements ProviderDataStore {
   readonly profiles = new Map<string, ProviderProfile>();
+  webSearchConfig: WebSearchConfig | undefined;
   selectedId: string | undefined;
   failUpsert = false;
   failDelete = false;
@@ -31,6 +41,11 @@ class MemoryStore implements ProviderDataStore {
   }
   async getSelectedId() { return this.selectedId; }
   async setSelectedId(id: string | undefined) { this.selectedId = id; }
+  async getWebSearchConfig() { return this.webSearchConfig; }
+  async setWebSearchConfig(config: WebSearchConfig) {
+    this.webSearchConfig = config;
+    return config;
+  }
 }
 
 describe("ProviderSession", () => {
@@ -122,5 +137,96 @@ describe("ProviderSession", () => {
     expect(request).toHaveBeenCalledWith(new URL("https://example.test/v1/models"), expect.objectContaining({
       headers: expect.objectContaining({ Authorization: "Bearer secret" }),
     }));
+  });
+
+  it("stores SearXNG metadata separately and authenticates with X-API-Key", async () => {
+    const vault = new MemoryVault();
+    const store = new MemoryStore();
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      results: [
+        { title: "Result", url: "https://example.test/article", content: "Summary", engine: "bing" },
+      ],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const session = new ProviderSession(store, async () => vault, request);
+    await session.initialize();
+
+    await session.saveWebSearch({
+      baseUrl: "https://search.example.test/",
+      apiKey: "search-secret",
+      enabled: true,
+    });
+    const results = await session.searchWeb("latest release");
+
+    expect(store.webSearchConfig).toEqual({
+      provider: "searxng",
+      baseUrl: "https://search.example.test/",
+      apiKeyRef: "search:searxng:api-key",
+      enabled: true,
+    });
+    expect(JSON.stringify(store.webSearchConfig)).not.toContain("search-secret");
+    expect(results).toEqual([{
+      title: "Result",
+      url: "https://example.test/article",
+      content: "Summary",
+      engine: "bing",
+    }]);
+    expect(request).toHaveBeenCalledWith(
+      new URL("https://search.example.test/search?q=latest+release&format=json"),
+      expect.objectContaining({
+        headers: expect.objectContaining({ "X-API-Key": "search-secret" }),
+      }),
+    );
+  });
+
+  it("reports SearXNG authentication failures without exposing the key", async () => {
+    const request = vi.fn(async () => new Response("unauthorized", { status: 401 }));
+    const error = await fetchSearxngResults(
+      "https://search.example.test",
+      "never-print-this",
+      "test",
+      request,
+    ).catch((cause: unknown) => cause);
+
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).toContain("HTTP 401");
+    expect((error as Error).message).not.toContain("never-print-this");
+  });
+
+  it("generates images with an enabled model and the selected provider secret", async () => {
+    const vault = new MemoryVault();
+    const store = new MemoryStore();
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ b64_json: "aW1hZ2U=" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+    const session = new ProviderSession(store, async () => vault, request);
+    await session.initialize();
+    await session.save({
+      id: "image-provider",
+      name: "Images",
+      baseUrl: "https://images.example.test/v1",
+      defaultModel: "gpt-image-2",
+      enabledModels: ["gpt-image-2"],
+      apiKey: "image-secret",
+    });
+
+    await expect(session.generateImage({
+      model: "gpt-image-2",
+      prompt: "a test image",
+      size: "1024x1024",
+      quality: "low",
+    })).resolves.toMatchObject({ mode: "generation", model: "gpt-image-2" });
+    expect(request).toHaveBeenCalledWith(
+      new URL("https://images.example.test/v1/images/generations"),
+      expect.objectContaining({
+        headers: expect.objectContaining({ Authorization: "Bearer image-secret" }),
+      }),
+    );
+
+    await expect(session.generateImage({
+      model: "disabled-image-model",
+      prompt: "a test image",
+      size: "1024x1024",
+      quality: "low",
+    })).rejects.toThrow("未在 OpenAI 设置中启用");
   });
 });

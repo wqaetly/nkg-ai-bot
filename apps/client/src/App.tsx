@@ -27,7 +27,7 @@ function App() {
       {settingsOpen ? (
         <div className="settings-layer" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
           <section
-            aria-label="OpenAI 设置"
+            aria-label="模型与联网设置"
             aria-modal="true"
             className="settings-dialog"
             role="dialog"

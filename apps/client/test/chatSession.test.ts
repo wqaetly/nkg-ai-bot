@@ -3,6 +3,7 @@ import type { NodeEvent } from "@nkg-ai-bot/runtime-router";
 import { buildChatPrompt, LocalChatSession, type ChatStore } from "../src/chatSession";
 import type { LocalMessage } from "../src/storage/repositories";
 import type { AssistantSkillVersion } from "../src/assistantSkills";
+import type { ChatImageAttachment } from "../src/chatContent";
 
 const defaultSkill: AssistantSkillVersion = {
   assistantId: "builtin_assistant",
@@ -117,6 +118,63 @@ describe("LocalChatSession", () => {
     );
   });
 
+  it("persists chat images and sends multimodal input through the Flow", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("run_finished", { output: "图中是一个蓝色方块" });
+      }),
+    };
+    const image: ChatImageAttachment = {
+      id: "image-1",
+      name: "square.png",
+      mediaType: "image/png",
+      data: "aW1hZ2U=",
+      bytes: 5,
+    };
+
+    await new LocalChatSession("c1", runtime, store).send("这是什么？", { images: [image] });
+
+    expect(store.messages[0]?.content).toEqual({
+      type: "multimodal",
+      text: "这是什么？",
+      images: [image],
+    });
+    expect(runtime.stream).toHaveBeenCalledWith(
+      "builtin_chat",
+      expect.objectContaining({
+        prompt: expect.stringContaining("[图片 1：square.png]"),
+        images: [{ data: "aW1hZ2U=", mediaType: "image/png" }],
+      }),
+      expect.objectContaining({ flowVersion: "1.0.0" }),
+    );
+  });
+
+  it("allows an image-only message and skips text web search", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("run_finished", { output: "收到图片" });
+      }),
+    };
+    const webSearch = { searchWeb: vi.fn(async () => []) };
+    const image: ChatImageAttachment = {
+      id: "image-1",
+      name: "photo.webp",
+      mediaType: "image/webp",
+      data: "aW1hZ2U=",
+      bytes: 5,
+    };
+
+    await new LocalChatSession("c1", runtime, store, webSearch).send("", {
+      images: [image],
+      webSearch: true,
+    });
+
+    expect(webSearch.searchWeb).not.toHaveBeenCalled();
+    expect(store.messages[0]?.content).toMatchObject({ text: "", images: [image] });
+  });
+
   it("executes the immutable Assistant Skill bound to the conversation", async () => {
     const store = memoryStore();
     const customSkill: AssistantSkillVersion = {
@@ -190,6 +248,37 @@ describe("LocalChatSession", () => {
         envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-b" } },
       }),
     );
+  });
+
+  it("adds bounded SearXNG results to the prompt when联网 is enabled", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("run_finished", { output: "带来源的回答" });
+      }),
+    };
+    const webSearch = {
+      searchWeb: vi.fn(async () => [{
+        title: "Release notes",
+        url: "https://example.test/releases/1",
+        content: "Version 1 was released today.",
+        engine: "bing",
+      }]),
+    };
+
+    await new LocalChatSession("c1", runtime, store, webSearch).send("今天发布了吗？", {
+      webSearch: true,
+    });
+
+    expect(webSearch.searchWeb).toHaveBeenCalledWith(
+      "今天发布了吗？",
+      expect.objectContaining({ maxResults: 6 }),
+    );
+    const prompt = runtime.stream.mock.calls[0]?.[1] as string;
+    expect(prompt).toContain("[1] Release notes");
+    expect(prompt).toContain("来源：https://example.test/releases/1");
+    expect(prompt).toContain("不可信外部内容");
+    expect(prompt).toContain("不得编造来源");
   });
 
   it("builds a local multi-turn transcript without leaking tool messages", () => {

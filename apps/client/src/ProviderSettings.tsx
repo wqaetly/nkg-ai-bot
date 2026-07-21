@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
+  DEFAULT_SEARXNG_URL,
   providerSession,
   type ProviderDraft,
   type ProviderSessionSnapshot,
+  type WebSearchDraft,
 } from "./providerSession";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
 
@@ -14,19 +16,30 @@ const EMPTY_DRAFT: ProviderDraft = {
   apiKey: "",
 };
 
+const EMPTY_SEARCH_DRAFT: WebSearchDraft = {
+  baseUrl: DEFAULT_SEARXNG_URL,
+  apiKey: "",
+  enabled: true,
+};
+
 export function ProviderSettings({ onClose }: { onClose: () => void }) {
   const [snapshot, setSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
+  const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelQuery, setModelQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
+  const [searchBusy, setSearchBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [showApiKey, setShowApiKey] = useState(false);
+  const [showSearchApiKey, setShowSearchApiKey] = useState(false);
   const [insecureHttpConfirmed, setInsecureHttpConfirmed] = useState(false);
+  const [insecureSearchHttpConfirmed, setInsecureSearchHttpConfirmed] = useState(false);
   const insecureDraft = isPlainHttpProviderUrl(draft.baseUrl);
+  const insecureSearchDraft = isPlainHttpProviderUrl(searchDraft.baseUrl);
   const selected = snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId)
     ?? snapshot.profiles[0];
   const availableModels = useMemo(
@@ -59,6 +72,14 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
     });
     setDiscoveredModels(selected.enabledModels);
   }, [selected?.id, selected?.baseUrl, selected?.defaultModel, selected?.enabledModels]);
+
+  useEffect(() => {
+    setSearchDraft({
+      baseUrl: snapshot.webSearch?.baseUrl ?? DEFAULT_SEARXNG_URL,
+      apiKey: "",
+      enabled: snapshot.webSearch?.enabled ?? true,
+    });
+  }, [snapshot.webSearch?.baseUrl, snapshot.webSearch?.enabled]);
 
   async function perform(
     action: () => Promise<ProviderSessionSnapshot>,
@@ -97,6 +118,42 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function testSearch() {
+    setSearchBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const results = await providerSession.testWebSearch({
+        ...searchDraft,
+        ...(insecureSearchDraft ? { allowInsecureHttp: insecureSearchHttpConfirmed } : {}),
+      });
+      setNotice(`联网搜索连接成功，测试查询返回 ${results.length} 条结果`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSearchBusy(false);
+    }
+  }
+
+  async function saveSearch() {
+    setSearchBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      setSnapshot(await providerSession.saveWebSearch({
+        ...searchDraft,
+        ...(insecureSearchDraft ? { allowInsecureHttp: insecureSearchHttpConfirmed } : {}),
+      }));
+      setSearchDraft((current) => ({ ...current, apiKey: "" }));
+      setInsecureSearchHttpConfirmed(false);
+      setNotice("SearXNG 配置已保存在本机，API Key 已加密存储");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setSearchBusy(false);
+    }
+  }
+
   function toggleModel(model: string, enabled: boolean) {
     setDraft((current) => {
       const enabledModels = enabled
@@ -132,9 +189,9 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
     <div className="settings-content">
       <header className="settings-header">
         <div>
-          <span className="settings-kicker">MODEL PROVIDER</span>
-          <h2>OpenAI 设置</h2>
-          <p>连接 OpenAI 或兼容 OpenAI API 的模型服务。</p>
+          <span className="settings-kicker">MODEL &amp; WEB SEARCH</span>
+          <h2>模型与联网设置</h2>
+          <p>连接 OpenAI 兼容模型服务与自建 SearXNG。</p>
         </div>
         <button aria-label="关闭设置" className="icon-button" type="button" onClick={onClose}>
           <CloseIcon />
@@ -150,6 +207,7 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
           {error ? <p className="form-message error" role="alert">{error}</p> : null}
         </section>
       ) : (
+        <>
         <form className="openai-form" onSubmit={save}>
           <div className="connection-status">
             <span className="openai-mark">AI</span>
@@ -224,16 +282,75 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
           ) : null}
 
           {invalidModels ? <p className="form-message error" role="alert">请至少启用一个模型，并选择默认模型。</p> : null}
-          {notice ? <p className="form-message success" role="status">{notice}</p> : null}
-          {error ? <p className="form-message error" role="alert">{error}</p> : null}
-
           <div className="settings-actions">
             <span className="device-key-note">设备密钥由应用自动管理</span>
             <button className="primary-button" disabled={busy || invalidModels || (insecureDraft && !insecureHttpConfirmed)} type="submit">
-              {busy ? "正在保存…" : "保存设置"}
+              {busy ? "正在保存…" : "保存模型设置"}
             </button>
           </div>
         </form>
+
+        <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveSearch(); }}>
+          <div className="settings-section-heading">
+            <div><strong>联网搜索</strong><small>通过自建 SearXNG 为本轮回答补充最新资料与来源</small></div>
+            <span className={`connection-dot ${snapshot.webSearch?.enabled ? "online" : ""}`} />
+          </div>
+
+          <label htmlFor="searxng-url">SearXNG URL</label>
+          <input
+            id="searxng-url"
+            placeholder={DEFAULT_SEARXNG_URL}
+            required
+            type="url"
+            value={searchDraft.baseUrl}
+            onChange={(event) => {
+              setSearchDraft({ ...searchDraft, baseUrl: event.currentTarget.value });
+              setInsecureSearchHttpConfirmed(false);
+            }}
+          />
+          <p className="field-hint">应用会调用 <code>/search?format=json</code>，请求通过跨平台原生 HTTP 传输。</p>
+
+          <label htmlFor="searxng-key">API Key</label>
+          <div className="secret-input">
+            <input
+              autoComplete="off"
+              id="searxng-key"
+              placeholder={snapshot.webSearch ? "留空表示保留当前密钥" : "输入 API Key"}
+              required={!snapshot.webSearch}
+              type={showSearchApiKey ? "text" : "password"}
+              value={searchDraft.apiKey}
+              onChange={(event) => setSearchDraft({ ...searchDraft, apiKey: event.currentTarget.value })}
+            />
+            <button aria-label={showSearchApiKey ? "隐藏搜索 API Key" : "显示搜索 API Key"} type="button" onClick={() => setShowSearchApiKey((value) => !value)}>
+              {showSearchApiKey ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </div>
+          <p className="field-hint">使用 <code>X-API-Key</code> 请求头；密钥只保存在本机 Stronghold。</p>
+
+          <label className="search-enabled-option">
+            <input checked={searchDraft.enabled} type="checkbox" onChange={(event) => setSearchDraft({ ...searchDraft, enabled: event.currentTarget.checked })} />
+            <span><strong>允许在对话中使用联网搜索</strong><small>对话框中的“联网”按钮可控制每次请求是否搜索。</small></span>
+          </label>
+
+          {insecureSearchDraft ? (
+            <label className="security-warning">
+              <input checked={insecureSearchHttpConfirmed} type="checkbox" onChange={(event) => setInsecureSearchHttpConfirmed(event.currentTarget.checked)} />
+              <span><strong>确认搜索服务使用明文 HTTP</strong><small>{INSECURE_PROVIDER_WARNING}</small></span>
+            </label>
+          ) : null}
+
+          <div className="settings-actions">
+            <button className="ghost-button" disabled={searchBusy || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="button" onClick={() => void testSearch()}>
+              {searchBusy ? "正在连接…" : "测试连接"}
+            </button>
+            <button className="primary-button" disabled={searchBusy || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="submit">
+              {searchBusy ? "正在保存…" : "保存联网设置"}
+            </button>
+          </div>
+        </form>
+        {notice ? <p className="form-message success settings-global-message" role="status">{notice}</p> : null}
+        {error ? <p className="form-message error settings-global-message" role="alert">{error}</p> : null}
+        </>
       )}
     </div>
   );

@@ -6,6 +6,16 @@ import {
   useRef,
   useState,
 } from "react";
+import {
+  chatImageDataUrl,
+  chatMessageImages,
+  chatMessageSummary,
+  chatMessageText,
+  createChatMessageContent,
+  filesToChatImages,
+  MAX_CHAT_IMAGES,
+  type ChatImageAttachment,
+} from "./chatContent";
 import { LocalChatSession, type ChatRuntime } from "./chatSession";
 import { describeChatError } from "./chatError";
 import {
@@ -21,6 +31,7 @@ import { resolveAssistantSkill } from "./assistantSkills";
 import { listAssistantSkillIndex, type AssistantSkillIndex } from "./assistantSkills";
 import { AssistantSkillsPanel } from "./AssistantSkillsPanel";
 import { EvaluationPanel } from "./EvaluationPanel";
+import { ImageGenerationPanel } from "./ImageGenerationPanel";
 import { createEvalCaseFromCorrection } from "./evaluationRepository";
 import type { EvaluationRuntime } from "./evaluation";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
@@ -46,6 +57,9 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   const [platform, setPlatform] = useState<AppPlatform>();
   const [messages, setMessages] = useState<LocalMessage[]>([]);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [draftImages, setDraftImages] = useState<Record<string, ChatImageAttachment[]>>({});
+  const [imageUploadBusy, setImageUploadBusy] = useState(false);
+  const [previewImage, setPreviewImage] = useState<ChatImageAttachment>();
   const [streamingText, setStreamingText] = useState("");
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
@@ -57,23 +71,28 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   const [memoryOpen, setMemoryOpen] = useState(false);
   const [skillsOpen, setSkillsOpen] = useState(false);
   const [evaluationOpen, setEvaluationOpen] = useState(false);
+  const [imageStudioOpen, setImageStudioOpen] = useState(false);
   const [skills, setSkills] = useState<AssistantSkillIndex[]>([]);
   const [learningNotice, setLearningNotice] = useState("");
   const [correctionMessageId, setCorrectionMessageId] = useState<string>();
   const [correctionDraft, setCorrectionDraft] = useState("");
   const [providerSnapshot, setProviderSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
+  const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const abortRef = useRef<AbortController | undefined>(undefined);
   const activeRequestRef = useRef<string | undefined>(undefined);
   const messageEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const imageInputRef = useRef<HTMLInputElement>(null);
   const activeIdRef = useRef<string | undefined>(undefined);
 
   const draft = activeId ? drafts[activeId] ?? "" : "";
+  const pendingImages = activeId ? draftImages[activeId] ?? [] : [];
   const activeConversation = conversations.find((conversation) => conversation.id === activeId);
   const selectedProvider = providerSnapshot.profiles.find(
     (profile) => profile.id === providerSnapshot.selectedProviderId,
   );
   const unlocked = providerSnapshot.unlocked && Boolean(selectedProvider);
+  const webSearchAvailable = providerSnapshot.webSearch?.enabled === true;
   const conversationModel = selectedProvider && activeConversation?.providerId === selectedProvider.id
     && activeConversation.modelId && selectedProvider.enabledModels.includes(activeConversation.modelId)
     ? activeConversation.modelId
@@ -160,16 +179,18 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   }, []);
 
   useEffect(() => {
-    if (!memoryOpen && !skillsOpen) return;
+    if (!memoryOpen && !skillsOpen && !imageStudioOpen && !previewImage) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setMemoryOpen(false);
         setSkillsOpen(false);
+        setImageStudioOpen(false);
+        setPreviewImage(undefined);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [memoryOpen, skillsOpen]);
+  }, [imageStudioOpen, memoryOpen, previewImage, skillsOpen]);
 
   const visible = useMemo(
     () => messages.filter((message) => message.role === "user" || message.role === "assistant"),
@@ -226,6 +247,11 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
       delete next[id];
       return next;
     });
+    setDraftImages((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     if (remaining.length > 0) {
       setConversations(remaining);
       if (id === activeId) setActiveId(remaining[0].id);
@@ -238,7 +264,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
 
   async function send(event?: FormEvent) {
     event?.preventDefault();
-    if (!activeId || !runtime || busy || !draft.trim() || !unlocked) return;
+    if (!activeId || !runtime || busy || imageUploadBusy || (!draft.trim() && !pendingImages.length) || !unlocked) return;
     if (activeConversation && selectedProvider && conversationModel
       && (activeConversation.providerId !== selectedProvider.id || activeConversation.modelId !== conversationModel)) {
       await upsertConversation({
@@ -252,15 +278,17 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
     }
     const conversationId = activeId;
     const text = draft.trim();
+    const outgoingImages = [...pendingImages];
     const optimistic: LocalMessage = {
       id: `pending-${Date.now()}`,
       conversationId,
       sequence: messages.length,
       role: "user",
-      content: text,
+      content: createChatMessageContent(text, outgoingImages),
       createdAt: Date.now(),
     };
     setDrafts((current) => ({ ...current, [conversationId]: "" }));
+    setDraftImages((current) => ({ ...current, [conversationId]: [] }));
     setError("");
     setStreamingText("");
     setMessages((current) => [...current, optimistic]);
@@ -273,6 +301,8 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
     try {
       await session.send(text, {
         signal: controller.signal,
+        webSearch: webSearchEnabled && webSearchAvailable,
+        images: outgoingImages,
         onDelta: (_delta, accumulated) => {
           if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
             setStreamingText(accumulated);
@@ -322,7 +352,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   }
 
   async function copyMessage(message: LocalMessage) {
-    const text = messageText(message.content);
+    const text = chatMessageSummary(message.content);
     await navigator.clipboard.writeText(text);
     setCopiedId(message.id);
     window.setTimeout(() => setCopiedId((current) => current === message.id ? undefined : current), 1400);
@@ -361,7 +391,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
         await createEvalCaseFromCorrection({
           assistantId: activeConversation.assistantId,
           assistantVersion: activeConversation.assistantVersion,
-          question: messageText(precedingQuestion.content),
+          question: chatMessageSummary(precedingQuestion.content),
           correction: correctionDraft,
           sourceMessageId: message.id,
         });
@@ -395,7 +425,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   async function rememberMessage(message: LocalMessage) {
     try {
       await proposeMemoryCandidate({
-        content: messageText(message.content),
+        content: chatMessageSummary(message.content),
         sourceMessageId: message.id,
         sourceConversationId: message.conversationId,
       });
@@ -403,6 +433,34 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : String(cause));
     }
+  }
+
+  async function addChatImages(files: FileList | null) {
+    const conversationId = activeId;
+    if (!conversationId || !files?.length) return;
+    setImageUploadBusy(true);
+    setError("");
+    try {
+      const existing = draftImages[conversationId] ?? [];
+      const added = await filesToChatImages(files, existing);
+      setDraftImages((current) => ({
+        ...current,
+        [conversationId]: [...(current[conversationId] ?? []), ...added],
+      }));
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setImageUploadBusy(false);
+      if (imageInputRef.current) imageInputRef.current.value = "";
+    }
+  }
+
+  function removeDraftImage(imageId: string) {
+    if (!activeId) return;
+    setDraftImages((current) => ({
+      ...current,
+      [activeId]: (current[activeId] ?? []).filter((image) => image.id !== imageId),
+    }));
   }
 
   return (
@@ -417,6 +475,9 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
 
         <button className="new-chat-button" type="button" onClick={() => void startConversation()}>
           <PlusIcon /><span>新对话</span><kbd>Ctrl N</kbd>
+        </button>
+        <button className="image-studio-button" type="button" onClick={() => { setImageStudioOpen(true); setSidebarOpen(false); }}>
+          <ImageIcon /><span><strong>生图工作台</strong><small>文字生图 · 参考图编辑</small></span><ChevronIcon />
         </button>
 
         <div className="conversation-section-label">最近对话</div>
@@ -475,6 +536,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
             <div><h1>{activeConversation?.title || "新对话"}</h1><p><span className={unlocked ? "online-dot" : "offline-dot"} />{activeSkillName(skills, activeConversation)} · {activeConversation?.assistantVersion ?? "1.0.0"} · {unlocked ? conversationModel : "尚未配置模型"}</p></div>
           </div>
           <div className="header-actions">
+            <button aria-label="打开生图工作台" className="header-settings" type="button" onClick={() => setImageStudioOpen(true)}><ImageIcon /><span>生图</span></button>
             <button aria-label="打开本地记忆" className="header-settings" type="button" onClick={() => setMemoryOpen(true)}><MemoryIcon /><span>记忆</span></button>
             <button className="header-settings" type="button" onClick={openProviders}><SettingsIcon /><span>设置</span></button>
           </div>
@@ -492,12 +554,24 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
               }} />
             ) : null}
 
-            {visible.map((message) => (
+            {visible.map((message) => {
+              const text = chatMessageText(message.content);
+              const images = chatMessageImages(message.content);
+              return (
               <article className={`message ${message.role}`} key={message.id}>
                 {message.role === "assistant" ? <span className="message-avatar">N</span> : null}
                 <div className="message-body">
                   {message.role === "assistant" ? <strong className="message-author">NKG</strong> : null}
-                  <div className="message-content">{messageText(message.content)}</div>
+                  {images.length ? (
+                    <div className={`message-image-grid count-${Math.min(images.length, 4)}`}>
+                      {images.map((image) => (
+                        <button aria-label={`预览图片 ${image.name}`} key={image.id} type="button" onClick={() => setPreviewImage(image)}>
+                          <img alt={image.name} src={chatImageDataUrl(image)} />
+                        </button>
+                      ))}
+                    </div>
+                  ) : null}
+                  {text ? <div className="message-content">{text}</div> : null}
                   <div className="message-actions">
                     <button type="button" onClick={() => void copyMessage(message)}>{copiedId === message.id ? <CheckIcon /> : <CopyIcon />}{copiedId === message.id ? "已复制" : "复制"}</button>
                     <button type="button" onClick={() => void rememberMessage(message)}><MemoryIcon />记住</button>
@@ -520,7 +594,8 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
                   ) : null}
                 </div>
               </article>
-            ))}
+              );
+            })}
 
             {streamingText ? (
               <article className="message assistant streaming">
@@ -546,10 +621,29 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
           ) : null}
           {error ? <div className="chat-error" role="alert"><AlertIcon /><span>{error}</span><button aria-label="关闭错误提示" type="button" onClick={() => setError("")}><CloseIcon /></button></div> : null}
           <form className="composer" onSubmit={(event) => void send(event)}>
+            {pendingImages.length ? (
+              <div className="composer-attachments" aria-label="待发送图片">
+                {pendingImages.map((image) => (
+                  <div key={image.id}>
+                    <img alt={image.name} src={chatImageDataUrl(image)} />
+                    <button aria-label={`移除图片 ${image.name}`} disabled={busy} type="button" onClick={() => removeDraftImage(image.id)}><CloseIcon /></button>
+                    <span>{image.name}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+            <input
+              accept="image/png,image/jpeg,image/webp"
+              className="visually-hidden"
+              multiple
+              ref={imageInputRef}
+              type="file"
+              onChange={(event) => void addChatImages(event.currentTarget.files)}
+            />
             <textarea
               aria-label="消息"
               disabled={!runtime || !unlocked}
-              placeholder={unlocked ? "给 NKG 发送消息" : "请先配置 OpenAI"}
+              placeholder={unlocked ? (pendingImages.length ? "描述图片中的问题（可选）" : "给 NKG 发送消息") : "请先配置 OpenAI"}
               ref={textareaRef}
               rows={1}
               value={draft}
@@ -562,6 +656,26 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
             <div className="composer-footer">
               <span>{busy ? "正在生成回复…" : "Enter 发送 · Shift + Enter 换行"}</span>
               <div className="composer-controls">
+                <button
+                  aria-label="上传图片"
+                  className="chat-image-upload"
+                  disabled={busy || imageUploadBusy || !unlocked || pendingImages.length >= MAX_CHAT_IMAGES}
+                  title={`上传图片（最多 ${MAX_CHAT_IMAGES} 张，支持 PNG、JPEG、WebP）`}
+                  type="button"
+                  onClick={() => imageInputRef.current?.click()}
+                >
+                  {imageUploadBusy ? <span className="upload-spinner" /> : <PaperclipIcon />}
+                </button>
+                <button
+                  aria-pressed={webSearchEnabled && webSearchAvailable}
+                  className={`web-search-toggle ${webSearchEnabled && webSearchAvailable ? "active" : ""}`}
+                  disabled={busy || !webSearchAvailable}
+                  title={webSearchAvailable ? "为本轮消息使用联网搜索" : "请先在设置中配置并启用 SearXNG"}
+                  type="button"
+                  onClick={() => setWebSearchEnabled((value) => !value)}
+                >
+                  <SearchIcon />联网
+                </button>
                 {selectedProvider && conversationModel ? (
                   <select aria-label="当前对话模型" className="composer-model-select" disabled={busy} value={conversationModel} onChange={(event) => void selectConversationModel(event.currentTarget.value)}>
                     {selectedProvider.enabledModels.map((model) => <option key={model} value={model}>{model}</option>)}
@@ -570,7 +684,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
                 {busy ? (
                   <button aria-label="停止生成" className="send-button stop" type="button" onClick={stopGeneration}><StopIcon /></button>
                 ) : (
-                  <button aria-label="发送消息" className="send-button" disabled={!runtime || !unlocked || !draft.trim()} type="submit"><ArrowUpIcon /></button>
+                  <button aria-label="发送消息" className="send-button" disabled={!runtime || !unlocked || (!draft.trim() && !pendingImages.length) || imageUploadBusy} type="submit"><ArrowUpIcon /></button>
                 )}
               </div>
             </div>
@@ -582,6 +696,25 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
         <div className="settings-layer" role="presentation" onMouseDown={() => setMemoryOpen(false)}>
           <section aria-label="本地记忆" aria-modal="true" className="settings-dialog memory-dialog" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
             <MemoryPanel onClose={() => setMemoryOpen(false)} runner={reflectionRunner} />
+          </section>
+        </div>
+      ) : null}
+      {imageStudioOpen ? (
+        <div className="settings-layer image-studio-layer" role="presentation" onMouseDown={() => setImageStudioOpen(false)}>
+          <section aria-label="生图工作台" aria-modal="true" className="settings-dialog image-studio-dialog" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <ImageGenerationPanel
+              onClose={() => setImageStudioOpen(false)}
+              openProviders={() => { setImageStudioOpen(false); openProviders(); }}
+            />
+          </section>
+        </div>
+      ) : null}
+      {previewImage ? (
+        <div className="settings-layer chat-image-preview-layer" role="presentation" onMouseDown={() => setPreviewImage(undefined)}>
+          <section aria-label={`图片预览 ${previewImage.name}`} aria-modal="true" className="chat-image-preview" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
+            <button aria-label="关闭图片预览" type="button" onClick={() => setPreviewImage(undefined)}><CloseIcon /></button>
+            <img alt={previewImage.name} src={chatImageDataUrl(previewImage)} />
+            <span>{previewImage.name}</span>
           </section>
         </div>
       ) : null}
@@ -654,11 +787,6 @@ function selectedProfile(snapshot: ProviderSessionSnapshot) {
   return snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId);
 }
 
-function messageText(content: unknown): string {
-  if (typeof content === "string") return content;
-  try { return JSON.stringify(content, null, 2); } catch { return String(content); }
-}
-
 function formatRelativeTime(timestamp: number): string {
   const delta = Date.now() - timestamp;
   if (delta < 60_000) return "刚刚";
@@ -695,3 +823,6 @@ function CheckIcon() { return <Icon><path d="m5 12 4 4L19 6" /></Icon>; }
 function AlertIcon() { return <Icon><path d="M12 3 2.8 20h18.4L12 3Z" /><path d="M12 9v5M12 17h.01" /></Icon>; }
 function StopIcon() { return <Icon><rect x="7" y="7" width="10" height="10" rx="2" /></Icon>; }
 function ArrowUpIcon() { return <Icon><path d="m6 11 6-6 6 6M12 5v14" /></Icon>; }
+function SearchIcon() { return <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></Icon>; }
+function ImageIcon() { return <Icon><rect height="16" rx="2" width="18" x="3" y="4" /><circle cx="9" cy="10" r="2" /><path d="m4 18 5-4 3 2 3-3 5 4" /></Icon>; }
+function PaperclipIcon() { return <Icon><path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.8-8.8a4 4 0 0 1 5.7 5.7l-8.9 8.8a2 2 0 0 1-2.8-2.8l8.2-8.2" /></Icon>; }

@@ -2,6 +2,7 @@ import Database from "@tauri-apps/plugin-sql";
 
 const DATABASE_URL = "sqlite:nkg-ai-bot.db";
 const SELECTED_PROVIDER_KEY = "selected_provider_id";
+const WEB_SEARCH_CONFIG_KEY = "web_search_config";
 let databasePromise: Promise<Database> | undefined;
 
 export interface DatabaseClient {
@@ -35,6 +36,13 @@ export interface ProviderProfileInput {
   defaultModel: string;
   enabledModels: string[];
   apiKeyRef: string;
+}
+
+export interface WebSearchConfig {
+  provider: "searxng";
+  baseUrl: string;
+  apiKeyRef: string;
+  enabled: boolean;
 }
 
 interface ProviderProfileRow {
@@ -155,6 +163,39 @@ export async function setSelectedProviderId(
   );
 }
 
+export async function getWebSearchConfig(
+  client?: DatabaseClient,
+): Promise<WebSearchConfig | undefined> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<SettingRow[]>(
+    "SELECT value_json FROM app_settings WHERE key = $1",
+    [WEB_SEARCH_CONFIG_KEY],
+  );
+  if (!row) return undefined;
+  try {
+    return normalizeWebSearchConfig(JSON.parse(row.value_json) as WebSearchConfig);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function setWebSearchConfig(
+  input: WebSearchConfig,
+  client?: DatabaseClient,
+): Promise<WebSearchConfig> {
+  const config = normalizeWebSearchConfig(input);
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `INSERT INTO app_settings (key, value_json, updated_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = excluded.value_json,
+       updated_at = excluded.updated_at`,
+    [WEB_SEARCH_CONFIG_KEY, JSON.stringify(config), Date.now()],
+  );
+  return config;
+}
+
 export function normalizeProviderProfile(input: ProviderProfileInput): ProviderProfileInput {
   const id = input.id.trim();
   const name = input.name.trim();
@@ -184,6 +225,25 @@ export function normalizeProviderProfile(input: ProviderProfileInput): ProviderP
     defaultModel,
     enabledModels,
     apiKeyRef,
+  };
+}
+
+export function normalizeWebSearchConfig(input: WebSearchConfig): WebSearchConfig {
+  if (input.provider !== "searxng") throw new Error("Unsupported web search provider");
+  const apiKeyRef = input.apiKeyRef.trim();
+  if (!apiKeyRef) throw new Error("联网搜索 API Key 引用不能为空");
+  const url = new URL(input.baseUrl.trim());
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("联网搜索 URL 必须使用 HTTP 或 HTTPS");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("联网搜索 URL 不能包含凭据、查询参数或片段");
+  }
+  return {
+    provider: "searxng",
+    baseUrl: url.toString().replace(/\/$/, ""),
+    apiKeyRef,
+    enabled: input.enabled,
   };
 }
 

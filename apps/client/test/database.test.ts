@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { normalizeProviderProfile } from "../src/storage/database";
+import { normalizeProviderProfile, normalizeWebSearchConfig } from "../src/storage/database";
 
 describe("provider profile normalization", () => {
   it("normalizes a valid custom endpoint without weakening its scheme", () => {
@@ -19,6 +19,35 @@ describe("provider profile normalization", () => {
   ])("rejects unsafe or ambiguous endpoint %s", (baseUrl) => {
     expect(() => normalizeProviderProfile({
       id: "p", name: "P", baseUrl, defaultModel: "m", enabledModels: ["m"], apiKeyRef: "key",
+    })).toThrow();
+  });
+});
+
+describe("web search configuration normalization", () => {
+  it("normalizes a SearXNG endpoint without storing credentials", () => {
+    expect(normalizeWebSearchConfig({
+      provider: "searxng",
+      baseUrl: "https://search.example.test/",
+      apiKeyRef: " search:searxng:api-key ",
+      enabled: true,
+    })).toEqual({
+      provider: "searxng",
+      baseUrl: "https://search.example.test",
+      apiKeyRef: "search:searxng:api-key",
+      enabled: true,
+    });
+  });
+
+  it.each([
+    "file:///tmp/search",
+    "https://user:password@search.example.test",
+    "https://search.example.test?key=secret",
+  ])("rejects unsafe SearXNG endpoint %s", (baseUrl) => {
+    expect(() => normalizeWebSearchConfig({
+      provider: "searxng",
+      baseUrl,
+      apiKeyRef: "search:searxng:api-key",
+      enabled: true,
     })).toThrow();
   });
 });

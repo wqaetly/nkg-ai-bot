@@ -1,14 +1,22 @@
 import type { FlowInvokeOptions } from "@nkg-ai-bot/runtime-router";
+import {
+  requestImageGeneration,
+  type ImageGenerationRequest,
+  type ImageGenerationResult,
+} from "./imageGeneration";
 import { withProviderEnvironment } from "./providerRuntime";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
 import {
   deleteProviderProfile,
+  getWebSearchConfig,
   getSelectedProviderId,
   listProviderProfiles,
+  setWebSearchConfig,
   setSelectedProviderId,
   upsertProviderProfile,
   type ProviderProfile,
   type ProviderProfileInput,
+  type WebSearchConfig,
 } from "./storage/database";
 import { SecretVault, type ApiKeyVault } from "./storage/secretVault";
 
@@ -28,6 +36,32 @@ export interface ProviderSessionSnapshot {
   unlocked: boolean;
   profiles: ProviderProfile[];
   selectedProviderId?: string;
+  webSearch?: WebSearchConfig;
+}
+
+export interface WebSearchDraft {
+  baseUrl: string;
+  /** Empty on edit means keep the existing key. */
+  apiKey: string;
+  enabled: boolean;
+  /** Must be explicitly true for each save that uses a plaintext HTTP URL. */
+  allowInsecureHttp?: boolean;
+}
+
+export interface WebSearchResult {
+  title: string;
+  url: string;
+  content: string;
+  engine?: string;
+}
+
+export interface WebSearchQueryOptions {
+  signal?: AbortSignal;
+  maxResults?: number;
+}
+
+export interface ProviderImageGenerationRequest extends ImageGenerationRequest {
+  providerId?: string;
 }
 
 export interface ProviderDataStore {
@@ -36,6 +70,8 @@ export interface ProviderDataStore {
   delete(id: string): Promise<void>;
   getSelectedId(): Promise<string | undefined>;
   setSelectedId(id: string | undefined): Promise<void>;
+  getWebSearchConfig?(): Promise<WebSearchConfig | undefined>;
+  setWebSearchConfig?(config: WebSearchConfig): Promise<WebSearchConfig>;
 }
 
 const sqliteProviderStore: ProviderDataStore = {
@@ -44,7 +80,12 @@ const sqliteProviderStore: ProviderDataStore = {
   delete: (id) => deleteProviderProfile(id),
   getSelectedId: () => getSelectedProviderId(),
   setSelectedId: (id) => setSelectedProviderId(id),
+  getWebSearchConfig: () => getWebSearchConfig(),
+  setWebSearchConfig: (config) => setWebSearchConfig(config),
 };
+
+export const DEFAULT_SEARXNG_URL = "https://search.lfzxb.top";
+const WEB_SEARCH_API_KEY_REF = "search:searxng:api-key";
 
 export class ProviderSession {
   private vault: ApiKeyVault | undefined;
@@ -98,9 +139,10 @@ export class ProviderSession {
 
   async refresh(): Promise<ProviderSessionSnapshot> {
     this.requireVault();
-    const [profiles, storedSelection] = await Promise.all([
+    const [profiles, storedSelection, webSearch] = await Promise.all([
       this.dataStore.list(),
       this.dataStore.getSelectedId(),
+      this.dataStore.getWebSearchConfig?.(),
     ]);
     const selectedProviderId = profiles.some((profile) => profile.id === storedSelection)
       ? storedSelection
@@ -112,6 +154,7 @@ export class ProviderSession {
       unlocked: true,
       profiles,
       ...(selectedProviderId ? { selectedProviderId } : {}),
+      ...(webSearch ? { webSearch } : {}),
     };
     this.notify();
     return this.snapshot;
@@ -206,6 +249,80 @@ export class ProviderSession {
     return fetchCompatibleModels(draft.baseUrl, apiKey, this.fetchImpl, signal);
   }
 
+  async saveWebSearch(draft: WebSearchDraft): Promise<ProviderSessionSnapshot> {
+    const vault = this.requireVault();
+    if (!this.dataStore.setWebSearchConfig) throw new Error("联网搜索配置存储不可用");
+    if (isPlainHttpProviderUrl(draft.baseUrl) && draft.allowInsecureHttp !== true) {
+      throw new Error(`保存明文 HTTP 搜索服务前必须确认风险。${INSECURE_PROVIDER_WARNING}`);
+    }
+    const apiKeyRef = this.snapshotValue.webSearch?.apiKeyRef ?? WEB_SEARCH_API_KEY_REF;
+    const previousKey = await vault.getApiKey(apiKeyRef);
+    const nextKey = draft.apiKey.trim();
+    if (!nextKey && !previousKey) throw new Error("请填写 SearXNG API Key");
+    if (nextKey) await vault.setApiKey(apiKeyRef, nextKey);
+    try {
+      await this.dataStore.setWebSearchConfig({
+        provider: "searxng",
+        baseUrl: draft.baseUrl,
+        apiKeyRef,
+        enabled: draft.enabled,
+      });
+    } catch (error) {
+      if (nextKey) {
+        if (previousKey) await vault.setApiKey(apiKeyRef, previousKey);
+        else await vault.removeApiKey(apiKeyRef);
+      }
+      throw error;
+    }
+    return this.refresh();
+  }
+
+  async testWebSearch(
+    draft: WebSearchDraft,
+    signal?: AbortSignal,
+  ): Promise<WebSearchResult[]> {
+    const vault = this.requireVault();
+    if (isPlainHttpProviderUrl(draft.baseUrl) && draft.allowInsecureHttp !== true) {
+      throw new Error(`通过明文 HTTP 测试搜索前必须确认风险。${INSECURE_PROVIDER_WARNING}`);
+    }
+    const current = this.snapshotValue.webSearch;
+    const apiKey = draft.apiKey.trim()
+      || (current ? await vault.getApiKey(current.apiKeyRef) : undefined);
+    if (!apiKey) throw new Error("请先填写 SearXNG API Key");
+    return fetchSearxngResults(
+      draft.baseUrl,
+      apiKey,
+      "SearXNG connectivity test",
+      this.fetchImpl,
+      { signal, maxResults: 3 },
+    );
+  }
+
+  async searchWeb(
+    query: string,
+    options: WebSearchQueryOptions = {},
+  ): Promise<WebSearchResult[]> {
+    const vault = this.requireVault();
+    const config = this.snapshotValue.webSearch;
+    if (!config?.enabled) throw new Error("联网搜索尚未启用");
+    const apiKey = await vault.getApiKey(config.apiKeyRef);
+    if (!apiKey) throw new Error("联网搜索 API Key 不可用，请在设置中重新保存");
+    return fetchSearxngResults(config.baseUrl, apiKey, query, this.fetchImpl, options);
+  }
+
+  async generateImage(request: ProviderImageGenerationRequest): Promise<ImageGenerationResult> {
+    const vault = this.requireVault();
+    const providerId = request.providerId ?? this.snapshotValue.selectedProviderId;
+    const profile = this.snapshotValue.profiles.find((candidate) => candidate.id === providerId);
+    if (!profile) throw new Error("请先选择一个模型服务");
+    if (!profile.enabledModels.includes(request.model)) {
+      throw new Error(`模型“${request.model}”未在 OpenAI 设置中启用`);
+    }
+    const apiKey = await vault.getApiKey(profile.apiKeyRef);
+    if (!apiKey) throw new Error(`模型服务“${profile.name}”的 API Key 不可用`);
+    return requestImageGeneration(profile.baseUrl, apiKey, request, this.fetchImpl);
+  }
+
   private requireVault(): ApiKeyVault {
     if (!this.vault) throw new Error("Local secret vault is locked");
     return this.vault;
@@ -250,6 +367,63 @@ export async function fetchCompatibleModels(
   }).filter(Boolean))].sort((left, right) => left.localeCompare(right));
   if (!models.length) throw new Error("接口返回成功，但没有发现可用模型");
   return models;
+}
+
+export async function fetchSearxngResults(
+  baseUrl: string,
+  apiKey: string,
+  query: string,
+  fetchImpl: typeof globalThis.fetch,
+  options: WebSearchQueryOptions = {},
+): Promise<WebSearchResult[]> {
+  const normalizedQuery = query.trim().slice(0, 500);
+  if (!normalizedQuery) throw new Error("联网搜索关键词不能为空");
+  const endpoint = new URL(baseUrl.trim());
+  if (!['http:', 'https:'].includes(endpoint.protocol)) {
+    throw new Error("SearXNG URL 必须使用 HTTP 或 HTTPS");
+  }
+  endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/search`;
+  endpoint.search = "";
+  endpoint.searchParams.set("q", normalizedQuery);
+  endpoint.searchParams.set("format", "json");
+  endpoint.hash = "";
+  const response = await fetchImpl(endpoint, {
+    method: "GET",
+    headers: { "X-API-Key": apiKey.trim(), Accept: "application/json" },
+    signal: options.signal,
+  });
+  if (!response.ok) {
+    const detail = response.status === 401 ? "，请检查 API Key" : "";
+    throw new Error(`SearXNG 搜索失败：HTTP ${response.status}${detail}`);
+  }
+  const payload = await response.json() as unknown;
+  const rows = payload && typeof payload === "object"
+    && Array.isArray((payload as { results?: unknown }).results)
+    ? (payload as { results: unknown[] }).results
+    : [];
+  const maxResults = Math.max(1, Math.min(10, options.maxResults ?? 6));
+  const seen = new Set<string>();
+  const results: WebSearchResult[] = [];
+  for (const row of rows) {
+    if (!row || typeof row !== "object") continue;
+    const candidate = row as { title?: unknown; url?: unknown; content?: unknown; engine?: unknown };
+    if (typeof candidate.title !== "string" || typeof candidate.url !== "string") continue;
+    let resultUrl: URL;
+    try { resultUrl = new URL(candidate.url); } catch { continue; }
+    if (!['http:', 'https:'].includes(resultUrl.protocol) || seen.has(resultUrl.href)) continue;
+    seen.add(resultUrl.href);
+    results.push({
+      title: candidate.title.trim() || resultUrl.hostname,
+      url: resultUrl.href,
+      content: typeof candidate.content === "string" ? candidate.content.trim() : "",
+      ...(typeof candidate.engine === "string" && candidate.engine.trim()
+        ? { engine: candidate.engine.trim() }
+        : {}),
+    });
+    if (results.length >= maxResults) break;
+  }
+  if (!results.length) throw new Error("SearXNG 返回成功，但没有可用的搜索结果");
+  return results;
 }
 
 export const providerSession = new ProviderSession();

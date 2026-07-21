@@ -1,4 +1,5 @@
 import type { NodeEvent } from "@nkg-ai-bot/runtime-router";
+import { chatMessageSummary } from "./chatContent";
 import {
   BUILTIN_REFLECTION_FLOW_ID,
   BUILTIN_REFLECTION_FLOW_VERSION,
@@ -201,7 +202,7 @@ export function buildReflectionPrompt(
     .reverse()) {
     const rating = feedbackByMessage.get(message.id);
     const line = [
-      `${message.role === "user" ? "用户" : "助手"}${message.id === sourceMessageId ? "（本次反馈目标）" : ""}：${redactSensitiveText(messageText(message.content))}`,
+      `${message.role === "user" ? "用户" : "助手"}${message.id === sourceMessageId ? "（本次反馈目标）" : ""}：${redactSensitiveText(chatMessageSummary(message.content))}`,
       rating ? `反馈：${rating.rating === "positive" ? "有帮助" : "需改进"}${rating.correction ? `；用户纠正：${redactSensitiveText(rating.correction)}` : ""}` : "",
     ].filter(Boolean).join("\n");
     if (size + line.length > 10_000) continue;
@@ -282,11 +283,6 @@ function extractJsonObject(output: string): string {
   const end = output.lastIndexOf("}");
   if (start < 0 || end <= start) throw new Error("Reflection Flow response did not contain a JSON object");
   return output.slice(start, end + 1);
-}
-
-function messageText(content: unknown): string {
-  if (typeof content === "string") return content;
-  try { return JSON.stringify(content); } catch { return String(content); }
 }
 
 function readTextDelta(payload: unknown): string {
