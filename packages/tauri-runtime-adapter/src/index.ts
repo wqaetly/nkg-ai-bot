@@ -106,3 +106,4 @@ export * from "./sqliteRuntimePersistence.js";
 export * from "./tauriToolHost.js";
 export * from "./workerCapabilityBroker.js";
 export * from "./workerRuntimeBackend.js";
+export * from "./workerRuntimeHistory.js";

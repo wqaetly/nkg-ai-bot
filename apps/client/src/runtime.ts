@@ -4,6 +4,7 @@ import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import {
   attachTauriCapabilityBroker,
   createWorkerRuntimeBackend,
+  TauriWorkerRuntimeHistory,
   createTauriReadOnlyToolHost,
   createTauriRuntimeServices,
   type TauriRuntimeServices,
@@ -21,6 +22,7 @@ import {
   type FlowCapabilityReport,
 } from "./capabilityPolicy";
 import { listFlows } from "./storage/repositories";
+import { getDatabase } from "./storage/database";
 
 export interface StartedRuntimeServices {
   platform: AppPlatform;
@@ -48,7 +50,7 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     platform,
     fetch: fetchImpl,
     invoke: <T>(command: string, args?: Record<string, unknown>) => invoke<T>(command, args),
-    createPortableBackend: () => createWorkerRuntimeBackend({
+    createPortableBackend: async () => createWorkerRuntimeBackend({
       createWorker: () => new Worker(
         new URL("./runtime.worker.ts", import.meta.url),
         { type: "module", name: "nkg-portable-runtime" },
@@ -62,6 +64,7 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
         fetchImpl,
         ({ flowId, capability }) => capabilityAuthorizer.isAuthorized(flowId, capability),
       ),
+      history: new TauriWorkerRuntimeHistory(await getDatabase()),
     }),
   });
   await services.router.start();

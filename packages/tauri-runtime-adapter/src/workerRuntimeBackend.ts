@@ -5,6 +5,7 @@ import type {
   RuntimeBackend,
   RuntimeHttpHandler,
 } from "@nkg-ai-bot/runtime-router";
+import type { WorkerRuntimeHistory } from "./workerRuntimeHistory.js";
 
 export interface WorkerRuntimeEndpoint extends RuntimeWorkerEndpoint {
   terminate(): void;
@@ -13,6 +14,7 @@ export interface WorkerRuntimeEndpoint extends RuntimeWorkerEndpoint {
 export interface CreateWorkerRuntimeBackendOptions {
   createWorker: () => WorkerRuntimeEndpoint;
   attachCapabilities?: (worker: WorkerRuntimeEndpoint) => () => void;
+  history?: WorkerRuntimeHistory;
 }
 
 export function createWorkerRuntimeBackend(
@@ -30,7 +32,8 @@ export function createWorkerRuntimeBackend(
       detachCapabilities = options.attachCapabilities?.(worker);
       client = new RuntimeWorkerClient({ endpoint: worker });
       await client.ready();
-      handler = createWorkerRuntimeHttpHandler(client);
+      await options.history?.prune();
+      handler = createWorkerRuntimeHttpHandler(client, options.history);
     },
     request(_path, _init) {
       if (!handler) throw new Error("Worker Runtime backend is not started");
@@ -48,7 +51,25 @@ export function createWorkerRuntimeBackend(
   };
 }
 
-export function createWorkerRuntimeHttpHandler(client: RuntimeWorkerClient): RuntimeHttpHandler {
+export function createWorkerRuntimeHttpHandler(
+  client: RuntimeWorkerClient,
+  history?: WorkerRuntimeHistory,
+): RuntimeHttpHandler {
+  const eventBuffers = new Map<string, NodeEvent[]>();
+  if (history) {
+    client.subscribe((event) => {
+      const events = eventBuffers.get(event.runId) ?? [];
+      events.push(event);
+      eventBuffers.set(event.runId, events);
+    });
+  }
+  const persist = async (result: any) => {
+    if (!history) return;
+    const events = eventBuffers.get(result.runRecord.runId) ?? [];
+    eventBuffers.delete(result.runRecord.runId);
+    await history.save(result, events);
+    await history.prune();
+  };
   return async (request) => {
     try {
       const url = new URL(request.url);
@@ -65,18 +86,20 @@ export function createWorkerRuntimeHttpHandler(client: RuntimeWorkerClient): Run
       if (invokeNode && method === "POST") {
         const body = await request.json() as InvokeBody;
         const result = await client.invokeNode(toNodeArgs(invokeNode, body));
+        await persist(result);
         return resultResponse(result, decodeURIComponent(invokeNode[2]!));
       }
       const invoke = path.match(/^\/flows\/([^/]+)\/invoke$/);
       if (invoke && method === "POST") {
         const body = await request.json() as InvokeBody;
         const result = await client.invoke(toArgs(decodeURIComponent(invoke[1]!), body));
+        await persist(result);
         return resultResponse(result);
       }
       const streamNode = path.match(/^\/flows\/([^/]+)\/nodes\/([^/]+)\/stream$/);
       if (streamNode && method === "POST") {
         const body = await request.json() as InvokeBody;
-        return streamResponse(client, () => client.startNode(toNodeArgs(streamNode, body)), request.signal);
+        return streamResponse(client, () => client.startNode(toNodeArgs(streamNode, body)), request.signal, persist);
       }
       const stream = path.match(/^\/flows\/([^/]+)\/stream$/);
       if (stream && method === "POST") {
@@ -85,12 +108,14 @@ export function createWorkerRuntimeHttpHandler(client: RuntimeWorkerClient): Run
           client,
           () => client.start(toArgs(decodeURIComponent(stream[1]!), body)),
           request.signal,
+          persist,
         );
       }
       const run = path.match(/^\/runs\/([^/]+)$/);
       if (run && method === "GET") {
         const record = await client.getRun(decodeURIComponent(run[1]!));
-        return record ? json(200, record) : error(404, "transport.not_found", "Run not found");
+        const durable = record ?? await history?.getRun(decodeURIComponent(run[1]!));
+        return durable ? json(200, durable) : error(404, "transport.not_found", "Run not found");
       }
       const events = path.match(/^\/runs\/([^/]+)\/events$/);
       if (events && method === "GET") {
@@ -99,7 +124,14 @@ export function createWorkerRuntimeHttpHandler(client: RuntimeWorkerClient): Run
           url.searchParams.get("cursor") ?? undefined,
           numeric(url.searchParams.get("limit")),
         );
-        return json(200, { events: value });
+        const durable = value.length === 0
+          ? await history?.getEvents(
+              decodeURIComponent(events[1]!),
+              url.searchParams.get("cursor") ?? undefined,
+              numeric(url.searchParams.get("limit")),
+            ) ?? []
+          : value;
+        return json(200, { events: durable });
       }
       const cancel = path.match(/^\/runs\/([^/]+)\/cancel$/);
       if (cancel && method === "POST") {
@@ -147,6 +179,7 @@ async function streamResponse(
   client: RuntimeWorkerClient,
   start: () => ReturnType<RuntimeWorkerClient["start"]>,
   signal: AbortSignal,
+  onCompleted: (result: any) => Promise<void> = async () => undefined,
 ): Promise<Response> {
   const buffered: NodeEvent[] = [];
   let runId: string | undefined;
@@ -168,7 +201,10 @@ async function streamResponse(
       buffered.length = 0;
       if (signal.aborted) void client.cancel(runId!, "request aborted");
       else signal.addEventListener("abort", () => void client.cancel(runId!, "request aborted"), { once: true });
-      void started.completed.finally(() => close());
+      void started.completed
+        .then(onCompleted)
+        .catch(() => undefined)
+        .finally(() => close());
     },
     cancel() {
       void client.cancel(runId!, "stream consumer cancelled");
