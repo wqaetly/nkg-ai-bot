@@ -21,6 +21,7 @@
     "release:local:quick": "node scripts/local-release.mjs --skip-install --skip-tests",
     "build:sidecar": "npm run build -w @nkg-ai-bot/runtime-sidecar",
     "build:client": "npm run build -w @nkg-ai-bot/client",
+    "test:bundle-budget": "node scripts/check-client-bundle.mjs",
     "build:desktop-power": "npm run build:desktop-power -w @nkg-ai-bot/client",
     "tauri:desktop-power": "npm run tauri:desktop-power -w @nkg-ai-bot/client --",
     "android:init": "npm run tauri -w @nkg-ai-bot/client -- android init",

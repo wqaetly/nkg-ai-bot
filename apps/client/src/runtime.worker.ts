@@ -1,11 +1,11 @@
 import {
   PORTABLE_CORE_CAPABILITIES,
   createRuntimeCapabilityManifest,
-} from "@ai-native-flow/runtime";
+} from "@ai-native-flow/runtime/capabilities";
 import {
   attachRuntimeWorker,
   type RuntimeWorkerEndpoint,
-} from "@ai-native-flow/runtime/worker";
+} from "@ai-native-flow/runtime/worker/host";
 import {
   createBrokeredAgentToolHost,
   createBrokeredFetch,

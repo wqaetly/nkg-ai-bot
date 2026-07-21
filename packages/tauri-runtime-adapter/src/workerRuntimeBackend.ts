@@ -1,6 +1,8 @@
 import type { NodeEvent } from "@ai-native-flow/event-bus";
-import type { RuntimeWorkerEndpoint } from "@ai-native-flow/runtime/worker";
-import { RuntimeWorkerClient } from "@ai-native-flow/runtime/worker";
+import {
+  RuntimeWorkerClient,
+  type RuntimeWorkerEndpoint,
+} from "@ai-native-flow/runtime/worker/client";
 import type {
   RuntimeBackend,
   RuntimeHttpHandler,

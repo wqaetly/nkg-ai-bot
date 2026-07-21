@@ -8,7 +8,7 @@
     "dev:tauri": "vite",
     "build": "npm run build:frontend",
     "build:desktop-power": "npm run sidecar:build && npm run build:frontend",
-    "build:frontend": "tsc -b && vite build",
+    "build:frontend": "tsc -b && vite build && node ../../scripts/check-client-bundle.mjs",
     "sidecar:build": "npm run build -w @nkg-ai-bot/runtime-sidecar",
     "preview": "vite preview",
     "tauri": "node ../../scripts/tauri.mjs",

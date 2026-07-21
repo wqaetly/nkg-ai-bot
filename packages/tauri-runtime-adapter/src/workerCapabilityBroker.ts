@@ -3,8 +3,8 @@ import type {
   AgentToolHost,
   AgentToolName,
   AgentToolResult,
-} from "@ai-native-flow/runtime";
-import type { RuntimeWorkerEndpoint } from "@ai-native-flow/runtime/worker";
+} from "@ai-native-flow/runtime/agent-tools";
+import type { RuntimeWorkerEndpoint } from "@ai-native-flow/runtime/worker/host";
 
 const PROTOCOL = "runtime.capability.v1" as const;
 

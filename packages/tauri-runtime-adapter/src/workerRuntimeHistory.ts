@@ -2,10 +2,9 @@ import type { NodeEvent } from "@ai-native-flow/event-bus";
 import {
   DEFAULT_RUN_RETENTION_POLICY,
   planRunRetention,
-  type ExecuteResult,
-  type RunRecord,
   type RunRetentionPolicy,
-} from "@ai-native-flow/runtime";
+} from "@ai-native-flow/runtime/retention";
+import type { ExecuteResult, RunRecord } from "@ai-native-flow/runtime";
 import type { SqliteRuntimeDatabase } from "./sqliteRuntimePersistence.js";
 
 export interface WorkerRuntimeHistory {

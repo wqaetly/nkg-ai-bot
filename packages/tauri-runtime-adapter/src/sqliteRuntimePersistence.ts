@@ -9,7 +9,6 @@ import {
   type NodeEventKind,
 } from "@ai-native-flow/event-bus";
 import {
-  sha256HexPortable,
   type ArtifactStore,
   type FlowVersionRef,
   type RegistryStore,
@@ -17,6 +16,7 @@ import {
   type RunStatus,
   type RunStore,
 } from "@ai-native-flow/runtime";
+import { sha256HexPortable } from "@ai-native-flow/runtime/storage/hash";
 import {
   InMemoryVariableStore,
   type MutableVariableStore,
