@@ -52,12 +52,13 @@ describe("platform build configuration", () => {
     const base = JSON.parse(await readFile(
       new URL("../src-tauri/tauri.conf.json", import.meta.url),
       "utf8",
-    )) as { bundle?: { externalBin?: string[] } };
+    )) as { bundle?: { externalBin?: string[]; targets?: string[] } };
     const power = JSON.parse(await readFile(
       new URL("../src-tauri/tauri.desktop-power.conf.json", import.meta.url),
       "utf8",
     )) as { build?: { beforeBuildCommand?: string }; bundle?: { externalBin?: string[] } };
     expect(base.bundle?.externalBin).toEqual([]);
+    expect(base.bundle?.targets).toEqual(["msi"]);
     expect(power.bundle?.externalBin).toEqual(["binaries/nkg-runtime"]);
     expect(power.build?.beforeBuildCommand).toBe("npm run build:desktop-power");
   });
@@ -84,6 +85,9 @@ describe("platform build configuration", () => {
     expect(cargoToml).toContain("desktop-power = [");
     expect(desktopDependencies).toContain("optional = true");
     expect(rustEntry).toContain("#[cfg(mobile)]\n    let builder");
+    expect(cargoToml).toContain('tauri-plugin-http = { version = "2", default-features = false');
+    expect(cargoToml).toContain('features = ["rustls-tls", "http2", "unsafe-headers"]');
+    expect(cargoToml).toContain('tauri = { version = "2", default-features = false, features = ["wry"] }');
   });
 
   it("routes Release artifacts to the matching local host", async () => {
@@ -95,13 +99,22 @@ describe("platform build configuration", () => {
       new URL("../../../scripts/local-release-plan.mjs", import.meta.url),
       "utf8",
     );
+    const releaseCollector = await readFile(
+      new URL("../../../scripts/local-release.mjs", import.meta.url),
+      "utf8",
+    );
 
     expect(rootPackage.scripts["release:local"]).toBe("node scripts/local-release.mjs");
-    expect(releasePlan).toContain('"Windows NSIS Release"');
+    expect(rootPackage.scripts["tauri:msi:fast"]).toBe("node scripts/fast-windows-msi.mjs");
+    expect(releasePlan).toContain('"Windows MSI Release"');
     expect(releasePlan).toContain('"Android arm64 Release"');
     expect(releasePlan).toContain('"macOS DMG Release"');
     expect(releasePlan).toContain('"iOS App Store IPA"');
     expect(releasePlan).not.toContain("--debug");
     expect(releasePlan).not.toContain("ubuntu");
+    expect(releaseCollector).toContain('"bundle", "msi"');
+    expect(releaseCollector).toContain('".msi"');
+    expect(releaseCollector).not.toContain('"bundle", "nsis"');
   });
+
 });

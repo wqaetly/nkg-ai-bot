@@ -23,6 +23,10 @@ describe("chat-first UI consistency", () => {
     expect(source).toContain('event.key === "Enter" && !event.shiftKey');
     expect(source).toContain("abortRef.current?.abort()");
     expect(source).toContain("scrollIntoView");
+    expect(source).toContain('aria-label="当前对话模型"');
+    expect(source).toContain("const value = event.currentTarget.value;");
+    expect(source).toContain("[activeId]: value");
+    expect(source).not.toContain("[activeId]: event.currentTarget.value");
   });
 
   it("uses a desktop sidebar and converts it to an off-canvas mobile drawer", async () => {
@@ -33,5 +37,6 @@ describe("chat-first UI consistency", () => {
     expect(styles).toContain("transform: translateX(-105%)");
     expect(styles).toContain(".conversation-sidebar.open { transform: translateX(0); }");
     expect(styles).toContain("env(safe-area-inset-bottom)");
+    expect(styles).toContain(".composer-model-select");
   });
 });

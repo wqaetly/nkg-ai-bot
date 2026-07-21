@@ -24,7 +24,7 @@ import { EvaluationPanel } from "./EvaluationPanel";
 import { createEvalCaseFromCorrection } from "./evaluationRepository";
 import type { EvaluationRuntime } from "./evaluation";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
-import { providerSession } from "./providerSession";
+import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
   listConversations,
@@ -61,6 +61,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   const [learningNotice, setLearningNotice] = useState("");
   const [correctionMessageId, setCorrectionMessageId] = useState<string>();
   const [correctionDraft, setCorrectionDraft] = useState("");
+  const [providerSnapshot, setProviderSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const abortRef = useRef<AbortController | undefined>(undefined);
   const activeRequestRef = useRef<string | undefined>(undefined);
   const messageEndRef = useRef<HTMLDivElement>(null);
@@ -69,10 +70,14 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
 
   const draft = activeId ? drafts[activeId] ?? "" : "";
   const activeConversation = conversations.find((conversation) => conversation.id === activeId);
-  const selectedProvider = providerSession.snapshot.profiles.find(
-    (profile) => profile.id === providerSession.snapshot.selectedProviderId,
+  const selectedProvider = providerSnapshot.profiles.find(
+    (profile) => profile.id === providerSnapshot.selectedProviderId,
   );
-  const unlocked = providerSession.snapshot.unlocked && Boolean(selectedProvider);
+  const unlocked = providerSnapshot.unlocked && Boolean(selectedProvider);
+  const conversationModel = selectedProvider && activeConversation?.providerId === selectedProvider.id
+    && activeConversation.modelId && selectedProvider.enabledModels.includes(activeConversation.modelId)
+    ? activeConversation.modelId
+    : selectedProvider?.defaultModel;
   const reflectionRunner = useMemo(
     () => runtime ? new ReflectionJobRunner(runtime) : undefined,
     [runtime],
@@ -80,11 +85,15 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
 
   useEffect(() => {
     let active = true;
+    const syncProvider = () => { if (active) setProviderSnapshot(providerSession.snapshot); };
+    const unsubscribeProvider = providerSession.subscribe(syncProvider);
     Promise.all([
       import("./runtime").then(({ getRuntimeServices }) => getRuntimeServices()),
       listConversations(),
-    ]).then(async ([{ client, platform: runtimePlatform }, stored]) => {
+      providerSession.initialize(),
+    ]).then(async ([{ client, platform: runtimePlatform }, stored, provider]) => {
       if (!active) return;
+      setProviderSnapshot(provider);
       setRuntime(client);
       setPlatform(runtimePlatform);
       setSkills(await listAssistantSkillIndex());
@@ -93,7 +102,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
         setActiveId(stored[0]!.id);
         return;
       }
-      const created = await createStoredConversation();
+      const created = await createStoredConversation(selectedProfile(provider));
       if (!active) return;
       setConversations([created]);
       setActiveId(created.id);
@@ -102,6 +111,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
     });
     return () => {
       active = false;
+      unsubscribeProvider();
       abortRef.current?.abort();
     };
   }, []);
@@ -186,7 +196,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
 
   async function startConversation() {
     stopGeneration();
-    const created = await createStoredConversation();
+    const created = await createStoredConversation(selectedProvider);
     setConversations((current) => [created, ...current]);
     setActiveId(created.id);
     setMessages([]);
@@ -221,7 +231,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
       if (id === activeId) setActiveId(remaining[0].id);
       return;
     }
-    const created = await createStoredConversation();
+    const created = await createStoredConversation(selectedProvider);
     setConversations([created]);
     setActiveId(created.id);
   }
@@ -229,6 +239,17 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   async function send(event?: FormEvent) {
     event?.preventDefault();
     if (!activeId || !runtime || busy || !draft.trim() || !unlocked) return;
+    if (activeConversation && selectedProvider && conversationModel
+      && (activeConversation.providerId !== selectedProvider.id || activeConversation.modelId !== conversationModel)) {
+      await upsertConversation({
+        ...activeConversation,
+        providerId: selectedProvider.id,
+        modelId: conversationModel,
+      });
+      setConversations((current) => current.map((conversation) => conversation.id === activeConversation.id
+        ? { ...conversation, providerId: selectedProvider.id, modelId: conversationModel }
+        : conversation));
+    }
     const conversationId = activeId;
     const text = draft.trim();
     const optimistic: LocalMessage = {
@@ -277,6 +298,16 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
         setBusy(false);
       }
     }
+  }
+
+  async function selectConversationModel(modelId: string) {
+    if (!activeConversation || !selectedProvider || !selectedProvider.enabledModels.includes(modelId)) return;
+    await upsertConversation({
+      ...activeConversation,
+      providerId: selectedProvider.id,
+      modelId,
+    });
+    await refreshConversations();
   }
 
   function stopGeneration() {
@@ -429,7 +460,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
           </button>
           <button type="button" onClick={openProviders}>
             <span className="footer-icon"><SettingsIcon /></span>
-            <span><strong>OpenAI 设置</strong><small>{unlocked ? selectedProvider?.defaultModel : "配置 API URL 与密钥"}</small></span>
+            <span><strong>OpenAI 设置</strong><small>{unlocked ? `${selectedProvider?.enabledModels.length ?? 0} 个模型已启用` : "配置 API URL 与密钥"}</small></span>
             <ChevronIcon />
           </button>
           <div className="local-note"><ShieldIcon /> 对话与密钥仅保存在本机</div>
@@ -441,7 +472,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
           <div className="chat-header-left">
             <button aria-label="打开会话列表" className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(true)}><MenuIcon /></button>
             <button aria-label="打开助手技能" className="assistant-avatar assistant-avatar-button" type="button" onClick={() => setSkillsOpen(true)}>{activeSkillName(skills, activeConversation).slice(0, 1).toUpperCase()}</button>
-            <div><h1>{activeConversation?.title || "新对话"}</h1><p><span className={unlocked ? "online-dot" : "offline-dot"} />{activeSkillName(skills, activeConversation)} · {activeConversation?.assistantVersion ?? "1.0.0"} · {unlocked ? selectedProvider?.defaultModel : "尚未配置模型"}</p></div>
+            <div><h1>{activeConversation?.title || "新对话"}</h1><p><span className={unlocked ? "online-dot" : "offline-dot"} />{activeSkillName(skills, activeConversation)} · {activeConversation?.assistantVersion ?? "1.0.0"} · {unlocked ? conversationModel : "尚未配置模型"}</p></div>
           </div>
           <div className="header-actions">
             <button aria-label="打开本地记忆" className="header-settings" type="button" onClick={() => setMemoryOpen(true)}><MemoryIcon /><span>记忆</span></button>
@@ -522,16 +553,26 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
               ref={textareaRef}
               rows={1}
               value={draft}
-              onChange={(event) => activeId && setDrafts((current) => ({ ...current, [activeId]: event.currentTarget.value }))}
+              onChange={(event) => {
+                const value = event.currentTarget.value;
+                if (activeId) setDrafts((current) => ({ ...current, [activeId]: value }));
+              }}
               onKeyDown={handleComposerKeyDown}
             />
             <div className="composer-footer">
               <span>{busy ? "正在生成回复…" : "Enter 发送 · Shift + Enter 换行"}</span>
-              {busy ? (
-                <button aria-label="停止生成" className="send-button stop" type="button" onClick={stopGeneration}><StopIcon /></button>
-              ) : (
-                <button aria-label="发送消息" className="send-button" disabled={!runtime || !unlocked || !draft.trim()} type="submit"><ArrowUpIcon /></button>
-              )}
+              <div className="composer-controls">
+                {selectedProvider && conversationModel ? (
+                  <select aria-label="当前对话模型" className="composer-model-select" disabled={busy} value={conversationModel} onChange={(event) => void selectConversationModel(event.currentTarget.value)}>
+                    {selectedProvider.enabledModels.map((model) => <option key={model} value={model}>{model}</option>)}
+                  </select>
+                ) : null}
+                {busy ? (
+                  <button aria-label="停止生成" className="send-button stop" type="button" onClick={stopGeneration}><StopIcon /></button>
+                ) : (
+                  <button aria-label="发送消息" className="send-button" disabled={!runtime || !unlocked || !draft.trim()} type="submit"><ArrowUpIcon /></button>
+                )}
+              </div>
             </div>
           </form>
           <p className="composer-disclaimer">AI 生成的内容可能不准确，请核查重要信息。</p>
@@ -591,7 +632,9 @@ function Welcome({ onSelect }: { onSelect: (prompt: string) => void }) {
   );
 }
 
-async function createStoredConversation(): Promise<LocalConversation> {
+async function createStoredConversation(
+  provider?: { id: string; defaultModel: string },
+): Promise<LocalConversation> {
   const now = Date.now();
   const skill = await resolveAssistantSkill();
   const conversation: LocalConversation = {
@@ -599,11 +642,16 @@ async function createStoredConversation(): Promise<LocalConversation> {
     title: "新对话",
     assistantId: skill.assistantId,
     assistantVersion: skill.version,
+    ...(provider ? { providerId: provider.id, modelId: provider.defaultModel } : {}),
     createdAt: now,
     updatedAt: now,
   };
   await upsertConversation(conversation);
   return conversation;
+}
+
+function selectedProfile(snapshot: ProviderSessionSnapshot) {
+  return snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId);
 }
 
 function messageText(content: unknown): string {

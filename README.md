@@ -20,7 +20,7 @@
   本地 SQLite；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
-- `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 NSIS 与
+- `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 portable MSI 与
   Android APK，macOS 产出 DMG 与 App Store Connect IPA。Google Play AAB 按需生成；发布过程不依赖
   GitHub Actions，并复用本机 npm、Cargo、Gradle 与 Xcode 缓存。
 
@@ -35,6 +35,18 @@ npm run rust:check
 npm run build:client
 ```
 
+桌面联调通常直接启动 Tauri 开发模式；需要验证 Windows 安装流程、但尚未准备正式发布时，
+使用保留增量编译并关闭 LTO 的快速 MSI：
+
+```powershell
+npm run tauri -- dev
+npm run tauri:msi:fast
+```
+
+快速 MSI 仍使用 portable Runtime、不会携带 Node sidecar。正式 Windows 交付包继续使用
+`npm run tauri -- build`，以启用 release profile 中的 thin LTO、符号裁剪和 `panic=abort`。
+两种构建分别使用 `target/fast-msi` 与默认 `target` 缓存，交替执行不会互相触发全量重编译。
+
 ## 一键本地 Release
 
 准备好当前系统原生工具链后，在仓库根目录执行：
@@ -47,7 +59,7 @@ npm run release:local
 
 | 宿主 | 产物 |
 |---|---|
-| Windows | NSIS `.exe`、Android arm64 `.apk`；可选 Google Play `.aab` |
+| Windows | portable `.msi`、Android arm64 `.apk`；可选 Google Play `.aab` |
 | macOS | macOS `.dmg`、iOS App Store Connect `.ipa` |
 
 所有产物会复制到 `artifacts/releases/<版本>/<平台-时间>/`，同目录的
@@ -144,8 +156,8 @@ HTTP；真机外部网络仍需在实际设备上复核。
 当前测试只扫描本项目 `packages/`，上游子模块保持自己的依赖、测试配置和
 发布节奏。
 
-当前验证基线：本项目 137 项测试、默认 Rust 3 项测试、SQLite migration、Windows
-NSIS 安装/启动/卸载 smoke、Android arm64 Release APK、Android Emulator 流式聊天与
+当前验证基线：本项目 156 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
+Android arm64 Release APK、Android Emulator 流式聊天与
 前后台恢复通过；子模块 757 项测试、类型检查和 browser bundle Node builtin 门禁通过。
-Windows portable 安装器约 4.13 MiB，Android arm64 APK 约 14.40 MiB。macOS DMG、
+Windows portable MSI 约 5.77 MiB，Android arm64 APK 约 14.40 MiB。macOS DMG、
 iOS IPA/真机与 Android 物理真机仍需在对应真实设备和签名环境验收。

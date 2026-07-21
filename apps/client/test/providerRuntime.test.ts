@@ -7,6 +7,7 @@ const profile: ProviderProfile = {
   name: "Local model",
   baseUrl: "http://127.0.0.1:11434/v1",
   defaultModel: "qwen3",
+  enabledModels: ["qwen3", "qwen3:8b"],
   apiKeyRef: "provider:provider-1:api-key",
   createdAt: 1,
   updatedAt: 1,

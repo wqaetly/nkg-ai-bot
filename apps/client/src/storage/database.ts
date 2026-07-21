@@ -22,6 +22,7 @@ export interface ProviderProfile {
   name: string;
   baseUrl: string;
   defaultModel: string;
+  enabledModels: string[];
   apiKeyRef: string;
   createdAt: number;
   updatedAt: number;
@@ -32,6 +33,7 @@ export interface ProviderProfileInput {
   name: string;
   baseUrl: string;
   defaultModel: string;
+  enabledModels: string[];
   apiKeyRef: string;
 }
 
@@ -40,6 +42,7 @@ interface ProviderProfileRow {
   name: string;
   base_url: string;
   default_model: string;
+  enabled_models_json: string;
   api_key_ref: string;
   created_at: number;
   updated_at: number;
@@ -54,7 +57,7 @@ export async function listProviderProfiles(
 ): Promise<ProviderProfile[]> {
   const database = client ?? await getDatabase();
   const rows = await database.select<ProviderProfileRow[]>(
-    `SELECT id, name, base_url, default_model, api_key_ref, created_at, updated_at
+    `SELECT id, name, base_url, default_model, enabled_models_json, api_key_ref, created_at, updated_at
        FROM provider_profiles
       ORDER BY updated_at DESC`,
   );
@@ -67,7 +70,7 @@ export async function getProviderProfile(
 ): Promise<ProviderProfile | undefined> {
   const database = client ?? await getDatabase();
   const [row] = await database.select<ProviderProfileRow[]>(
-    `SELECT id, name, base_url, default_model, api_key_ref, created_at, updated_at
+    `SELECT id, name, base_url, default_model, enabled_models_json, api_key_ref, created_at, updated_at
        FROM provider_profiles WHERE id = $1`,
     [id],
   );
@@ -83,12 +86,13 @@ export async function upsertProviderProfile(
   const now = Date.now();
   await database.execute(
     `INSERT INTO provider_profiles
-       (id, name, base_url, default_model, api_key_ref, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $6)
+       (id, name, base_url, default_model, enabled_models_json, api_key_ref, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        base_url = excluded.base_url,
        default_model = excluded.default_model,
+       enabled_models_json = excluded.enabled_models_json,
        api_key_ref = excluded.api_key_ref,
        updated_at = excluded.updated_at`,
     [
@@ -96,6 +100,7 @@ export async function upsertProviderProfile(
       profile.name,
       profile.baseUrl,
       profile.defaultModel,
+      JSON.stringify(profile.enabledModels),
       profile.apiKeyRef,
       now,
     ],
@@ -154,9 +159,13 @@ export function normalizeProviderProfile(input: ProviderProfileInput): ProviderP
   const id = input.id.trim();
   const name = input.name.trim();
   const defaultModel = input.defaultModel.trim();
+  const enabledModels = uniqueModels(input.enabledModels);
   const apiKeyRef = input.apiKeyRef.trim();
-  if (!id || !name || !defaultModel || !apiKeyRef) {
+  if (!id || !name || !defaultModel || !apiKeyRef || enabledModels.length === 0) {
     throw new Error("Provider id, name, model and API Key reference are required");
+  }
+  if (!enabledModels.includes(defaultModel)) {
+    throw new Error("Default model must be included in enabled models");
   }
   const url = new URL(input.baseUrl.trim());
   if (url.protocol !== "https:" && url.protocol !== "http:") {
@@ -173,6 +182,7 @@ export function normalizeProviderProfile(input: ProviderProfileInput): ProviderP
     name,
     baseUrl: url.toString().replace(/\/$/, ""),
     defaultModel,
+    enabledModels,
     apiKeyRef,
   };
 }
@@ -183,8 +193,26 @@ function mapProviderProfile(row: ProviderProfileRow): ProviderProfile {
     name: row.name,
     baseUrl: row.base_url,
     defaultModel: row.default_model,
+    enabledModels: parseModels(row.enabled_models_json, row.default_model),
     apiKeyRef: row.api_key_ref,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
+}
+
+function uniqueModels(models: string[]): string[] {
+  return [...new Set(models.map((model) => model.trim()).filter(Boolean))].sort((left, right) => left.localeCompare(right));
+}
+
+function parseModels(json: string, fallback: string): string[] {
+  try {
+    const value = JSON.parse(json) as unknown;
+    if (Array.isArray(value)) {
+      const models = uniqueModels(value.filter((item): item is string => typeof item === "string"));
+      if (models.length) return models;
+    }
+  } catch {
+    // Fall through to the legacy default model.
+  }
+  return [fallback];
 }

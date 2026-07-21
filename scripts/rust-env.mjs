@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync } from "node:fs";
 import { mkdir, readdir, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
+import { availableParallelism, tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureAndroidLibsodium } from "./android-libsodium.mjs";
 
@@ -36,7 +36,7 @@ export async function createRustEnvironment() {
   }
 
   env.SODIUM_LIB_DIR = libraryDir;
-  env.CARGO_BUILD_JOBS ??= "2";
+  configureCargoBuildJobs(env);
   return env;
 }
 
@@ -64,7 +64,7 @@ export async function createSourceRustEnvironment() {
   // libsodium-sys verifies the downloaded archive with the official minisign
   // public key before compiling it for macOS, Linux, Android, or iOS.
   env.SODIUM_DIST_DIR = cacheRoot;
-  env.CARGO_BUILD_JOBS ??= "2";
+  configureCargoBuildJobs(env);
   return env;
 }
 
@@ -99,8 +99,21 @@ export async function createAndroidRustEnvironment(targetName) {
     delete env.SODIUM_DIST_DIR;
     configureAndroidCompiler(env, ndkHome, targetName);
   }
-  env.CARGO_BUILD_JOBS ??= "2";
+  configureCargoBuildJobs(env);
   return env;
+}
+
+export function resolveCargoBuildJobs(
+  configured = process.env.CARGO_BUILD_JOBS,
+  detected = availableParallelism(),
+) {
+  const override = configured?.trim();
+  if (override) return override;
+  return String(Math.max(1, Math.floor(detected)));
+}
+
+function configureCargoBuildJobs(env) {
+  env.CARGO_BUILD_JOBS = resolveCargoBuildJobs(env.CARGO_BUILD_JOBS);
 }
 
 function prependWindowsCargoPath(env) {

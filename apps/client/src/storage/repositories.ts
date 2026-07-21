@@ -33,6 +33,8 @@ export interface LocalConversation extends Timestamps {
   roleId?: string;
   assistantId?: string;
   assistantVersion?: string;
+  providerId?: string;
+  modelId?: string;
 }
 
 export type LocalMessageRole = "system" | "user" | "assistant" | "tool";
@@ -49,7 +51,7 @@ export interface LocalMessage {
 type RoleRow = { id: string; name: string; system_prompt: string; avatar_uri: string | null; created_at: number; updated_at: number };
 type FlowRow = { id: string; version: string; name: string; graph_json: string; created_at: number; updated_at: number };
 type AssistantRow = { id: string; name: string; description: string; flow_id: string; flow_version: string; created_at: number; updated_at: number };
-type ConversationRow = { id: string; title: string; role_id: string | null; assistant_id: string | null; assistant_version: string | null; created_at: number; updated_at: number };
+type ConversationRow = { id: string; title: string; role_id: string | null; assistant_id: string | null; assistant_version: string | null; provider_id: string | null; model_id: string | null; created_at: number; updated_at: number };
 type MessageRow = { id: string; conversation_id: string; sequence: number; role: LocalMessageRole; content_json: string; created_at: number };
 
 export async function listRoles(client?: DatabaseClient): Promise<LocalRole[]> {
@@ -184,18 +186,19 @@ export async function getConversation(id: string, client?: DatabaseClient): Prom
 }
 
 export async function upsertConversation(
-  input: Pick<LocalConversation, "id" | "title" | "roleId" | "assistantId" | "assistantVersion">,
+  input: Pick<LocalConversation, "id" | "title" | "roleId" | "assistantId" | "assistantVersion" | "providerId" | "modelId">,
   client?: DatabaseClient,
 ): Promise<void> {
   requireText(input.id, "Conversation id");
   const database = client ?? await getDatabase(); const now = Date.now();
   await database.execute(
-    `INSERT INTO conversations (id, title, role_id, assistant_id, assistant_version, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $6)
+    `INSERT INTO conversations (id, title, role_id, assistant_id, assistant_version, provider_id, model_id, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
      ON CONFLICT(id) DO UPDATE SET title=excluded.title, role_id=excluded.role_id,
        assistant_id=excluded.assistant_id, assistant_version=excluded.assistant_version,
+       provider_id=excluded.provider_id, model_id=excluded.model_id,
        updated_at=excluded.updated_at`,
-    [input.id, input.title.trim(), input.roleId ?? null, input.assistantId ?? null, input.assistantVersion ?? null, now],
+    [input.id, input.title.trim(), input.roleId ?? null, input.assistantId ?? null, input.assistantVersion ?? null, input.providerId ?? null, input.modelId ?? null, now],
   );
 }
 
@@ -238,6 +241,8 @@ function mapConversation(row: ConversationRow): LocalConversation {
     ...(row.role_id ? { roleId: row.role_id } : {}),
     ...(row.assistant_id ? { assistantId: row.assistant_id } : {}),
     ...(row.assistant_version ? { assistantVersion: row.assistant_version } : {}),
+    ...(row.provider_id ? { providerId: row.provider_id } : {}),
+    ...(row.model_id ? { modelId: row.model_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

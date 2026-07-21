@@ -1,4 +1,5 @@
 import { appDataDir, join } from "@tauri-apps/api/path";
+import { invoke } from "@tauri-apps/api/core";
 import { Stronghold, type Client, type Store } from "@tauri-apps/plugin-stronghold";
 
 const CLIENT_NAME = "nkg-ai-bot";
@@ -10,33 +11,23 @@ export interface ApiKeyVault {
   lock(): Promise<void>;
 }
 
-export class VaultUnlockError extends Error {
-  readonly code = "vault.unlock_failed";
-
-  constructor(
-    message = "无法解锁本地密钥库。若此前已创建，请检查密码；若密码正确，密钥库快照可能已损坏或不可访问。",
-  ) {
-    super(message);
-    this.name = "VaultUnlockError";
-  }
-}
-
 export class SecretVault implements ApiKeyVault {
   private constructor(
     private readonly stronghold: Stronghold,
     private readonly store: Store,
   ) {}
 
-  static async unlock(password: string): Promise<SecretVault> {
-    if (password.length < 8) {
-      throw new Error("本地密钥库密码至少需要 8 个字符");
-    }
-    const vaultPath = await join(await appDataDir(), "secrets.hold");
+  static async openAutomatically(
+    getDevicePassword: () => Promise<string> = () => invoke<string>("secret_vault_device_password"),
+  ): Promise<SecretVault> {
+    const password = await getDevicePassword();
+    if (password.length < 64) throw new Error("应用生成的设备密钥无效");
+    const vaultPath = await join(await appDataDir(), "secrets-auto.hold");
     let stronghold: Stronghold;
     try {
       stronghold = await Stronghold.load(vaultPath, password);
     } catch {
-      throw new VaultUnlockError();
+      throw new Error("无法打开自动加密存储，请检查本机应用数据目录权限");
     }
     let client: Client;
     try {
@@ -46,7 +37,7 @@ export class SecretVault implements ApiKeyVault {
         client = await stronghold.createClient(CLIENT_NAME);
       } catch {
         await stronghold.unload().catch(() => undefined);
-        throw new VaultUnlockError("本地密钥库已打开，但无法初始化加密存储。请检查本机存储空间和文件权限。");
+        throw new Error("自动加密存储已打开，但无法初始化；请检查本机存储空间和文件权限");
       }
     }
     return new SecretVault(stronghold, client.getStore());

@@ -28,11 +28,12 @@ desktop-power = [
 ]
 
 [dependencies]
-tauri = { version = "2", features = [] }
-tauri-plugin-http = { version = "2", features = ["unsafe-headers"] }
+tauri = { version = "2", default-features = false, features = ["wry"] }
+tauri-plugin-http = { version = "2", default-features = false, features = ["rustls-tls", "http2", "unsafe-headers"] }
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-stronghold = "2"
 serde_json = "1"
+rand = "0.8"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-shell = { version = "2", optional = true }

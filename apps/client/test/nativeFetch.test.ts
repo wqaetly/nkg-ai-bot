@@ -8,7 +8,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: mocks.nativeFetch }));
 
 describe("platform HTTP client", () => {
-  it.each(["android", "ios"] as const)(
+  it.each(["windows", "macos", "linux", "android", "ios"] as const)(
     "returns the native client on %s without mutating global fetch",
     async (platform) => {
       const original = globalThis.fetch;
@@ -19,12 +19,4 @@ describe("platform HTTP client", () => {
       expect(globalThis.fetch).toBe(original);
     },
   );
-
-  it("keeps desktop HTTP bound to the host fetch", async () => {
-    const original = globalThis.fetch;
-    const fetchImpl = await getPlatformFetch("windows");
-
-    expect(globalThis.fetch).toBe(original);
-    expect(fetchImpl).not.toBe(mocks.nativeFetch);
-  });
 });

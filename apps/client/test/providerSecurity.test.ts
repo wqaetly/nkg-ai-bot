@@ -3,7 +3,6 @@ import {
   INSECURE_PROVIDER_WARNING,
   isPlainHttpProviderUrl,
 } from "../src/providerSecurity";
-import { VaultUnlockError } from "../src/storage/secretVault";
 
 describe("Provider security interaction", () => {
   it.each([
@@ -19,11 +18,5 @@ describe("Provider security interaction", () => {
     expect(INSECURE_PROVIDER_WARNING).toContain("API Key");
     expect(INSECURE_PROVIDER_WARNING).toContain("提示词");
     expect(INSECURE_PROVIDER_WARNING).toContain("模型回复");
-  });
-
-  it("gives vault failures a stable user-facing code without exposing plugin details", () => {
-    const error = new VaultUnlockError();
-    expect(error).toMatchObject({ name: "VaultUnlockError", code: "vault.unlock_failed" });
-    expect(error.message).toContain("检查密码");
   });
 });

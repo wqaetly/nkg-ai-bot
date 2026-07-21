@@ -2,9 +2,11 @@
 mod runtime_sidecar;
 mod runtime_tools;
 
+use rand::{rngs::OsRng, RngCore};
 #[cfg(all(desktop, feature = "desktop-power"))]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
 use runtime_tools::runtime_tool_call;
+use std::{fs::OpenOptions, io::Write};
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -70,6 +72,12 @@ pub fn run() {
             sql: include_str!("../migrations/0007_evaluation.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 8,
+            description: "add_provider_model_catalog_and_conversation_model",
+            sql: include_str!("../migrations/0008_provider_models.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()
@@ -95,6 +103,7 @@ pub fn run() {
         .manage(RuntimeSidecarState::default())
         .invoke_handler(tauri::generate_handler![
             runtime_platform,
+            secret_vault_device_password,
             runtime_tool_call,
             runtime_sidecar_start,
             runtime_sidecar_stop
@@ -103,12 +112,14 @@ pub fn run() {
     #[cfg(all(desktop, not(feature = "desktop-power")))]
     let builder = builder.invoke_handler(tauri::generate_handler![
         runtime_platform,
+        secret_vault_device_password,
         runtime_tool_call
     ]);
 
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![
         runtime_platform,
+        secret_vault_device_password,
         runtime_tool_call
     ]);
 
@@ -119,6 +130,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod migration_tests {
+    use super::generate_device_secret;
     use sqlx::{sqlite::SqlitePoolOptions, Row};
 
     #[tokio::test]
@@ -156,6 +168,10 @@ mod migration_tests {
             .execute(&pool)
             .await
             .expect("apply evaluation migration");
+        sqlx::raw_sql(include_str!("../migrations/0008_provider_models.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply provider models migration");
 
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
             .fetch_all(&pool)
@@ -357,6 +373,55 @@ mod migration_tests {
     }
 
     #[tokio::test]
+    async fn provider_model_migration_clears_legacy_configuration_and_enforces_selection() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        sqlx::raw_sql(include_str!("../migrations/0001_initial.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply initial migration");
+        sqlx::query("INSERT INTO provider_profiles (id, name, base_url, default_model, api_key_ref, created_at, updated_at) VALUES ('legacy', 'Legacy', 'https://example.test/v1', 'old-model', 'old-key', 1, 1)")
+            .execute(&pool).await.expect("seed legacy provider");
+        sqlx::query("INSERT INTO app_settings (key, value_json, updated_at) VALUES ('selected_provider_id', '\"legacy\"', 1)")
+            .execute(&pool).await.expect("seed legacy selection");
+
+        sqlx::raw_sql(include_str!("../migrations/0008_provider_models.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply provider model migration");
+
+        let providers: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM provider_profiles")
+            .fetch_one(&pool)
+            .await
+            .expect("count providers");
+        let selection: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM app_settings WHERE key='selected_provider_id'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("count selections");
+        assert_eq!(providers, 0);
+        assert_eq!(selection, 0);
+
+        sqlx::query("INSERT INTO conversations (id, title, provider_id, model_id, created_at, updated_at) VALUES ('valid', '', 'openai', 'model-a', 1, 1)")
+            .execute(&pool).await.expect("insert provider-bound conversation");
+        assert!(sqlx::query("INSERT INTO conversations (id, title, model_id, created_at, updated_at) VALUES ('invalid', '', 'model-a', 1, 1)")
+            .execute(&pool).await.is_err());
+    }
+
+    #[test]
+    fn generated_device_secrets_are_random_hex_values() {
+        let first = generate_device_secret();
+        let second = generate_device_secret();
+        assert_eq!(first.len(), 96);
+        assert!(first.bytes().all(|byte| byte.is_ascii_hexdigit()));
+        assert_ne!(first, second);
+    }
+
+    #[tokio::test]
     async fn local_learning_schema_keeps_candidates_reviewable_and_memories_bounded() {
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -371,6 +436,7 @@ mod migration_tests {
             include_str!("../migrations/0005_learning_jobs.sql"),
             include_str!("../migrations/0006_assistant_skills.sql"),
             include_str!("../migrations/0007_evaluation.sql"),
+            include_str!("../migrations/0008_provider_models.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&pool)
@@ -428,6 +494,7 @@ mod migration_tests {
             include_str!("../migrations/0005_learning_jobs.sql"),
             include_str!("../migrations/0006_assistant_skills.sql"),
             include_str!("../migrations/0007_evaluation.sql"),
+            include_str!("../migrations/0008_provider_models.sql"),
         ] {
             sqlx::raw_sql(migration).execute(&pool).await.expect("apply migration");
         }
@@ -481,4 +548,78 @@ mod migration_tests {
             .fetch_one(&pool).await.expect("check assistant foreign keys");
         assert_eq!(foreign_key_violations, 0);
     }
+}
+
+#[tauri::command]
+fn secret_vault_device_password(app: tauri::AppHandle) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    let key_path = data_dir.join("vault-device.key");
+    if key_path.exists() {
+        if let Ok(secret) = read_device_secret(&key_path) {
+            return Ok(secret);
+        }
+        std::fs::remove_file(&key_path).map_err(|error| error.to_string())?;
+    }
+
+    let vault_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    // The legacy password snapshot and any orphaned automatic snapshot cannot be
+    // opened with the newly generated key, so this release intentionally resets both.
+    for snapshot in [vault_dir.join("secrets.hold"), vault_dir.join("secrets-auto.hold")] {
+        if snapshot.exists() {
+            std::fs::remove_file(snapshot).map_err(|error| error.to_string())?;
+        }
+    }
+
+    let secret = generate_device_secret();
+    match OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&key_path)
+    {
+        Ok(mut file) => {
+            file.write_all(secret.as_bytes())
+                .map_err(|error| error.to_string())?;
+            file.sync_all().map_err(|error| error.to_string())?;
+            restrict_device_secret_permissions(&key_path)?;
+            Ok(secret)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            read_device_secret(&key_path)
+        }
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+fn generate_device_secret() -> String {
+    let mut bytes = [0_u8; 48];
+    OsRng.fill_bytes(&mut bytes);
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn read_device_secret(path: &std::path::Path) -> Result<String, String> {
+    let value = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+    let value = value.trim().to_owned();
+    if value.len() < 64 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("设备密钥文件无效".to_string());
+    }
+    Ok(value)
+}
+
+#[cfg(unix)]
+fn restrict_device_secret_permissions(path: &std::path::Path) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+        .map_err(|error| error.to_string())
+}
+
+#[cfg(not(unix))]
+fn restrict_device_secret_permissions(_path: &std::path::Path) -> Result<(), String> {
+    Ok(())
 }

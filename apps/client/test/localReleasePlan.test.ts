@@ -5,13 +5,13 @@ import {
 } from "../../../scripts/local-release-plan.mjs";
 
 describe("local Release plan", () => {
-  it("builds Windows NSIS and Android Release artifacts on Windows", () => {
+  it("builds Windows portable MSI and Android Release artifacts on Windows", () => {
     const plan = createLocalReleasePlan("win32", parseLocalReleaseOptions([]));
     const commands = plan.steps.filter((step) => step.kind === "command")
       .map((step) => [step.command, ...step.args].join(" "));
 
-    expect(plan.productKinds).toEqual(["windows-nsis", "android-apk"]);
-    expect(commands).toContain("npm run tauri -- build --bundles nsis");
+    expect(plan.productKinds).toEqual(["windows-msi", "android-apk"]);
+    expect(commands).toContain("npm run tauri -- build --bundles msi");
     expect(commands).toContain(
       "npm run android:build -- --target aarch64 --apk --max-apk-mib 40",
     );
@@ -26,7 +26,7 @@ describe("local Release plan", () => {
     const commands = plan.steps.filter((step) => step.kind === "command")
       .map((step) => [step.command, ...step.args].join(" "));
 
-    expect(plan.productKinds).toEqual(["windows-nsis", "android-apk", "android-aab"]);
+    expect(plan.productKinds).toEqual(["windows-msi", "android-apk", "android-aab"]);
     expect(commands).toContain(
       "npm run android:build -- --target aarch64 --apk --aab --max-apk-mib 40",
     );

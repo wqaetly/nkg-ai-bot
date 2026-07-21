@@ -164,6 +164,34 @@ describe("LocalChatSession", () => {
     );
   });
 
+  it("passes the conversation model as a run variable without changing the Flow", async () => {
+    const store = memoryStore();
+    store.getConversation = vi.fn(async () => ({
+      id: "c1",
+      title: "",
+      providerId: "openai",
+      modelId: "model-b",
+      createdAt: 1,
+      updatedAt: 1,
+    }));
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("run_finished", { output: "done" });
+      }),
+    };
+
+    await new LocalChatSession("c1", runtime, store).send("use model b");
+
+    expect(runtime.stream).toHaveBeenCalledWith(
+      defaultSkill.flowId,
+      expect.any(String),
+      expect.objectContaining({
+        flowVersion: defaultSkill.flowVersion,
+        envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-b" } },
+      }),
+    );
+  });
+
   it("builds a local multi-turn transcript without leaking tool messages", () => {
     const prompt = buildChatPrompt([
       message(0, "user", "第一问"),

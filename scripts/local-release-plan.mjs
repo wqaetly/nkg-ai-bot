@@ -49,13 +49,13 @@ export function createLocalReleasePlan(platform, options = {}) {
     ];
     steps.push(
       step("安装 Android Rust 目标", "rustup", ["target", "add", "aarch64-linux-android"]),
-      step("Windows NSIS Release", "npm", ["run", "tauri", "--", "build", "--bundles", "nsis"]),
+      step("Windows MSI Release", "npm", ["run", "tauri", "--", "build", "--bundles", "msi"]),
       step("Android arm64 Release", "npm", androidArgs),
     );
     return {
       platform,
       productKinds: [
-        "windows-nsis",
+        "windows-msi",
         "android-apk",
         ...(options.androidAab ? ["android-aab"] : []),
       ],

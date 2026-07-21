@@ -94,9 +94,9 @@ async function collectArtifacts(releasePlan, buildStartedAt) {
   const sourceFiles = [];
   if (releasePlan.platform === "win32") {
     sourceFiles.push(await latestFile(
-      join(tauriDir, "target", "release", "bundle", "nsis"),
-      ".exe",
-      "Windows NSIS",
+      join(tauriDir, "target", "release", "bundle", "msi"),
+      ".msi",
+      "Windows MSI",
     ));
   } else {
     sourceFiles.push(await latestFile(
@@ -194,6 +194,7 @@ function unique(values) {
 function artifactPrefix(path) {
   const lower = path.toLowerCase();
   if (lower.endsWith(".dmg")) return "macos";
+  if (lower.endsWith(".msi")) return "windows";
   if (lower.endsWith(".exe")) return "windows";
   if (lower.endsWith(".apk")) return "android";
   if (lower.endsWith(".aab")) return "android";
@@ -277,5 +278,5 @@ function printHelp() {
   process.stdout.write(`  --install       强制按 lockfile 重装依赖\n`);
   process.stdout.write(`  --skip-install  不检查或安装依赖\n`);
   process.stdout.write(`  --skip-tests    跳过测试，仅用于已完成验收后的快速重打包\n`);
-  process.stdout.write(`\nWindows 默认产出 NSIS、Android APK；AAB 需显式选择。macOS 产出 DMG、App Store Connect IPA。\n`);
+  process.stdout.write(`\nWindows 默认产出 portable MSI、Android APK；AAB 需显式选择。macOS 产出 DMG、App Store Connect IPA。\n`);
 }

@@ -5,10 +5,10 @@ describe("provider profile normalization", () => {
   it("normalizes a valid custom endpoint without weakening its scheme", () => {
     expect(normalizeProviderProfile({
       id: " local ", name: " Ollama ", baseUrl: "http://192.168.1.8:11434/v1/",
-      defaultModel: " qwen3 ", apiKeyRef: " provider:local:api-key ",
+      defaultModel: " qwen3 ", enabledModels: [" qwen3 ", "qwen3", "qwen3:8b"], apiKeyRef: " provider:local:api-key ",
     })).toEqual({
       id: "local", name: "Ollama", baseUrl: "http://192.168.1.8:11434/v1",
-      defaultModel: "qwen3", apiKeyRef: "provider:local:api-key",
+      defaultModel: "qwen3", enabledModels: ["qwen3", "qwen3:8b"], apiKeyRef: "provider:local:api-key",
     });
   });
 
@@ -18,7 +18,7 @@ describe("provider profile normalization", () => {
     "https://example.test/v1?token=secret",
   ])("rejects unsafe or ambiguous endpoint %s", (baseUrl) => {
     expect(() => normalizeProviderProfile({
-      id: "p", name: "P", baseUrl, defaultModel: "m", apiKeyRef: "key",
+      id: "p", name: "P", baseUrl, defaultModel: "m", enabledModels: ["m"], apiKeyRef: "key",
     })).toThrow();
   });
 });

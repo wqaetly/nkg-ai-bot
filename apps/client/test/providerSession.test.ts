@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { ProviderSession, type ProviderDataStore } from "../src/providerSession";
+import { describe, expect, it, vi } from "vitest";
+import { fetchCompatibleModels, ProviderSession, type ProviderDataStore } from "../src/providerSession";
 import type { ProviderProfile, ProviderProfileInput } from "../src/storage/database";
 import type { ApiKeyVault } from "../src/storage/secretVault";
 
@@ -38,12 +38,13 @@ describe("ProviderSession", () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
     const session = new ProviderSession(store, async () => vault);
-    await session.unlock("password-123");
+    await session.initialize();
     const saved = await session.save({
       id: "p1",
       name: "Example",
       baseUrl: "https://example.test/v1",
       defaultModel: "model-1",
+      enabledModels: ["model-1", "model-2"],
       apiKey: "sk-secret",
     });
 
@@ -56,17 +57,21 @@ describe("ProviderSession", () => {
         secrets: { LLM_API_KEY: "sk-secret" },
       },
     });
+    await expect(session.createRunOptions({ envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-2" } } }))
+      .resolves.toMatchObject({ envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-2" } } });
+    await expect(session.createRunOptions({ envOverrides: { variables: { LLM_DEFAULT_MODEL: "hidden-model" } } }))
+      .rejects.toThrow("未在 OpenAI 设置中启用");
   });
 
   it("restores the previous key when metadata persistence fails", async () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
     const session = new ProviderSession(store, async () => vault);
-    await session.unlock("password-123");
-    await session.save({ id: "p1", name: "One", baseUrl: "https://one.test/v1", defaultModel: "m1", apiKey: "old-key" });
+    await session.initialize();
+    await session.save({ id: "p1", name: "One", baseUrl: "https://one.test/v1", defaultModel: "m1", enabledModels: ["m1"], apiKey: "old-key" });
     store.failUpsert = true;
 
-    await expect(session.save({ id: "p1", name: "One", baseUrl: "https://one.test/v1", defaultModel: "m1", apiKey: "new-key" })).rejects.toThrow("database failed");
+    await expect(session.save({ id: "p1", name: "One", baseUrl: "https://one.test/v1", defaultModel: "m1", enabledModels: ["m1"], apiKey: "new-key" })).rejects.toThrow("database failed");
     expect(vault.values.get("provider:p1:api-key")).toBe("old-key");
   });
 
@@ -74,8 +79,8 @@ describe("ProviderSession", () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
     const session = new ProviderSession(store, async () => vault);
-    await session.unlock("password-123");
-    await session.save({ id: "p1", name: "One", baseUrl: "https://one.test/v1", defaultModel: "m1", apiKey: "key" });
+    await session.initialize();
+    await session.save({ id: "p1", name: "One", baseUrl: "https://one.test/v1", defaultModel: "m1", enabledModels: ["m1"], apiKey: "key" });
     store.failDelete = true;
     await expect(session.delete("p1")).rejects.toThrow("database failed");
     expect(vault.values.get("provider:p1:api-key")).toBe("key");
@@ -89,12 +94,13 @@ describe("ProviderSession", () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
     const session = new ProviderSession(store, async () => vault);
-    await session.unlock("password-123");
+    await session.initialize();
     const draft = {
       id: "local",
       name: "Local model",
       baseUrl: "http://192.168.1.8:11434/v1",
       defaultModel: "local-model",
+      enabledModels: ["local-model"],
       apiKey: "local-key",
     };
 
@@ -104,5 +110,17 @@ describe("ProviderSession", () => {
 
     await expect(session.save({ ...draft, allowInsecureHttp: true }))
       .resolves.toMatchObject({ selectedProviderId: "local" });
+  });
+
+  it("discovers and normalizes OpenAI-compatible model lists", async () => {
+    const request = vi.fn(async () => new Response(JSON.stringify({
+      data: [{ id: "model-b" }, { id: "model-a" }, { id: "model-a" }],
+    }), { status: 200, headers: { "Content-Type": "application/json" } }));
+
+    await expect(fetchCompatibleModels("https://example.test/v1/", "secret", request))
+      .resolves.toEqual(["model-a", "model-b"]);
+    expect(request).toHaveBeenCalledWith(new URL("https://example.test/v1/models"), expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: "Bearer secret" }),
+    }));
   });
 });

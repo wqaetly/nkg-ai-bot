@@ -1,4 +1,4 @@
-import type { NodeEvent } from "@nkg-ai-bot/runtime-router";
+import type { FlowInvokeOptions, NodeEvent } from "@nkg-ai-bot/runtime-router";
 import { listRelevantMemories, type MemoryItem } from "./learningRepository";
 import {
   finishAssistantSkillRun,
@@ -21,7 +21,7 @@ export interface ChatRuntime {
   stream(
     flowId: string,
     input: unknown,
-    options?: { flowVersion?: string; signal?: AbortSignal },
+    options?: FlowInvokeOptions,
   ): AsyncIterable<NodeEvent>;
 }
 
@@ -36,6 +36,8 @@ export interface ChatStore {
     roleId?: string;
     assistantId?: string;
     assistantVersion?: string;
+    providerId?: string;
+    modelId?: string;
   }): Promise<void>;
   appendMessage(input: {
     id: string;
@@ -111,6 +113,8 @@ export class LocalChatSession {
       ...(conversation?.roleId ? { roleId: conversation.roleId } : {}),
       assistantId: skill.assistantId,
       assistantVersion: skill.version,
+      ...(conversation?.providerId ? { providerId: conversation.providerId } : {}),
+      ...(conversation?.modelId ? { modelId: conversation.modelId } : {}),
     });
     const user = await this.store.appendMessage({
       id: crypto.randomUUID(),
@@ -137,6 +141,9 @@ export class LocalChatSession {
       for await (const event of this.runtime.stream(skill.flowId, prompt, {
         flowVersion: skill.flowVersion,
         ...(options.signal ? { signal: options.signal } : {}),
+        ...(conversation?.modelId ? {
+          envOverrides: { variables: { LLM_DEFAULT_MODEL: conversation.modelId } },
+        } : {}),
       })) {
         runId ??= event.runId;
         if (event.kind === "stream_delta" && (event.portId === "answer" || event.nodeId === "chat_model")) {

@@ -16,6 +16,7 @@ export async function withProviderEnvironment(
   profile: ProviderProfile,
   vault: Pick<ApiKeyVault, "getApiKey">,
   options: FlowInvokeOptions = {},
+  model = profile.defaultModel,
 ): Promise<FlowInvokeOptions> {
   const apiKey = await vault.getApiKey(profile.apiKeyRef);
   if (!apiKey) throw new Error(`Provider “${profile.name}” has no API Key in the local vault`);
@@ -26,7 +27,7 @@ export async function withProviderEnvironment(
       variables: {
         ...options.envOverrides?.variables,
         [PROVIDER_ENV_KEYS.baseUrl]: profile.baseUrl,
-        [PROVIDER_ENV_KEYS.model]: profile.defaultModel,
+        [PROVIDER_ENV_KEYS.model]: model,
       },
       secrets: {
         ...options.envOverrides?.secrets,

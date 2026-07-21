@@ -25,6 +25,7 @@
     "smoke:windows-installer": "pwsh -NoProfile -File scripts/windows-installer-smoke.ps1",
     "build:desktop-power": "npm run build:desktop-power -w @nkg-ai-bot/client",
     "tauri:desktop-power": "npm run tauri:desktop-power -w @nkg-ai-bot/client --",
+    "tauri:msi:fast": "node scripts/fast-windows-msi.mjs",
     "android:init": "npm run tauri -w @nkg-ai-bot/client -- android init",
     "android:build": "node scripts/android-build.mjs",
     "android:build:debug": "node scripts/android-build.mjs --debug",
