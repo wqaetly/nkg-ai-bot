@@ -8,10 +8,10 @@
 
 ## 当前进度
 
-- `packages/runtime-router`：平台路由、sidecar backend、进程内 backend、
+- `packages/runtime-router`：平台路由、sidecar backend、portable backend、
   Flow HTTP 客户端与 SSE 解析；
 - `packages/tauri-runtime-adapter`：Tauri command 到 sidecar 生命周期的适配，
-  应用级 Runtime 组合入口，以及真实 `nkg-ai-flow` 移动 handler；
+  Web Worker Runtime client、原生能力/流式 fetch broker、SQLite Run 历史与保留策略；
 - `apps/runtime-sidecar`：可打包为自包含桌面二进制的 Node Runtime；
 - `apps/client`：Tauri 2 + React 客户端、Rust sidecar 生命周期、本地 SQLite
   schema、Provider/API Key 设置页、Stronghold vault、移动原生 HTTP adapter 与
@@ -67,12 +67,12 @@ npm run release:local -- --android-aab
 
 完整参数与前置条件见 [`docs/local-release.md`](docs/local-release.md)。
 
-`build:client` 是桌面构建，会先生成当前宿主三元组的 Node sidecar；Android/iOS
-配置改用纯前端 `build:frontend`，不会生成或携带桌面 Node 二进制。桌面 sidecar 可单独
-验证：
+`build:client` 默认只构建 portable 前端，不生成 Node sidecar。Android/iOS 同样不会
+生成或携带桌面 Node 二进制。只有显式 `desktop-power` 构建才会准备 sidecar：
 
 ```powershell
-npm run build:sidecar
+npm run build:desktop-power
+npm run tauri:desktop-power
 npm run test:e2e -w @nkg-ai-bot/runtime-sidecar
 ```
 
@@ -88,7 +88,8 @@ npm run android:build -- --target aarch64
 
 Android 默认构建 Release APK，并执行 40 MiB 体积门禁；显式调试构建使用
 `npm run android:build:debug -- --target aarch64`。同时生成商店 AAB 时追加 `--aab`。
-当前 arm64 实测基线为 14.34 MiB APK / 8.21 MiB AAB（未签名）；移动 Cargo
+当前 arm64 实测基线约为 14.40 MiB APK；AAB 仅在准备上传 Google Play 时按需生成，
+不是默认 Release 产物。移动 Cargo
 依赖图和生成的 Gradle 工程均不包含桌面 Shell/sidecar 模块。
 
 macOS/Xcode 环境中的 iOS 工程入口为：
@@ -135,14 +136,16 @@ NDK，并为目标 ABI 缓存经过 SHA-256 校验的 Zig/libsodium 构建产物
 target 改成 `armv7`、`i686` 或 `x86_64`，每条命令只构建一个 ABI。
 
 本地 Android 设备门禁使用项目专用 `NkgAiBot_API_36_1` AVD。Android 16 x86_64
-Emulator 已验证应用启动、进程内 Runtime、SQLite Flow 目录同步、HOME/恢复生命周期、
+Emulator 已验证应用启动、Worker Runtime、SQLite Flow 目录同步、HOME/恢复生命周期、
 Stronghold 解锁、Provider profile + API Key 分离保存，以及自定义 HTTP Provider 的
-OpenAI-compatible SSE 流式响应；真机外部网络仍需在实际设备上复核。
+OpenAI-compatible SSE 流式响应。Worker fetch broker 会逐块转发并把取消传播到原生
+HTTP；真机外部网络仍需在实际设备上复核。
 
 当前测试只扫描本项目 `packages/`，上游子模块保持自己的依赖、测试配置和
 发布节奏。
 
-当前验证基线：本项目 125 项测试、6 项 Rust 测试、SQLite migration、sidecar
-二进制鉴权 E2E、Windows NSIS Release 与 Android arm64 Release APK 通过；可选 AAB 构建已验证；
-子模块 750 项测试、类型检查和生产构建通过，browser Runtime 实际 bundle 不含
-Node builtin import。macOS 的 DMG/IPA 仍需在已配置签名的真实 Mac 上执行本地发布脚本验收。
+当前验证基线：本项目 137 项测试、默认 Rust 3 项测试、SQLite migration、Windows
+NSIS 安装/启动/卸载 smoke、Android arm64 Release APK、Android Emulator 流式聊天与
+前后台恢复通过；子模块 757 项测试、类型检查和 browser bundle Node builtin 门禁通过。
+Windows portable 安装器约 4.13 MiB，Android arm64 APK 约 14.40 MiB。macOS DMG、
+iOS IPA/真机与 Android 物理真机仍需在对应真实设备和签名环境验收。

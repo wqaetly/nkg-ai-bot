@@ -6,11 +6,11 @@
 ## 已确定的边界
 
 应用上层只依赖 `FlowRuntimeClient`，不感知 Flow 最终运行在 Node sidecar
-还是移动端进程内 Runtime。路由以 `nkg-ai-flow` 已有的 Fetch/HTTP 协议为
+还是独立 Web Worker Runtime。路由以 `nkg-ai-flow` 已有的 Fetch/HTTP 协议为
 统一契约：
 
-- Windows、macOS、Linux、Android、iOS：默认使用 `portable`，同一个
-  `Request` 直接交给进程内 browser-safe `createHttpHandler()`；
+- Windows、macOS、Linux、Android、iOS：默认使用 `portable`，通过
+  `runtime.worker.v1` 与 browser-safe Runtime Worker 通信；
 - Windows、macOS、Linux：只有显式选择 `desktop-power` 时才启动 Node
   sidecar，并把相对路径请求代理到随机 loopback 端口；
 - invoke、stream、Run 查询、事件回放和取消均由同一客户端实现；
@@ -22,10 +22,10 @@
 flowchart LR
   UI["Chat / Assistant UI"] --> Client["FlowRuntimeClient"]
   Client --> Router["RuntimeRouter"]
-  Router -->|"五端默认 portable"| Mobile["InProcessBackend"]
+  Router -->|"五端默认 portable"| Mobile["WorkerRuntimeBackend"]
   Router -->|"桌面显式 desktop-power"| Desktop["NodeSidecarBackend"]
   Desktop -->|"loopback + launch token"| Sidecar["nkg-ai-flow HTTP Runner"]
-  Mobile -->|"Fetch Request, no socket"| Handler["browser-safe createHttpHandler"]
+  Mobile -->|"runtime.worker.v1"| Handler["browser-safe Runtime Worker"]
   Sidecar --> Runtime["nkg-ai-flow Runtime semantics"]
   Handler --> Runtime
 ```
@@ -57,8 +57,8 @@ SQLite 重新注册全部 Flow，再执行这次新的用户操作。恢复期�
 并发启动的替代进程。聊天页会清除未持久化的半截回复，并明确提示当前操作不会自动
 重放；显式取消则显示为正常停止，而不是底层异常。
 
-`packages/tauri-runtime-adapter` 已提供应用组合入口：五端默认注入进程内
-handler factory；桌面增强模式再把
+`packages/tauri-runtime-adapter` 已提供应用组合入口：五端默认创建 Worker backend，
+通过增量 fetch broker 代理原生 HTTP，并用 capability broker 代理受控工具；桌面增强模式再把
 `runtime_sidecar_start` / `runtime_sidecar_stop` 两个 Tauri command 适配为
 `SidecarLauncher`。UI 只拿到
 同一个 `FlowRuntimeClient`。
@@ -95,9 +95,8 @@ interface SidecarLauncher {
 5. sidecar 对每个请求验证 token，拒绝无 token 请求；
 6. stop、进程异常和主应用退出时清理状态与子进程。
 
-默认 `createInProcessHandler()` 直接调用 nkg-ai-flow 提供的
-`createPortableHttpRuntime()`，负责创建 browser-safe Runtime、注册本地 Flow，
-并返回同包的 Fetch handler。它不得导入 Node
+默认 Worker host 直接调用 nkg-ai-flow 提供的 portable Runtime，负责创建
+browser-safe Runtime、注册本地 Flow，并执行 invoke/cancel/Run/event 协议。它不得导入 Node
 builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可以发布
 `tool` / `agent` 契约，但必须由 capability 与宿主 ToolHost 决定能否执行。
 
@@ -216,6 +215,17 @@ builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可�
     导入 `@ai-native-flow/runtime/node`。
 39. portable 与 Node 工厂均有默认 capability manifest；不兼容 Flow 无需业务层手工
     传参即可在注册阶段失败。
+40. Portable Runtime 已下沉到 ES module Web Worker；工具与原生 HTTP 通过独立 broker
+    返回，UI 线程不再直接执行 Flow 调度。
+41. 原生 HTTP broker 使用 response/chunk/end 增量消息并传播 AbortSignal；Android
+    Emulator 已验证首块到达、HOME 后取消、半截回复丢弃和恢复重试。
+42. Flow capability badge、平台兼容报告和 Flow 级只读文件授权已接入 UI 与 broker。
+43. Worker Run/Event 历史写入 SQLite，并执行默认 30 天、500 Run、25 MiB 保留策略；
+    活动 Run 受保护。
+44. AI SDK provider 首次进入 LLM 节点时动态加载；主线程 runtime chunk 约 100 KiB，
+    构建已加入持续体积预算。
+45. 默认桌面 Release 不含 sidecar；`desktop-power` 需要显式 feature/config。Windows
+    NSIS 已完成安装、启动 8 秒与卸载 smoke。
 
 尚待实现：
 
@@ -223,8 +233,6 @@ builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可�
    Stronghold、前后台取消/目录恢复策略；
 2. 完成 iOS 真机同 Flow contract gate；当前 CI 证据是 arm64 Simulator Release，
    不是签名真机包；
-3. 在 Windows、macOS、Linux 构建完整 Tauri portable Release 应用；当前桌面矩阵
-   已验证 sidecar 和平台无关契约，但不能替代安装包启动验收；
-4. 将 portable Runtime 下沉到 Web Worker，验证长 Flow 不阻塞 UI；
-5. 为用户选择目录、写文件和其他高权限工具补充逐次确认；在此之前保持只读；
-6. 在 Studio 中消费 capability inspection，显示 badge 和运行前兼容性报告。
+3. 在 macOS 构建、签名并启动 DMG，在 Linux 目标环境补完整 Tauri portable 启动验收；
+4. 为长 Flow 增加 UI 响应性与 Worker CPU 压测；
+5. 为用户选择目录、写文件和其他高权限工具补充逐次确认；在此之前保持只读。

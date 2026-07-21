@@ -52,9 +52,19 @@ npm run release:local -- --android-aab
 - Android Studio 的 JBR、Android SDK 36、Build Tools 36 和 NDK；
 - Tauri 的 Windows/WebView2 构建依赖。
 
-Windows 脚本会生成当前宿主的 Node sidecar 供可选 `desktop-power` 模式使用；Android
-产物使用 portable Runtime，不携带 sidecar。Release APK 继续执行 40 MiB 体积门禁。
+Windows 默认脚本构建纯 portable NSIS，不生成或打包 Node sidecar；Android 产物同样
+使用 portable Runtime。需要 `desktop-power` 时另行执行 `npm run build:desktop-power`
+和 `npm run tauri:desktop-power`。Release APK 继续执行 40 MiB 体积门禁。
 AAB 不能直接安装，只在传入 `--android-aab` 准备 Google Play 上传包时生成。
+
+在没有既有 NKG AI Bot 安装的干净 Windows 用户环境中，可对最新安装器执行真实
+安装、启动 8 秒和卸载 smoke：
+
+```powershell
+npm run smoke:windows-installer -- "artifacts/releases/<版本>/<目录>/windows-...-setup.exe"
+```
+
+脚本会拒绝覆盖已有安装，并恢复 NSIS 记录的历史安装路径。
 
 ## macOS 前置条件
 
