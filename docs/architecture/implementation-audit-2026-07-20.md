@@ -1,5 +1,7 @@
 # 跨平台 Runtime 实施审查报告（2026-07-20）
 
+> 最新复核：2026-07-21。以下数据和入口语义已按默认 portable Runtime 更新。
+
 ## 结论
 
 当前项目结构已经从“桌面 sidecar + 移动特例”调整为合理的五端本地优先架构：
@@ -10,6 +12,8 @@
 - Provider URL 与 API Key 由用户配置，API Key 使用 Stronghold，本项目没有云端存储；
 - Tauri/Rust 只实现 SQLite、密钥、原生 HTTP、受控文件等宿主能力；
 - nkg-ai-flow 保持 Tauri 无关，并通过公开 package exports 提供 portable 能力。
+- `@ai-native-flow/runtime` 包根即 portable 默认入口，业务层不再感知 `/browser`；
+  Node 文件与进程能力只从显式 `/node` 入口进入。
 
 该结构适合继续做聊天、自定义提示词角色和 Flow 编排助理。当前主要风险已经不是
 “移动端没有 Node.js”，而是真机覆盖、桌面安装包启动 smoke、长 Flow UI 隔离和
@@ -49,24 +53,24 @@ flowchart LR
 | 产物 | 体积 | 用途 |
 |---|---:|---|
 | Debug APK | 241.12 MiB | 开发调试，不发布 |
-| Release APK | 14.38 MiB | 本地分发/安装基线 |
-| Release AAB | 8.21 MiB | 商店上传基线 |
+| Release APK | 14.39 MiB | 默认本地分发/安装基线 |
+| Release AAB | 8.23 MiB | 可选 Google Play 上传基线，不在默认 Release 中生成 |
 
 Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁剪；本地发布脚本对 APK
 执行 40 MiB 硬门禁。受控 ToolHost、SQLite persistence 和 portable Runtime 接入后，
-体积仍稳定在 14.38 MiB，证明这些架构修正没有重新引入桌面 sidecar 依赖。
+体积仍稳定在 14.39 MiB，证明这些架构修正没有重新引入桌面 sidecar 依赖。
 
 ## 已验证事实
 
 | 维度 | 当前证据 |
 |---|---|
-| nkg-ai-flow | 49 个测试文件、750 项测试通过，TypeScript typecheck 与 browser bundle Node builtin 门禁通过 |
-| 主项目 | 32 个测试文件、125 项测试通过，TypeScript typecheck 通过 |
+| nkg-ai-flow | 50 个测试文件、753 项测试通过，TypeScript typecheck 与包根 browser bundle Node builtin 门禁通过 |
+| 主项目 | 32 个测试文件、126 项测试通过，TypeScript typecheck 通过 |
 | Rust | migration、sidecar 校验和路径 scope 共 6 项测试通过 |
 | 前端 | Vite production build 通过；首屏主 chunk 由 1.06 MiB 降至 219.05 KiB（gzip 69.44 KiB），Runtime 独立异步 chunk gzip 190.05 KiB |
-| Android | Windows 本地 arm64 Release APK 14.38 MiB；APK/AAB 构建已通过 |
+| Android | Windows 本地 arm64 Release APK 14.39 MiB；可选 AAB 8.23 MiB 已验证 |
 | iOS | 历史 arm64 Simulator Release 门禁通过；App Store IPA 等待真实 Mac 签名验收 |
-| 桌面 | Windows 本地完整 NSIS Release 19.77 MiB；macOS 改由本地脚本生成 DMG，保留 sidecar 鉴权契约 |
+| 桌面 | Windows 本地完整 NSIS Release 19.78 MiB；macOS 改由本地脚本生成 DMG，保留 sidecar 鉴权契约 |
 | 包边界 | 顶层干净 `npm ci`、公开 `@ai-native-flow/*` 导入和禁止深路径门禁通过 |
 | 自带 Flow | 3/3 结构校验通过（100%）；1/1 确定性 portable Flow 执行通过（100%） |
 
@@ -80,6 +84,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
 - checkpoint 写入先于对应事件发布，降低崩溃后状态倒挂风险；
 - 请求级变量覆盖与持久化变量分层，API Key 不进入普通 Runtime 变量表；
 - capability 在 Flow 注册和执行解析前检查，拒绝运行到一半才发现宿主缺失；
+- portable 与 Node 工厂均自动提供默认 capability manifest，业务层不必重复注入基础清单；
 - ToolHost 在 TypeScript 与 Rust 两侧重复校验 allow-list；
 - 原生文件路径固定在应用私有目录，拒绝绝对路径、父目录和 symlink escape；
 - 移动端不暴露 `filesystem.write` 或 `process.spawn`；
@@ -118,7 +123,7 @@ Release 已启用 Rust symbol strip、Thin LTO、`panic=abort`、R8 和资源裁
   桌面 GUI 启动 smoke 仍需补齐**。
 - nkg-ai-flow 自带 Flow 通过率：**已量化：结构 3/3、确定性可执行项 1/1；两个
   外部依赖型 Flow 已正确分类为 desktop-power，仍需确定性集成 fixture**。
-- 完全下沉跨平台能力到 submodule：**本轮目标完成**。核心执行组合（browser
-  runtime、capability、HTTP/fetch 注入及 `createPortableHttpRuntime`）和公共
+- 完全下沉跨平台能力到 submodule：**本轮目标完成**。核心执行组合（默认 portable
+  runtime、显式 Node runtime、capability、HTTP/fetch 注入及 `createPortableHttpRuntime`）和公共
   persistence/ToolHost ports 均由 nkg-ai-flow 提供；Tauri 实现按端留在主项目，
   后续 Worker/lifecycle contract 属于下一阶段性能演进。

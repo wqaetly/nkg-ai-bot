@@ -79,6 +79,8 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 - `apps/client/src-tauri/src/lib.rs`
 - `apps/client/src-tauri/src/runtime_sidecar.rs`
 - `nkg-ai-flow/packages/runtime/src/browser.ts`
+- `nkg-ai-flow/packages/runtime/src/portable.ts`
+- `nkg-ai-flow/packages/runtime/src/node.ts`
 - `nkg-ai-flow/packages/runtime/src/createBrowserRuntime.ts`
 - `nkg-ai-flow/packages/runtime/src/nodes/createBrowserBuiltinRunnerRegistry.ts`
 - `nkg-ai-flow/packages/runtime/src/nodes/createBuiltinRunnerRegistry.ts`
@@ -88,8 +90,9 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 
 截至 2026-07-20 当前实现，已经具备以下基础：
 
-- `@ai-native-flow/runtime/browser` 入口；
-- browser-safe `createBrowserRuntime()`；
+- 包根 `@ai-native-flow/runtime` 默认导出 portable `createRuntime()`；
+- `/portable` 显式入口、`/browser` 兼容入口和 `/node` 原生入口；
+- browser-safe `createBrowserRuntime()` 与业务默认别名 `createRuntime()`；
 - 可注入的 `RunStore`、`RegistryStore`、`ArtifactStore`、变量/密钥 Store、
   `LlmProvider`、`AgentToolHost`、hash 和 run ID；
 - browser builtin registry，默认不加载 `agentTools.node.ts`；
@@ -104,7 +107,7 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 - capability manifest、注册/执行 preflight 与移动只读 ToolHost；
 - HTTP/LLM 显式宿主 fetch 注入，不再覆盖全局 fetch；
 - `@ai-native-flow/*` 公共包边界和主仓库统一 workspace 锁文件；
-- Android arm64 Release 14.38 MiB APK / 8.21 MiB AAB 基线与 40 MiB 门禁。
+- Android arm64 Release 14.39 MiB APK 基线与 40 MiB 门禁；Google Play AAB 仅按需生成。
 
 当前仍存在的主要结构性缺口：
 
@@ -116,9 +119,9 @@ Tauri 提供 WebView、Rust 宿主、插件体系、安全 IPC 和权限模型�
 - Flow 执行是否放入 Web Worker 尚未形成稳定实现和五端验证；
 - desktop-power 的产品定位、是否随包分发及最终移除条件尚未确认。
 
-注意：`nkg-ai-flow` 是 Git submodule，且本文编写时主仓库与子模块均存在未提交
-改动。任何 AI 在修改前都必须分别执行 `git status --short` 和
-`git -C nkg-ai-flow status --short`，不得覆盖、回滚或重置已有改动。
+注意：`nkg-ai-flow` 是 Git submodule。任何 AI 在修改前都必须分别执行
+`git status --short` 和 `git -C nkg-ai-flow status --short`，不得覆盖、回滚或重置
+已有改动；提交父仓库前必须确认 submodule 指针与已推送提交一致。
 
 ## 4. 目标架构
 
@@ -206,7 +209,8 @@ Web Crypto、流式 Fetch、取消和应用暂停恢复都必须进入平台测�
 - portable builtin 节点；
 - Store、HTTP、Secret、Tool、Clock、ID、Hash 等平台无关接口；
 - capability manifest 和 Flow 兼容性校验；
-- `runtime/browser` 与 `runtime/node` 明确分离的 package exports；
+- 包根默认 portable，并让 `runtime/portable`、`runtime/browser` 与 `runtime/node` 保持
+  明确分离的 package exports；
 - 同一 Flow fixture 在不同 Runtime 上的 contract tests；
 - browser bundle 不含 Node builtin 的发布门禁。
 

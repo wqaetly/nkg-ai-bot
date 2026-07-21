@@ -143,6 +143,6 @@ OpenAI-compatible SSE 流式响应；真机外部网络仍需在实际设备上�
 发布节奏。
 
 当前验证基线：本项目 125 项测试、6 项 Rust 测试、SQLite migration、sidecar
-二进制鉴权 E2E、Windows NSIS Release 与 Android arm64 Release APK/AAB 通过；
+二进制鉴权 E2E、Windows NSIS Release 与 Android arm64 Release APK 通过；可选 AAB 构建已验证；
 子模块 750 项测试、类型检查和生产构建通过，browser Runtime 实际 bundle 不含
 Node builtin import。macOS 的 DMG/IPA 仍需在已配置签名的真实 Mac 上执行本地发布脚本验收。

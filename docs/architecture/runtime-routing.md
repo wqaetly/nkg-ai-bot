@@ -121,13 +121,15 @@ builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可�
 
 已完成：
 
-1. `nkg-ai-flow` 已拆出 `@ai-native-flow/runtime/browser`；
+1. `nkg-ai-flow` 包根 `@ai-native-flow/runtime` 已默认导出 portable Runtime；
+   `/portable` 是显式基础设施入口，`/browser` 保留为兼容别名，Node 原生能力只从
+   `/node` 的 `createNodeRuntime()` 到达；
 2. 五端 builtin registry 都发布 `agent` / `tool` 契约；执行权限由 capability
    preflight 与受限 `AgentToolHost` 控制，缺少宿主时使用 deny-all host；
 3. Artifact hash 和 HTTP override version 已改用 Web Crypto；
 4. HTTP Runner 支持每次启动的 bearer token，发现页和 Runtime 路由均受保护；
 5. 同一 Flow graph 已分别通过 sidecar 路径与进程内路径 contract test；
-6. 浏览器实际打包校验已证明移动入口没有 Node builtin import。
+6. 浏览器实际打包校验已覆盖包根默认入口，证明 portable 业务入口没有 Node builtin import。
 7. Tauri 2 React 客户端、Rust command、Node self-contained executable 和
    external binary 配置已完成；
 8. 随机端口、临时 bearer token、ready timeout、loopback 校验、停止与退出清理已完成；
@@ -181,10 +183,9 @@ builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可�
     `completed:false` 关闭，半截回复未持久化，显式取消竞态归一化为友好的
     `AbortError`，恢复后的下一次聊天收到完整回复并写入 SQLite。E2E 脚本会自行清理
     DevTools forward 与 Provider reverse，且断言只检查本次新增消息。
-28. 已加入移动构建 CI：Windows runner 生成 Android arm64 Release APK/AAB，macOS runner
-    生成无需发布签名的 iOS arm64 Simulator Release app；两个任务都会执行移动构建契约，
-    且不会构建或上传桌面 Node sidecar。Android/iOS 远端 runner 已形成成功记录，Android
-    构建缓存也已成功保存。
+28. 移动 Release 已纳入本地发布链路：Windows 默认生成 Android arm64 APK，准备
+    Google Play 上传时通过 `--android-aab` 额外生成 AAB；移动构建不会打包桌面 Node
+    sidecar。macOS 负责生成 DMG 与需要真实签名环境的 App Store Connect IPA。
 29. Android 构建默认使用 Release，显式 `--debug` 才生成调试包；Release APK 同时执行
     40 MiB 体积预算。启用符号裁剪、Thin LTO、R8 和资源裁剪后，arm64 本地基线由
     241.12 MiB Debug 降至 14.83 MiB Release APK / 8.45 MiB Release AAB；后续发布
@@ -207,8 +208,14 @@ builtin、`agentTools.node`、HTTP Runner、CLI、MCP 或子进程实现；可�
     HTTP，桌面 portable 使用宿主 Web fetch，全局 fetch 覆盖已删除并有回归测试。
 36. 主仓库仅通过 `@ai-native-flow/*` 公共 exports 消费 submodule；顶层统一 npm
     workspace/lockfile 取代 CI 中重复的两次 `npm ci`，并有禁止源码深路径导入门禁。
-37. 当前本地 arm64 Release 基线为 14.38 MiB APK / 8.21 MiB AAB；历史 241.12 MiB
-    是包含符号与未优化依赖的 Debug APK，不再作为发布体积指标。
+37. 当前本地 arm64 Release 基线为 14.39 MiB APK；可选 Google Play AAB 为 8.23 MiB。
+    默认 Release 归档不会收集 AAB。历史 241.12 MiB 是包含符号与未优化依赖的 Debug
+    APK，不再作为发布体积指标。
+38. `@ai-native-flow/runtime` 包根已切换为 portable `createRuntime()`；Tauri persistence、
+    ToolHost 和移动生命周期代码均从包根消费统一契约，只有 desktop-power 对照路径显式
+    导入 `@ai-native-flow/runtime/node`。
+39. portable 与 Node 工厂均有默认 capability manifest；不兼容 Flow 无需业务层手工
+    传参即可在注册阶段失败。
 
 尚待实现：
 
