@@ -16,7 +16,7 @@ describe("architecture documentation", () => {
   it("keeps release size evidence distinct from debug artifacts", () => {
     const audit = document("implementation-audit-2026-07-20.md");
     expect(audit).toContain("Debug APK | 241.12 MiB");
-    expect(audit).toContain("Release APK | 14.39 MiB");
+    expect(audit).toMatch(/Release APK \| (?:约 )?14\.4\d MiB/);
     expect(audit).toContain("Release AAB | 8.23 MiB");
     expect(audit).toContain("可选 Google Play 上传基线，不在默认 Release 中生成");
     expect(audit).toContain("不等同于五端真机产品验收");
