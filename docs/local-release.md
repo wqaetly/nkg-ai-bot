@@ -7,7 +7,7 @@
 
 | 主机 | 默认 Release 产物 | 不负责 |
 |---|---|---|
-| Windows | NSIS 安装器、Android arm64 APK/AAB | DMG、IPA |
+| Windows | NSIS 安装器、Android arm64 APK | DMG、IPA；Google Play AAB 需显式选择 |
 | macOS | DMG、App Store Connect IPA | Android、NSIS |
 
 Linux 不是当前发布宿主；脚本会明确拒绝其他系统，而不是生成未经验证的交叉编译产物。
@@ -40,6 +40,9 @@ npm run release:local -- --install
 
 # 已经完成同一提交的完整验收后，快速重新打包
 npm run release:local -- --skip-install --skip-tests
+
+# 准备上传 Google Play 时额外生成 AAB
+npm run release:local -- --android-aab
 ```
 
 ## Windows 前置条件
@@ -51,6 +54,7 @@ npm run release:local -- --skip-install --skip-tests
 
 Windows 脚本会生成当前宿主的 Node sidecar 供可选 `desktop-power` 模式使用；Android
 产物使用 portable Runtime，不携带 sidecar。Release APK 继续执行 40 MiB 体积门禁。
+AAB 不能直接安装，只在传入 `--android-aab` 准备 Google Play 上传包时生成。
 
 ## macOS 前置条件
 

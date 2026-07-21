@@ -113,8 +113,12 @@ async function collectArtifacts(releasePlan, buildStartedAt) {
     };
     sourceFiles.push(
       await latestFile(androidOutputs, ".apk", "Android arm64 Release APK", isArm64Release),
-      await latestFile(androidOutputs, ".aab", "Android arm64 Release AAB", isArm64Release),
     );
+    if (releasePlan.productKinds.includes("android-aab")) {
+      sourceFiles.push(
+        await latestFile(androidOutputs, ".aab", "Android arm64 Release AAB", isArm64Release),
+      );
+    }
   }
 
   if (releasePlan.productKinds.includes("ios-ipa")) {
@@ -269,8 +273,9 @@ function printPlan(releasePlan) {
 function printHelp() {
   process.stdout.write(`用法：npm run release:local -- [选项]\n\n`);
   process.stdout.write(`  --dry-run       只显示当前系统的构建计划\n`);
+  process.stdout.write(`  --android-aab    Windows 构建额外生成 Google Play AAB\n`);
   process.stdout.write(`  --install       强制按 lockfile 重装依赖\n`);
   process.stdout.write(`  --skip-install  不检查或安装依赖\n`);
   process.stdout.write(`  --skip-tests    跳过测试，仅用于已完成验收后的快速重打包\n`);
-  process.stdout.write(`\nWindows 产出 NSIS、Android APK/AAB；macOS 产出 DMG、App Store Connect IPA。\n`);
+  process.stdout.write(`\nWindows 默认产出 NSIS、Android APK；AAB 需显式选择。macOS 产出 DMG、App Store Connect IPA。\n`);
 }

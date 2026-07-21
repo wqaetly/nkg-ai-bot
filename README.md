@@ -20,8 +20,8 @@
   本地 SQLite；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
-- `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 产出 NSIS 与
-  Android APK/AAB，macOS 产出 DMG 与 App Store Connect IPA。发布过程不依赖
+- `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 NSIS 与
+  Android APK，macOS 产出 DMG 与 App Store Connect IPA。Google Play AAB 按需生成；发布过程不依赖
   GitHub Actions，并复用本机 npm、Cargo、Gradle 与 Xcode 缓存。
 
 ## 开发
@@ -47,7 +47,7 @@ npm run release:local
 
 | 宿主 | 产物 |
 |---|---|
-| Windows | NSIS `.exe`、Android arm64 `.apk` / `.aab` |
+| Windows | NSIS `.exe`、Android arm64 `.apk`；可选 Google Play `.aab` |
 | macOS | macOS `.dmg`、iOS App Store Connect `.ipa` |
 
 所有产物会复制到 `artifacts/releases/<版本>/<平台-时间>/`，同目录的
@@ -60,6 +60,9 @@ npm run release:local
 ```bash
 npm run release:local:plan
 npm run release:local:quick
+
+# 仅在准备上传 Google Play 时增加 AAB
+npm run release:local -- --android-aab
 ```
 
 完整参数与前置条件见 [`docs/local-release.md`](docs/local-release.md)。

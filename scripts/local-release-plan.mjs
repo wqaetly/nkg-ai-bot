@@ -3,6 +3,7 @@ export const SUPPORTED_RELEASE_PLATFORMS = ["win32", "darwin"];
 export function parseLocalReleaseOptions(args) {
   const options = {
     dryRun: false,
+    androidAab: false,
     forceInstall: false,
     skipInstall: false,
     skipTests: false,
@@ -10,6 +11,7 @@ export function parseLocalReleaseOptions(args) {
 
   for (const argument of args) {
     if (argument === "--dry-run") options.dryRun = true;
+    else if (argument === "--android-aab") options.androidAab = true;
     else if (argument === "--install") options.forceInstall = true;
     else if (argument === "--skip-install") options.skipInstall = true;
     else if (argument === "--skip-tests") options.skipTests = true;
@@ -40,14 +42,25 @@ export function createLocalReleasePlan(platform, options = {}) {
   }
 
   if (platform === "win32") {
+    const androidArgs = [
+      "run", "android:build", "--", "--target", "aarch64", "--apk",
+      ...(options.androidAab ? ["--aab"] : []),
+      "--max-apk-mib", "40",
+    ];
     steps.push(
       step("安装 Android Rust 目标", "rustup", ["target", "add", "aarch64-linux-android"]),
       step("Windows NSIS Release", "npm", ["run", "tauri", "--", "build", "--bundles", "nsis"]),
-      step("Android arm64 Release", "npm", [
-        "run", "android:build", "--", "--target", "aarch64", "--apk", "--aab", "--max-apk-mib", "40",
-      ]),
+      step("Android arm64 Release", "npm", androidArgs),
     );
-    return { platform, productKinds: ["windows-nsis", "android-apk", "android-aab"], steps };
+    return {
+      platform,
+      productKinds: [
+        "windows-nsis",
+        "android-apk",
+        ...(options.androidAab ? ["android-aab"] : []),
+      ],
+      steps,
+    };
   }
 
   steps.push(step("安装 iOS Rust 目标", "rustup", ["target", "add", "aarch64-apple-ios"]));

@@ -10,12 +10,26 @@ describe("local Release plan", () => {
     const commands = plan.steps.filter((step) => step.kind === "command")
       .map((step) => [step.command, ...step.args].join(" "));
 
-    expect(plan.productKinds).toEqual(["windows-nsis", "android-apk", "android-aab"]);
+    expect(plan.productKinds).toEqual(["windows-nsis", "android-apk"]);
     expect(commands).toContain("npm run tauri -- build --bundles nsis");
+    expect(commands).toContain(
+      "npm run android:build -- --target aarch64 --apk --max-apk-mib 40",
+    );
+    expect(commands.join("\n")).not.toContain("--debug");
+  });
+
+  it("builds a Google Play AAB only when explicitly requested", () => {
+    const plan = createLocalReleasePlan(
+      "win32",
+      parseLocalReleaseOptions(["--android-aab"]),
+    );
+    const commands = plan.steps.filter((step) => step.kind === "command")
+      .map((step) => [step.command, ...step.args].join(" "));
+
+    expect(plan.productKinds).toEqual(["windows-nsis", "android-apk", "android-aab"]);
     expect(commands).toContain(
       "npm run android:build -- --target aarch64 --apk --aab --max-apk-mib 40",
     );
-    expect(commands.join("\n")).not.toContain("--debug");
   });
 
   it("builds only DMG and App Store IPA artifacts on macOS", () => {
