@@ -39,9 +39,28 @@ interface FetchResponse {
     status: number;
     statusText: string;
     headers: Array<[string, string]>;
-    body: ArrayBuffer;
   };
   error?: string;
+}
+
+interface FetchChunk {
+  protocol: typeof PROTOCOL;
+  kind: "fetch_chunk";
+  requestId: string;
+  chunk: ArrayBuffer;
+}
+
+interface FetchEnd {
+  protocol: typeof PROTOCOL;
+  kind: "fetch_end";
+  requestId: string;
+  error?: string;
+}
+
+interface FetchCancel {
+  protocol: typeof PROTOCOL;
+  kind: "fetch_cancel";
+  requestId: string;
 }
 
 interface ToolEnvironment {
@@ -104,18 +123,66 @@ export function createBrokeredFetch(endpoint: RuntimeWorkerEndpoint): typeof fet
   const pending = new Map<string, {
     resolve: (response: Response) => void;
     reject: (error: Error) => void;
+    signal?: AbortSignal;
+    abort?: () => void;
+  }>();
+  const streams = new Map<string, {
+    controller: ReadableStreamDefaultController<Uint8Array>;
+    signal?: AbortSignal;
+    abort?: () => void;
   }>();
   endpoint.addEventListener("message", (event) => {
-    const message = event.data as Partial<FetchResponse>;
-    if (message.protocol !== PROTOCOL || message.kind !== "fetch_response" || !message.requestId) return;
+    const message = event.data as {
+      protocol?: unknown;
+      kind?: string;
+      requestId?: string;
+      chunk?: ArrayBuffer;
+      response?: FetchResponse["response"];
+      error?: string;
+    };
+    if (message.protocol !== PROTOCOL || !message.requestId) return;
+    if (message.kind === "fetch_chunk") {
+      const stream = streams.get(message.requestId);
+      if (stream && message.chunk) stream.controller.enqueue(new Uint8Array(message.chunk));
+      return;
+    }
+    if (message.kind === "fetch_end") {
+      const stream = streams.get(message.requestId);
+      if (!stream) return;
+      streams.delete(message.requestId);
+      stream.signal?.removeEventListener("abort", stream.abort!);
+      if (message.error) stream.controller.error(new Error(message.error));
+      else stream.controller.close();
+      return;
+    }
+    if (message.kind !== "fetch_response") return;
     const operation = pending.get(message.requestId);
     if (!operation) return;
     pending.delete(message.requestId);
     if (message.error || !message.response) {
+      operation.signal?.removeEventListener("abort", operation.abort!);
       operation.reject(new Error(message.error ?? "Native fetch broker returned no response"));
       return;
     }
-    operation.resolve(new Response(message.response.body, {
+    let streamController!: ReadableStreamDefaultController<Uint8Array>;
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        streamController = controller;
+      },
+      cancel() {
+        endpoint.postMessage({
+          protocol: PROTOCOL,
+          kind: "fetch_cancel",
+          requestId: message.requestId!,
+        } satisfies FetchCancel);
+      },
+    });
+    streams.set(message.requestId, {
+      controller: streamController,
+      ...(operation.signal ? { signal: operation.signal } : {}),
+      ...(operation.abort ? { abort: operation.abort } : {}),
+    });
+    operation.resolve(new Response(body, {
       status: message.response.status,
       statusText: message.response.statusText,
       headers: message.response.headers,
@@ -132,7 +199,24 @@ export function createBrokeredFetch(endpoint: RuntimeWorkerEndpoint): typeof fet
         : {}),
     };
     return new Promise<Response>((resolve, reject) => {
-      pending.set(requestId, { resolve, reject });
+      const abort = () => {
+        pending.delete(requestId);
+        const stream = streams.get(requestId);
+        streams.delete(requestId);
+        stream?.controller.error(request.signal.reason ?? new DOMException("Aborted", "AbortError"));
+        endpoint.postMessage({
+          protocol: PROTOCOL,
+          kind: "fetch_cancel",
+          requestId,
+        } satisfies FetchCancel);
+        reject(request.signal.reason ?? new DOMException("Aborted", "AbortError"));
+      };
+      if (request.signal.aborted) {
+        abort();
+        return;
+      }
+      request.signal.addEventListener("abort", abort, { once: true });
+      pending.set(requestId, { resolve, reject, signal: request.signal, abort });
       endpoint.postMessage({
         protocol: PROTOCOL,
         kind: "fetch_request",
@@ -151,10 +235,16 @@ export function attachTauriCapabilityBroker(
   fetchImpl: typeof fetch = globalThis.fetch,
   authorize?: (scope: CapabilityAuthorizationScope) => boolean | Promise<boolean>,
 ): () => void {
+  const fetches = new Map<string, AbortController>();
   const listener = (event: { data: unknown }) => {
     if (!event.data || typeof event.data !== "object") return;
     const envelope = event.data as { protocol?: unknown; kind?: unknown };
     if (envelope.protocol !== PROTOCOL) return;
+    const cancel = event.data as Partial<FetchCancel>;
+    if (cancel.kind === "fetch_cancel" && cancel.requestId) {
+      fetches.get(cancel.requestId)?.abort();
+      return;
+    }
     const request = event.data as Partial<FetchRequest>;
     if (
       request.protocol === PROTOCOL &&
@@ -163,7 +253,10 @@ export function attachTauriCapabilityBroker(
       request.url &&
       request.init
     ) {
-      void fetchImpl(request.url, request.init).then(async (response) => {
+      const abortController = new AbortController();
+      fetches.set(request.requestId, abortController);
+      let started = false;
+      void fetchImpl(request.url, { ...request.init, signal: abortController.signal }).then(async (response) => {
         endpoint.postMessage({
           protocol: PROTOCOL,
           kind: "fetch_response",
@@ -172,16 +265,34 @@ export function attachTauriCapabilityBroker(
             status: response.status,
             statusText: response.statusText,
             headers: [...response.headers.entries()],
-            body: await response.arrayBuffer(),
           },
         } satisfies FetchResponse);
-      }, (cause) => {
+        started = true;
+        if (response.body) {
+          const reader = response.body.getReader();
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            endpoint.postMessage({
+              protocol: PROTOCOL,
+              kind: "fetch_chunk",
+              requestId: request.requestId!,
+              chunk: new Uint8Array(value).buffer,
+            } satisfies FetchChunk);
+          }
+        }
         endpoint.postMessage({
           protocol: PROTOCOL,
-          kind: "fetch_response",
+          kind: "fetch_end",
           requestId: request.requestId!,
-          error: cause instanceof Error ? cause.message : String(cause),
-        } satisfies FetchResponse);
+        } satisfies FetchEnd);
+      }).catch((cause) => {
+        const error = cause instanceof Error ? cause.message : String(cause);
+        endpoint.postMessage(started
+          ? { protocol: PROTOCOL, kind: "fetch_end", requestId: request.requestId!, error } satisfies FetchEnd
+          : { protocol: PROTOCOL, kind: "fetch_response", requestId: request.requestId!, error } satisfies FetchResponse);
+      }).finally(() => {
+        fetches.delete(request.requestId!);
       });
       return;
     }
@@ -217,7 +328,11 @@ export function attachTauriCapabilityBroker(
     );
   };
   endpoint.addEventListener("message", listener);
-  return () => endpoint.removeEventListener?.("message", listener);
+  return () => {
+    endpoint.removeEventListener?.("message", listener);
+    for (const controller of fetches.values()) controller.abort();
+    fetches.clear();
+  };
 }
 
 function toolCapability(

@@ -61,6 +61,59 @@ describe("Worker Runtime adapter", () => {
     detach();
   });
 
+  it("forwards native HTTP chunks before the response completes", async () => {
+    const { client, host } = linkedEndpoints();
+    const encoder = new TextEncoder();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const detach = attachTauriCapabilityBroker(
+      client,
+      { async callTool() { return { ok: false }; } },
+      async () => new Response(new ReadableStream({
+        async start(controller) {
+          controller.enqueue(encoder.encode("first"));
+          await gate;
+          controller.enqueue(encoder.encode("second"));
+          controller.close();
+        },
+      })),
+    );
+    const response = await createBrokeredFetch(host)("https://provider.invalid/v1/chat");
+    const reader = response.body!.getReader();
+    const first = await reader.read();
+    expect(new TextDecoder().decode(first.value)).toBe("first");
+    release();
+    const second = await reader.read();
+    expect(new TextDecoder().decode(second.value)).toBe("second");
+    expect((await reader.read()).done).toBe(true);
+    detach();
+  });
+
+  it("propagates Worker fetch cancellation to the native request", async () => {
+    const { client, host } = linkedEndpoints();
+    let nativeAborted = false;
+    const detach = attachTauriCapabilityBroker(
+      client,
+      { async callTool() { return { ok: false }; } },
+      async (_input, init) => new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          nativeAborted = true;
+          reject(new DOMException("Aborted", "AbortError"));
+        }, { once: true });
+      }),
+    );
+    const controller = new AbortController();
+    const request = createBrokeredFetch(host)("https://provider.invalid/v1/chat", {
+      signal: controller.signal,
+    });
+    controller.abort();
+    await expect(request).rejects.toMatchObject({ name: "AbortError" });
+    await vi.waitFor(() => expect(nativeAborted).toBe(true));
+    detach();
+  });
+
   it("denies native tools when the Flow-scoped authorization is absent", async () => {
     const { client, host } = linkedEndpoints();
     const nativeCall = vi.fn();
