@@ -398,8 +398,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .composer-attachments button { position: absolute; top: -5px; right: -5px; width: 19px; height: 19px; display: grid; place-items: center; padding: 0; border: 2px solid #fff; border-radius: 50%; color: #fff; background: #55515d; cursor: pointer; }
 .composer-attachments button svg { width: 10px; height: 10px; }
 .composer-attachments button:disabled { opacity: .55; cursor: not-allowed; }
-.composer textarea { width: 100%; min-height: 30px; max-height: 180px; display: block; padding: 4px 2px; border: 0; outline: 0; color: #29282d; background: transparent; font-size: 14px; line-height: 1.65; resize: none; }
-.composer textarea::placeholder { color: #a5a3aa; }
+.composer textarea { width: 100%; min-height: 30px; max-height: 180px; display: block; padding: 4px 2px; border: 0; outline: 0; color: var(--text); caret-color: var(--accent); background: transparent; font-size: 14px; line-height: 1.65; resize: none; }
+.composer textarea::placeholder { color: #a5a3aa; opacity: 1; transition: opacity var(--transition-fast); }
+.composer textarea:focus::placeholder { opacity: 0; }
+.composer textarea::selection { color: var(--text); background: color-mix(in srgb, var(--accent) 28%, transparent); }
 .composer textarea:disabled { cursor: not-allowed; }
 .composer-footer { min-height: 34px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .composer-footer > span { padding-left: 2px; color: #aaa8af; font-size: 11px; }

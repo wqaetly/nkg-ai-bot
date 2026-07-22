@@ -97,6 +97,14 @@ describe("chat-first UI consistency", () => {
     expect(styles).toContain(".composer-model-select");
   });
 
+  it("makes the empty composer focus and caret visible", async () => {
+    const styles = await readFile(new URL("../src/App.css", import.meta.url), "utf8");
+
+    expect(styles).toContain("caret-color: var(--accent)");
+    expect(styles).toContain(".composer textarea:focus::placeholder { opacity: 0; }");
+    expect(styles).toContain(".composer textarea::selection");
+  });
+
   it("exposes the computer configuration Flow through the selectable skill experience", async () => {
     const source = await readFile(new URL("../src/ChatPage.tsx", import.meta.url), "utf8");
 
