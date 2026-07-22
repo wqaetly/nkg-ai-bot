@@ -39,6 +39,7 @@ import { ImageGenerationPanel } from "./ImageGenerationPanel";
 import { createEvalCaseFromCorrection } from "./evaluationRepository";
 import type { EvaluationRuntime } from "./evaluation";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
+import { themeModeLabel, type ThemeMode } from "./appearance";
 import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
@@ -60,7 +61,15 @@ const COMPUTER_CONFIG_SUGGESTIONS = [
   { icon: "↗", title: "规划升级路线", prompt: "请根据我的现有电脑、主要用途和预算，给出优先级明确的升级方案：" },
 ];
 
-export function ChatPage({ openProviders }: { openProviders: () => void }) {
+export function ChatPage({
+  openProviders,
+  themeMode,
+  toggleTheme,
+}: {
+  openProviders: () => void;
+  themeMode: ThemeMode;
+  toggleTheme: () => void;
+}) {
   const [conversations, setConversations] = useState<LocalConversation[]>([]);
   const [activeId, setActiveId] = useState<string>();
   const [runtime, setRuntime] = useState<ChatRuntime & ReflectionRuntime & EvaluationRuntime>();
@@ -523,7 +532,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
           </button>
           <button type="button" onClick={() => { setSkillsOpen(true); setSidebarOpen(false); }}>
             <span className="footer-icon"><SkillIcon /></span>
-            <span><strong>助手技能</strong><small>{skills.length} 个本地 Flow Skill</small></span>
+            <span><strong>能力中心</strong><small>{skills.length} 个 Skill · MCP · 市场</small></span>
             <ChevronIcon />
           </button>
           <button type="button" onClick={() => { setMemoryOpen(true); setSidebarOpen(false); }}>
@@ -550,6 +559,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
           <div className="header-actions">
             <button aria-label="打开生图工作台" className="header-settings" type="button" onClick={() => setImageStudioOpen(true)}><ImageIcon /><span>生图</span></button>
             <button aria-label="打开本地记忆" className="header-settings" type="button" onClick={() => setMemoryOpen(true)}><MemoryIcon /><span>记忆</span></button>
+            <button aria-label={`当前外观：${themeModeLabel(themeMode)}，点击切换`} className="header-settings theme-toggle" title={`外观：${themeModeLabel(themeMode)}`} type="button" onClick={toggleTheme}><ThemeIcon mode={themeMode} /><span>{themeModeLabel(themeMode)}</span></button>
             <button className="header-settings" type="button" onClick={openProviders}><SettingsIcon /><span>设置</span></button>
           </div>
         </header>
@@ -732,7 +742,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
       ) : null}
       {skillsOpen ? (
         <div className="settings-layer" role="presentation" onMouseDown={() => setSkillsOpen(false)}>
-          <section aria-label="助手技能" aria-modal="true" className="settings-dialog skill-dialog" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
+          <section aria-label="能力中心" aria-modal="true" className="settings-dialog skill-dialog capability-dialog" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
             <AssistantSkillsPanel
               onClose={() => setSkillsOpen(false)}
               onSelect={selectAssistantSkill}
@@ -848,3 +858,8 @@ function ArrowUpIcon() { return <Icon><path d="m6 11 6-6 6 6M12 5v14" /></Icon>;
 function SearchIcon() { return <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></Icon>; }
 function ImageIcon() { return <Icon><rect height="16" rx="2" width="18" x="3" y="4" /><circle cx="9" cy="10" r="2" /><path d="m4 18 5-4 3 2 3-3 5 4" /></Icon>; }
 function PaperclipIcon() { return <Icon><path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.8-8.8a4 4 0 0 1 5.7 5.7l-8.9 8.8a2 2 0 0 1-2.8-2.8l8.2-8.2" /></Icon>; }
+function ThemeIcon({ mode }: { mode: ThemeMode }) {
+  if (mode === "light") return <Icon><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></Icon>;
+  if (mode === "dark") return <Icon><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z" /></Icon>;
+  return <Icon><rect height="14" rx="2" width="18" x="3" y="4" /><path d="M8 20h8M12 18v2M8 8h8M8 12h5" /></Icon>;
+}
