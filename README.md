@@ -18,7 +18,7 @@
   Android 原生工程；启动/恢复时会把 SQLite Flow 目录同步到当前 Runtime，移动端
   挂起会取消活动 run 并中止流式请求；内置日常聊天同样通过 Flow 执行，消息仅写入
   本地 SQLite；内置“电脑配置顾问”可在空对话的“助手技能”中选择，提供预算装机、
-  兼容性检查、现有配置诊断和升级建议；启用京东联盟或拼多多联盟后，同一个电脑顾问
+  兼容性检查、现有配置诊断和升级建议；启用 Flow 自带的联盟商品能力后，同一个电脑顾问
   Flow 会依次规划查询、解析计划、检索筛选、生成推广链接并输出带返利披露的建议；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
@@ -39,9 +39,9 @@ npm run build:client
 
 ### 电脑配置顾问与电商返利
 
-在“模型与联网设置”的“电商返利商品推荐”中选择京东联盟或拼多多联盟，填写对应的
-开放平台凭据与推广位信息并启用。Client ID/App Key 与 Secret 只写入本地 Stronghold，
-SQLite 仅保存密钥引用、PID 和推广位等非敏感元数据。
+返利商品能力随“电脑配置顾问”Flow 管理，不出现在应用的全局设置中。Flow 默认使用
+拼多多联盟；只有明确指定京东联盟时才切换平台。Client ID/App Key 与 Secret 只写入
+本地 Stronghold，SQLite 仅保存密钥引用、PID 和推广位等非敏感元数据。
 
 用户选择“电脑配置顾问”后，一次 Flow 运行会经过 `product_query_planner`、
 `parse_query_plan`、`affiliate_products` 和 `chat_model`，规划最多 8 个具体商品搜索，

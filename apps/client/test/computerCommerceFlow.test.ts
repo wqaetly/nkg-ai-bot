@@ -19,7 +19,7 @@ import {
 } from "../src/builtinFlows";
 
 describe("computer commerce Flow", () => {
-  it("runs planning, affiliate search and promotion, then the advisor in one graph", async () => {
+  it("defaults to Pinduoduo while running planning, affiliate search and promotion", async () => {
     const prompts: string[] = [];
     const llmProvider: LlmProvider = {
       async complete(request) {
@@ -85,7 +85,6 @@ describe("computer commerce Flow", () => {
         { name: "LLM_BASE_URL", value: "https://model.example.test/v1" },
         { name: "LLM_DEFAULT_MODEL", value: "test-model" },
         { name: AFFILIATE_ENV_KEYS.enabled, value: true },
-        { name: AFFILIATE_ENV_KEYS.provider, value: "pdd" },
         { name: AFFILIATE_ENV_KEYS.pddPid, value: "100_200" },
       ]),
       secrets: new InMemoryVariableStore([
@@ -105,6 +104,7 @@ describe("computer commerce Flow", () => {
     expect(prompts[1]).toContain("https://p.pinduoduo.com/affiliate");
     expect(prompts[1]).toContain("不得按佣金排序");
     expect(request).toHaveBeenCalledTimes(2);
+    expect(request.mock.calls[0]?.[0]).toContain("gw-api.pinduoduo.com");
     expect(nodeEvents.filter((entry) => entry.startsWith("node_started")))
       .toEqual([
         "node_started:start",

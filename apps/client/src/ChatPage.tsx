@@ -36,6 +36,7 @@ import { createReflectionJob } from "./learningJobs";
 import { ReflectionJobRunner, type ReflectionRuntime } from "./reflectionRunner";
 import {
   COMPUTER_CONFIG_ASSISTANT_ID,
+  DEFAULT_ASSISTANT_ID,
   listAssistantSkillIndex,
   resolveAssistantSkill,
   type AssistantSkillIndex,
@@ -46,10 +47,11 @@ import { ImageGenerationPanel } from "./ImageGenerationPanel";
 import { createEvalCaseFromCorrection } from "./evaluationRepository";
 import type { EvaluationRuntime } from "./evaluation";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
-import { themeModeLabel, type ThemeMode } from "./appearance";
+import { subscribeAppPanel } from "./appPanel";
 import { MarkdownContent } from "./MarkdownContent";
 import { ReasoningPanel } from "./ReasoningPanel";
 import { SearchReferencesPanel } from "./SearchReferencesPanel";
+import { ConversationSidebar } from "./ConversationSidebar";
 import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
@@ -71,14 +73,12 @@ const COMPUTER_CONFIG_SUGGESTIONS = [
   { icon: "↗", title: "规划升级路线", prompt: "请根据我的现有电脑、主要用途和预算，给出优先级明确的升级方案：" },
 ];
 
+const SIDEBAR_COLLAPSED_STORAGE_KEY = "nkg.layout.sidebarCollapsed";
+
 export function ChatPage({
   openProviders,
-  themeMode,
-  toggleTheme,
 }: {
   openProviders: () => void;
-  themeMode: ThemeMode;
-  toggleTheme: () => void;
 }) {
   const [conversations, setConversations] = useState<LocalConversation[]>([]);
   const [activeId, setActiveId] = useState<string>();
@@ -97,7 +97,15 @@ export function ChatPage({
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [error, setError] = useState("");
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [pendingDeleteId, setPendingDeleteId] = useState<string>();
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem(SIDEBAR_COLLAPSED_STORAGE_KEY) === "true";
+    } catch {
+      return false;
+    }
+  });
+  const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [newConversationSkillId, setNewConversationSkillId] = useState(DEFAULT_ASSISTANT_ID);
   const [copiedId, setCopiedId] = useState<string>();
   const [feedback, setFeedback] = useState<Record<string, FeedbackRating>>({});
   const [memoryOpen, setMemoryOpen] = useState(false);
@@ -112,7 +120,8 @@ export function ChatPage({
   const [webSearchEnabled, setWebSearchEnabled] = useState(true);
   const abortRef = useRef<AbortController | undefined>(undefined);
   const activeRequestRef = useRef<string | undefined>(undefined);
-  const messageEndRef = useRef<HTMLDivElement>(null);
+  const messageScrollRef = useRef<HTMLDivElement>(null);
+  const composerRegionRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const imageInputRef = useRef<HTMLInputElement>(null);
   const activeIdRef = useRef<string | undefined>(undefined);
@@ -131,6 +140,7 @@ export function ChatPage({
     && activeConversation.modelId && selectedProvider.enabledModels.includes(activeConversation.modelId)
     ? activeConversation.modelId
     : selectedProvider?.defaultModel;
+  const headerModel = unlocked ? conversationModel ?? "未选择模型" : "尚未配置模型";
   const reflectionRunner = useMemo(
     () => runtime ? new ReflectionJobRunner(runtime) : undefined,
     [runtime],
@@ -194,7 +204,15 @@ export function ChatPage({
   }, [activeId, runtime]);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ behavior: streamingText ? "auto" : "smooth" });
+    window.scrollTo(0, 0);
+    document.documentElement.scrollTop = 0;
+    document.body.scrollTop = 0;
+    const messageScroll = messageScrollRef.current;
+    if (!messageScroll) return;
+    messageScroll.scrollTo({
+      top: messageScroll.scrollHeight,
+      behavior: streamingText ? "auto" : "smooth",
+    });
   }, [messages, streamingReasoning, streamingReferences, streamingText, chatActivity, activeId]);
 
   useEffect(() => {
@@ -203,6 +221,25 @@ export function ChatPage({
     element.style.height = "auto";
     element.style.height = `${Math.min(element.scrollHeight, 180)}px`;
   }, [draft]);
+
+  useEffect(() => {
+    const composerRegion = composerRegionRef.current;
+    const conversationMain = composerRegion?.closest<HTMLElement>(".conversation-main");
+    if (!composerRegion || !conversationMain) return;
+    const syncComposerHeight = () => {
+      conversationMain.style.setProperty(
+        "--composer-region-height",
+        `${Math.ceil(composerRegion.getBoundingClientRect().height)}px`,
+      );
+    };
+    syncComposerHeight();
+    const observer = new ResizeObserver(syncComposerHeight);
+    observer.observe(composerRegion);
+    return () => {
+      observer.disconnect();
+      conversationMain.style.removeProperty("--composer-region-height");
+    };
+  }, []);
 
   useEffect(() => {
     const handleShortcut = (event: globalThis.KeyboardEvent) => {
@@ -216,18 +253,28 @@ export function ChatPage({
   }, []);
 
   useEffect(() => {
-    if (!memoryOpen && !skillsOpen && !imageStudioOpen && !previewImage) return;
+    if (!memoryOpen && !skillsOpen && !evaluationOpen && !imageStudioOpen && !previewImage && !newConversationOpen) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setMemoryOpen(false);
         setSkillsOpen(false);
+        setEvaluationOpen(false);
         setImageStudioOpen(false);
         setPreviewImage(undefined);
+        setNewConversationOpen(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [imageStudioOpen, memoryOpen, previewImage, skillsOpen]);
+  }, [evaluationOpen, imageStudioOpen, memoryOpen, newConversationOpen, previewImage, skillsOpen]);
+
+  useEffect(() => subscribeAppPanel((panel) => {
+    setSidebarOpen(false);
+    if (panel === "memory") setMemoryOpen(true);
+    if (panel === "skills") setSkillsOpen(true);
+    if (panel === "evaluation") setEvaluationOpen(true);
+    if (panel === "image-studio") setImageStudioOpen(true);
+  }), []);
 
   const visible = useMemo(
     () => messages.filter((message) => message.role === "user" || message.role === "assistant"),
@@ -252,9 +299,17 @@ export function ChatPage({
     await refreshConversations();
   }
 
-  async function startConversation() {
+  async function startConversation(assistantId?: string) {
+    if (!assistantId) {
+      setNewConversationSkillId(DEFAULT_ASSISTANT_ID);
+      setNewConversationOpen(true);
+      setSidebarOpen(false);
+      return;
+    }
     stopGeneration();
-    const created = await createStoredConversation(selectedProvider);
+    const created = await createStoredConversation(selectedProvider, {
+      assistantId,
+    });
     setConversations((current) => [created, ...current]);
     setActiveId(created.id);
     setMessages([]);
@@ -271,14 +326,12 @@ export function ChatPage({
     setActiveId(id);
     setMessages([]);
     setSidebarOpen(false);
-    setPendingDeleteId(undefined);
   }
 
   async function removeConversation(id: string) {
     stopGeneration();
     await deleteConversation(id);
     const remaining = conversations.filter((conversation) => conversation.id !== id);
-    setPendingDeleteId(undefined);
     setDrafts((current) => {
       const next = { ...current };
       delete next[id];
@@ -589,87 +642,61 @@ export function ChatPage({
     }));
   }
 
+  function toggleSidebarCollapsed() {
+    setSidebarCollapsed((current) => {
+      const next = !current;
+      try {
+        localStorage.setItem(SIDEBAR_COLLAPSED_STORAGE_KEY, String(next));
+      } catch {
+        // The current session can still use the collapsed state without persistence.
+      }
+      return next;
+    });
+  }
+
   return (
-    <div className="chat-layout">
+    <div className={`chat-layout ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
       {sidebarOpen ? <button aria-label="关闭会话列表" className="sidebar-backdrop" type="button" onClick={() => setSidebarOpen(false)} /> : null}
       <aside className={`conversation-sidebar ${sidebarOpen ? "open" : ""}`}>
-        <div className="sidebar-brand">
-          <span className="brand-orb">N</span>
-          <div><strong>NKG</strong><small>AI Assistant</small></div>
-          <button aria-label="关闭会话列表" className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(false)}><CloseIcon /></button>
-        </div>
+        <button aria-label="关闭会话列表" className="icon-button mobile-only sidebar-mobile-close" type="button" onClick={() => setSidebarOpen(false)}><CloseIcon /></button>
 
-        <button className="new-chat-button" type="button" onClick={() => void startConversation()}>
-          <PlusIcon /><span>新对话</span><kbd>Ctrl N</kbd>
-        </button>
-        <button className="image-studio-button" type="button" onClick={() => { setImageStudioOpen(true); setSidebarOpen(false); }}>
-          <ImageIcon /><span><strong>生图工作台</strong><small>文字生图 · 参考图编辑</small></span><ChevronIcon />
-        </button>
-
-        <div className="conversation-section-label">最近对话</div>
-        <nav aria-label="会话列表" className="conversation-list">
-          {conversations.map((conversation) => (
-            <div className={`conversation-row ${conversation.id === activeId ? "active" : ""}`} key={conversation.id}>
-              {pendingDeleteId === conversation.id ? (
-                <div className="delete-confirm">
-                  <span>删除这条对话？</span>
-                  <button type="button" onClick={() => setPendingDeleteId(undefined)}>取消</button>
-                  <button className="danger" type="button" onClick={() => void removeConversation(conversation.id)}>删除</button>
-                </div>
-              ) : (
-                <>
-                  <button className="conversation-select" type="button" onClick={() => selectConversation(conversation.id)}>
-                    <ChatIcon />
-                    <span><strong>{conversation.title || "新对话"}</strong><small>{formatRelativeTime(conversation.updatedAt)}</small></span>
-                  </button>
-                  <button aria-label={`删除 ${conversation.title || "新对话"}`} className="conversation-delete" type="button" onClick={() => setPendingDeleteId(conversation.id)}><TrashIcon /></button>
-                </>
-              )}
-            </div>
-          ))}
-        </nav>
-
-        <div className="sidebar-footer">
-          <button type="button" onClick={() => { setEvaluationOpen(true); setSidebarOpen(false); }}>
-            <span className="footer-icon"><EvaluationIcon /></span>
-            <span><strong>评测与发布</strong><small>冻结回放、门禁与版本发布</small></span>
-            <ChevronIcon />
-          </button>
-          <button type="button" onClick={() => { setSkillsOpen(true); setSidebarOpen(false); }}>
-            <span className="footer-icon"><SkillIcon /></span>
-            <span><strong>能力中心</strong><small>{skills.length} 个 Skill · MCP · 市场</small></span>
-            <ChevronIcon />
-          </button>
-          <button type="button" onClick={() => { setMemoryOpen(true); setSidebarOpen(false); }}>
-            <span className="footer-icon"><MemoryIcon /></span>
-            <span><strong>本地记忆</strong><small>审核、编辑与停用事实</small></span>
-            <ChevronIcon />
-          </button>
-          <button type="button" onClick={openProviders}>
-            <span className="footer-icon"><SettingsIcon /></span>
-            <span><strong>OpenAI 设置</strong><small>{unlocked ? `${selectedProvider?.enabledModels.length ?? 0} 个模型已启用` : "配置 API URL 与密钥"}</small></span>
-            <ChevronIcon />
-          </button>
-          <div className="local-note"><ShieldIcon /> 对话与密钥仅保存在本机</div>
-        </div>
+        <ConversationSidebar
+          activeId={activeId}
+          conversations={conversations}
+          enabledModelCount={selectedProvider?.enabledModels.length ?? 0}
+          skills={skills}
+          unlocked={unlocked}
+          onCreateConversation={startConversation}
+          onDeleteConversation={removeConversation}
+          onOpenSettings={openProviders}
+          onSelectConversation={selectConversation}
+        />
       </aside>
 
       <section className="conversation-main">
         <header className="chat-header">
           <div className="chat-header-left">
             <button aria-label="打开会话列表" className="icon-button mobile-only" type="button" onClick={() => setSidebarOpen(true)}><MenuIcon /></button>
-            <button aria-label="打开助手技能" className="assistant-avatar assistant-avatar-button" type="button" onClick={() => setSkillsOpen(true)}>{activeSkillName(skills, activeConversation).slice(0, 1).toUpperCase()}</button>
-            <div><h1>{activeConversation?.title || "新对话"}</h1><p><span className={unlocked ? "online-dot" : "offline-dot"} />{activeSkillName(skills, activeConversation)} · {activeConversation?.assistantVersion ?? "1.0.0"} · {unlocked ? conversationModel : "尚未配置模型"}</p></div>
-          </div>
-          <div className="header-actions">
-            <button aria-label="打开生图工作台" className="header-settings" type="button" onClick={() => setImageStudioOpen(true)}><ImageIcon /><span>生图</span></button>
-            <button aria-label="打开本地记忆" className="header-settings" type="button" onClick={() => setMemoryOpen(true)}><MemoryIcon /><span>记忆</span></button>
-            <button aria-label={`当前外观：${themeModeLabel(themeMode)}，点击切换`} className="header-settings theme-toggle" title={`外观：${themeModeLabel(themeMode)}`} type="button" onClick={toggleTheme}><ThemeIcon mode={themeMode} /><span>{themeModeLabel(themeMode)}</span></button>
-            <button className="header-settings" type="button" onClick={openProviders}><SettingsIcon /><span>设置</span></button>
+            <button
+              aria-label={sidebarCollapsed ? "展开左侧栏" : "收起左侧栏"}
+              className="icon-button desktop-only sidebar-collapse-toggle"
+              title={sidebarCollapsed ? "展开左侧栏" : "收起左侧栏"}
+              type="button"
+              onClick={toggleSidebarCollapsed}
+            ><SidebarIcon collapsed={sidebarCollapsed} /></button>
+            <div className="chat-header-summary">
+              <h1 title={activeConversation?.title || "新对话"}>{activeConversation?.title || "新对话"}</h1>
+              <span className="chat-header-meta" title={`${activeSkillName(skills, activeConversation)} · ${headerModel}`}>
+                <span className={unlocked ? "online-dot" : "offline-dot"} />
+                <span className="chat-header-skill">{activeSkillName(skills, activeConversation)}</span>
+                <span aria-hidden="true">·</span>
+                <span className="chat-header-model">{headerModel}</span>
+              </span>
+            </div>
           </div>
         </header>
 
-        <div className={`message-scroll ${visible.length === 0 && !busy ? "empty" : ""}`} aria-live="polite">
+        <div ref={messageScrollRef} className={`message-scroll ${visible.length === 0 && !busy ? "empty" : ""}`} aria-live="polite">
           <div className="message-column">
             {loadingMessages ? (
               <div className="message-loading"><span /><span /><span /></div>
@@ -754,11 +781,10 @@ export function ChatPage({
                 </div>
               </article>
             ) : null}
-            <div ref={messageEndRef} />
           </div>
         </div>
 
-        <div className="composer-region">
+        <div ref={composerRegionRef} className="composer-region">
           {learningNotice ? <div className="learning-notice" role="status"><MemoryIcon /><span>{learningNotice}</span><button aria-label="关闭提示" type="button" onClick={() => setLearningNotice("")}><CloseIcon /></button></div> : null}
           {!unlocked ? (
             <button className="provider-banner" type="button" onClick={openProviders}>
@@ -838,6 +864,20 @@ export function ChatPage({
           <p className="composer-disclaimer">AI 生成的内容可能不准确，请核查重要信息。{affiliateCommerceActive ? " 商品购买链接属于推广链接，成交后平台可能向我们支付佣金。" : ""}</p>
         </div>
       </section>
+      {newConversationOpen ? (
+        <div className="settings-layer" role="presentation" onMouseDown={() => setNewConversationOpen(false)}>
+          <NewConversationDialog
+            selectedAssistantId={newConversationSkillId}
+            skills={skills}
+            onCancel={() => setNewConversationOpen(false)}
+            onConfirm={(assistantId) => {
+              setNewConversationOpen(false);
+              void startConversation(assistantId);
+            }}
+            onSelect={setNewConversationSkillId}
+          />
+        </div>
+      ) : null}
       {memoryOpen ? (
         <div className="settings-layer" role="presentation" onMouseDown={() => setMemoryOpen(false)}>
           <section aria-label="本地记忆" aria-modal="true" className="settings-dialog memory-dialog" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
@@ -894,6 +934,65 @@ export function ChatPage({
   );
 }
 
+function NewConversationDialog({
+  selectedAssistantId,
+  skills,
+  onCancel,
+  onConfirm,
+  onSelect,
+}: {
+  selectedAssistantId: string;
+  skills: AssistantSkillIndex[];
+  onCancel: () => void;
+  onConfirm: (assistantId: string) => void;
+  onSelect: (assistantId: string) => void;
+}) {
+  const orderedSkills = [...skills].sort((left, right) => {
+    if (left.assistantId === DEFAULT_ASSISTANT_ID) return -1;
+    if (right.assistantId === DEFAULT_ASSISTANT_ID) return 1;
+    return left.name.localeCompare(right.name, "zh-CN");
+  });
+  const selectedSkill = orderedSkills.find((skill) => skill.assistantId === selectedAssistantId);
+  return (
+    <form
+      aria-labelledby="new-conversation-title"
+      aria-modal="true"
+      className="settings-dialog new-conversation-dialog"
+      role="dialog"
+      onMouseDown={(event) => event.stopPropagation()}
+      onSubmit={(event) => {
+        event.preventDefault();
+        if (selectedSkill) onConfirm(selectedSkill.assistantId);
+      }}
+    >
+      <header>
+        <h2 id="new-conversation-title">新建对话</h2>
+        <p>选择这个对话要使用的 Skill，默认使用 NKG。</p>
+      </header>
+      <div aria-label="选择 Skill" className="new-conversation-skill-list" role="radiogroup">
+        {orderedSkills.map((skill) => (
+          <label className={skill.assistantId === selectedAssistantId ? "selected" : ""} key={skill.assistantId}>
+            <input
+              checked={skill.assistantId === selectedAssistantId}
+              name="new-conversation-skill"
+              type="radio"
+              value={skill.assistantId}
+              onChange={() => onSelect(skill.assistantId)}
+            />
+            <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+            {skill.assistantId === DEFAULT_ASSISTANT_ID ? <em>默认</em> : null}
+          </label>
+        ))}
+        {orderedSkills.length === 0 ? <p>正在加载 Skill…</p> : null}
+      </div>
+      <footer>
+        <button className="ghost-button" type="button" onClick={onCancel}>取消</button>
+        <button autoFocus className="primary-button" disabled={!selectedSkill} type="submit">创建对话</button>
+      </footer>
+    </form>
+  );
+}
+
 function ChatActivityStatus({ activity }: { activity: ChatActivity }) {
   return (
     <div className={`chat-activity ${activity.kind}`} role="status">
@@ -932,9 +1031,10 @@ function Welcome({
 
 async function createStoredConversation(
   provider?: { id: string; defaultModel: string },
+  placement: { assistantId?: string } = {},
 ): Promise<LocalConversation> {
   const now = Date.now();
-  const skill = await resolveAssistantSkill();
+  const skill = await resolveAssistantSkill(placement.assistantId);
   const conversation: LocalConversation = {
     id: crypto.randomUUID(),
     title: "新对话",
@@ -952,15 +1052,6 @@ function selectedProfile(snapshot: ProviderSessionSnapshot) {
   return snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId);
 }
 
-function formatRelativeTime(timestamp: number): string {
-  const delta = Date.now() - timestamp;
-  if (delta < 60_000) return "刚刚";
-  if (delta < 3_600_000) return `${Math.floor(delta / 60_000)} 分钟前`;
-  if (delta < 86_400_000) return `${Math.floor(delta / 3_600_000)} 小时前`;
-  if (delta < 172_800_000) return "昨天";
-  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric" }).format(timestamp);
-}
-
 function activeSkillName(
   skills: AssistantSkillIndex[],
   conversation: LocalConversation | undefined,
@@ -970,19 +1061,13 @@ function activeSkillName(
 
 function Icon({ children }: { children: React.ReactNode }) { return <svg aria-hidden viewBox="0 0 24 24">{children}</svg>; }
 function MenuIcon() { return <Icon><path d="M4 7h16M4 12h16M4 17h16" /></Icon>; }
+function SidebarIcon({ collapsed }: { collapsed: boolean }) { return <Icon><rect height="16" rx="2" width="18" x="3" y="4" /><path d="M9 4v16" />{collapsed ? <path d="m13 9 3 3-3 3" /> : <path d="m16 9-3 3 3 3" />}</Icon>; }
 function CloseIcon() { return <Icon><path d="m6 6 12 12M18 6 6 18" /></Icon>; }
-function PlusIcon() { return <Icon><path d="M12 5v14M5 12h14" /></Icon>; }
-function ChatIcon() { return <Icon><path d="M20 11.5a7.5 7.5 0 0 1-8 7.5 9 9 0 0 1-3.7-.8L4 20l1.4-3.8A7.7 7.7 0 0 1 4 11.5 7.5 7.5 0 0 1 12 4a7.5 7.5 0 0 1 8 7.5Z" /></Icon>; }
-function TrashIcon() { return <Icon><path d="M4 7h16M9 7V4h6v3m-9 0 1 13h10l1-13M10 11v5M14 11v5" /></Icon>; }
-function SettingsIcon() { return <Icon><circle cx="12" cy="12" r="3" /><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1-2.8 2.8-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.2h-4V21a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1L4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9A1.7 1.7 0 0 0 3 14H2.8v-4H3a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9L4.2 7 7 4.2l.1.1A1.7 1.7 0 0 0 9 4.6 1.7 1.7 0 0 0 10 3V2.8h4V3a1.7 1.7 0 0 0 1 1.6 1.7 1.7 0 0 0 1.9-.3l.1-.1L19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9 1.7 1.7 0 0 0 1.6 1h.2v4H21a1.7 1.7 0 0 0-1.6 1Z" /></Icon>; }
 function ChevronIcon() { return <Icon><path d="m9 6 6 6-6 6" /></Icon>; }
-function ShieldIcon() { return <Icon><path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z" /><path d="m9 12 2 2 4-4" /></Icon>; }
 function KeyIcon() { return <Icon><circle cx="8" cy="12" r="4" /><path d="M12 12h9M17 12v3M20 12v2" /></Icon>; }
 function CopyIcon() { return <Icon><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></Icon>; }
 function RegenerateIcon() { return <Icon><path d="M20 7v5h-5M4 17v-5h5" /><path d="M18.1 9A7 7 0 0 0 6.2 6.2L4 9m16 6-2.2 2.8A7 7 0 0 1 5.9 15" /></Icon>; }
 function MemoryIcon() { return <Icon><path d="M12 5.5c-1.2-2-4.4-1.6-4.8.8A3.4 3.4 0 0 0 5 11.8c-1.1 2.1.4 4.7 2.8 4.8.7 2.7 4.2 2.8 4.2.1V5.5ZM12 5.5c1.2-2 4.4-1.6 4.8.8a3.4 3.4 0 0 1 2.2 5.5c1.1 2.1-.4 4.7-2.8 4.8-.7 2.7-4.2 2.8-4.2.1" /><path d="M8 9.5c1.3 0 2 .6 2 1.8M16 9.5c-1.3 0-2 .6-2 1.8M8.2 16.4c.1-1.5.8-2.4 2.1-2.7M15.8 16.4c-.1-1.5-.8-2.4-2.1-2.7" /></Icon>; }
-function SkillIcon() { return <Icon><path d="m12 3 2.1 4.9L19 10l-4.9 2.1L12 17l-2.1-4.9L5 10l4.9-2.1L12 3Z" /><path d="m19 16 .8 1.8L22 19l-2.2 1.2L19 22l-.8-1.8L16 19l2.2-1.2L19 16Z" /></Icon>; }
-function EvaluationIcon() { return <Icon><path d="M5 4h14v16H5zM8 8h8M8 12h3M8 16h5" /><path d="m14 14 1.4 1.4L18 13" /></Icon>; }
 function ThumbUpIcon() { return <Icon><path d="M7 10v10H3V10h4Zm0 9h9.2a2 2 0 0 0 1.9-1.4l2-6A2 2 0 0 0 18.2 9H14l.7-3.3A2.2 2.2 0 0 0 12.6 3L7 10" /></Icon>; }
 function ThumbDownIcon() { return <Icon><path d="M7 14V4H3v10h4Zm0-9h9.2a2 2 0 0 1 1.9 1.4l2 6a2 2 0 0 1-1.9 2.6H14l.7 3.3a2.2 2.2 0 0 1-2.1 2.7L7 14" /></Icon>; }
 function CheckIcon() { return <Icon><path d="m5 12 4 4L19 6" /></Icon>; }
@@ -990,10 +1075,4 @@ function AlertIcon() { return <Icon><path d="M12 3 2.8 20h18.4L12 3Z" /><path d=
 function StopIcon() { return <Icon><rect x="7" y="7" width="10" height="10" rx="2" /></Icon>; }
 function ArrowUpIcon() { return <Icon><path d="m6 11 6-6 6 6M12 5v14" /></Icon>; }
 function SearchIcon() { return <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></Icon>; }
-function ImageIcon() { return <Icon><rect height="16" rx="2" width="18" x="3" y="4" /><circle cx="9" cy="10" r="2" /><path d="m4 18 5-4 3 2 3-3 5 4" /></Icon>; }
 function PaperclipIcon() { return <Icon><path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.8-8.8a4 4 0 0 1 5.7 5.7l-8.9 8.8a2 2 0 0 1-2.8-2.8l8.2-8.2" /></Icon>; }
-function ThemeIcon({ mode }: { mode: ThemeMode }) {
-  if (mode === "light") return <Icon><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></Icon>;
-  if (mode === "dark") return <Icon><path d="M20 15.2A8.5 8.5 0 0 1 8.8 4a8.5 8.5 0 1 0 11.2 11.2Z" /></Icon>;
-  return <Icon><rect height="14" rx="2" width="18" x="3" y="4" /><path d="M8 20h8M12 18v2M8 8h8M8 12h5" /></Icon>;
-}

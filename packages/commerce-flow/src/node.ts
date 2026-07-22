@@ -3,6 +3,7 @@ import { z } from "zod";
 import {
   normalizeProductQuery,
   searchAffiliateProducts,
+  DEFAULT_COMMERCE_PROVIDER,
   type AffiliateCommerceConfig,
   type AffiliateCredentials,
   type AffiliateProduct,
@@ -115,7 +116,7 @@ export function createAffiliateCommerceNode(fetchImpl: typeof globalThis.fetch) 
           errors,
           summary: {
             enabled,
-            provider: enabled ? ctx.variables.getString(AFFILIATE_ENV_KEYS.provider) ?? "unknown" : "disabled",
+            provider: enabled ? ctx.variables.getString(AFFILIATE_ENV_KEYS.provider) ?? DEFAULT_COMMERCE_PROVIDER : "disabled",
             queryCount: queries.length,
             productCount: products.length,
             errorCount: errors.length,
@@ -158,7 +159,11 @@ function readQueries(value: unknown, maxQueries: number): AffiliateProductQuery[
 function readRuntimeCommerce(variables: {
   getString(name: string): string | undefined;
 }): { config: AffiliateCommerceConfig; credentials: AffiliateCredentials } {
-  const provider = variables.getString(AFFILIATE_ENV_KEYS.provider) as CommerceProvider | undefined;
+  const configuredProvider = variables.getString(AFFILIATE_ENV_KEYS.provider)?.trim();
+  if (configuredProvider && configuredProvider !== "jd" && configuredProvider !== "pdd") {
+    throw new Error("联盟平台运行配置无效");
+  }
+  const provider: CommerceProvider = configuredProvider === "jd" ? "jd" : DEFAULT_COMMERCE_PROVIDER;
   if (provider === "jd") {
     const appKey = requiredVariable(variables, AFFILIATE_ENV_KEYS.jdAppKey);
     const secretKey = requiredVariable(variables, AFFILIATE_ENV_KEYS.jdSecretKey);

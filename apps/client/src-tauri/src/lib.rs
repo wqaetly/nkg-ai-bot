@@ -6,7 +6,7 @@ use rand::{rngs::OsRng, RngCore};
 #[cfg(all(desktop, feature = "desktop-power"))]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
 use runtime_tools::runtime_tool_call;
-use std::{fs::OpenOptions, io::Write};
+use std::{fs::OpenOptions, io::Write, path::{Path, PathBuf}};
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -25,6 +25,70 @@ fn runtime_platform() -> &'static str {
     } else {
         "unknown"
     }
+}
+
+const MIGRATION_PENDING_DIR: &str = "migration-pending";
+
+#[tauri::command]
+fn export_app_snapshot(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
+    let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let local_data_dir = app.path().app_local_data_dir().map_err(|error| error.to_string())?;
+    Ok(serde_json::json!({
+        "databaseHex": read_optional_hex(&data_dir.join("nkg-ai-bot.db"))?,
+        "vaultHex": read_optional_hex(&data_dir.join("secrets-auto.hold"))?,
+        "deviceKeyHex": read_optional_hex(&local_data_dir.join("vault-device.key"))?,
+        "strongholdSaltHex": read_optional_hex(&local_data_dir.join("stronghold-salt"))?,
+    }))
+}
+
+#[tauri::command]
+fn save_migration_bundle(app: tauri::AppHandle, contents: String, filename: String) -> Result<String, String> {
+    if contents.is_empty() || contents.len() > 128 * 1024 * 1024 {
+        return Err("迁移包大小无效".to_string());
+    }
+    if filename.len() > 180
+        || !filename.ends_with(".nkgbackup")
+        || filename.contains(['/', '\\'])
+        || filename.contains("..")
+    {
+        return Err("迁移文件名无效".to_string());
+    }
+    let download_dir = app.path().download_dir().map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&download_dir).map_err(|error| error.to_string())?;
+    let target = unique_download_path(&download_dir, &filename);
+    std::fs::write(&target, contents.as_bytes()).map_err(|error| error.to_string())?;
+    Ok(target.to_string_lossy().into_owned())
+}
+
+#[tauri::command]
+fn stage_app_import(
+    app: tauri::AppHandle,
+    database_hex: String,
+    vault_hex: Option<String>,
+    device_key_hex: Option<String>,
+    stronghold_salt_hex: Option<String>,
+) -> Result<(), String> {
+    if database_hex.is_empty() {
+        return Err("迁移包缺少应用数据库".to_string());
+    }
+    let local_data_dir = app.path().app_local_data_dir().map_err(|error| error.to_string())?;
+    let pending_dir = local_data_dir.join(MIGRATION_PENDING_DIR);
+    if pending_dir.exists() {
+        std::fs::remove_dir_all(&pending_dir).map_err(|error| error.to_string())?;
+    }
+    std::fs::create_dir_all(&pending_dir).map_err(|error| error.to_string())?;
+    write_hex_file(&pending_dir.join("nkg-ai-bot.db"), &database_hex)?;
+    write_optional_hex_file(&pending_dir.join("secrets-auto.hold"), vault_hex.as_deref())?;
+    write_optional_hex_file(&pending_dir.join("vault-device.key"), device_key_hex.as_deref())?;
+    write_optional_hex_file(&pending_dir.join("stronghold-salt"), stronghold_salt_hex.as_deref())?;
+    std::fs::write(pending_dir.join("ready"), b"nkg-migration-v1")
+        .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -78,6 +142,12 @@ pub fn run() {
             sql: include_str!("../migrations/0008_provider_models.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "add_skill_scoped_conversation_groups",
+            sql: include_str!("../migrations/0009_conversation_groups.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()
@@ -90,6 +160,11 @@ pub fn run() {
         .setup(|app| {
             let data_dir = app.path().app_local_data_dir()?;
             std::fs::create_dir_all(&data_dir)?;
+            apply_pending_import(app.handle()).map_err(std::io::Error::other)?;
+            #[cfg(desktop)]
+            if let Some(window) = app.get_webview_window("main") {
+                window.set_zoom(1.0)?;
+            }
             app.handle().plugin(
                 tauri_plugin_stronghold::Builder::with_argon2(&data_dir.join("stronghold-salt"))
                     .build(),
@@ -104,6 +179,10 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_platform,
             secret_vault_device_password,
+            export_app_snapshot,
+            save_migration_bundle,
+            stage_app_import,
+            restart_app,
             runtime_tool_call,
             runtime_sidecar_start,
             runtime_sidecar_stop
@@ -113,6 +192,10 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         runtime_platform,
         secret_vault_device_password,
+        export_app_snapshot,
+        save_migration_bundle,
+        stage_app_import,
+        restart_app,
         runtime_tool_call
     ]);
 
@@ -120,12 +203,117 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         runtime_platform,
         secret_vault_device_password,
+        export_app_snapshot,
+        save_migration_bundle,
+        stage_app_import,
+        restart_app,
         runtime_tool_call
     ]);
 
     builder
         .run(tauri::generate_context!())
         .expect("error while running NKG AI Bot");
+}
+
+fn apply_pending_import(app: &tauri::AppHandle) -> Result<(), String> {
+    let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let local_data_dir = app.path().app_local_data_dir().map_err(|error| error.to_string())?;
+    let pending_dir = local_data_dir.join(MIGRATION_PENDING_DIR);
+    if !pending_dir.join("ready").exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(&data_dir).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(&local_data_dir).map_err(|error| error.to_string())?;
+    replace_from_pending(&pending_dir.join("nkg-ai-bot.db"), &data_dir.join("nkg-ai-bot.db"))?;
+    replace_optional_from_pending(&pending_dir.join("secrets-auto.hold"), &data_dir.join("secrets-auto.hold"))?;
+    replace_optional_from_pending(&pending_dir.join("vault-device.key"), &local_data_dir.join("vault-device.key"))?;
+    replace_optional_from_pending(&pending_dir.join("stronghold-salt"), &local_data_dir.join("stronghold-salt"))?;
+    for sidecar in [data_dir.join("nkg-ai-bot.db-wal"), data_dir.join("nkg-ai-bot.db-shm")] {
+        if sidecar.exists() {
+            std::fs::remove_file(sidecar).map_err(|error| error.to_string())?;
+        }
+    }
+    std::fs::remove_dir_all(pending_dir).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn replace_from_pending(source: &Path, target: &Path) -> Result<(), String> {
+    if !source.exists() {
+        return Err(format!("待导入文件缺失：{}", source.display()));
+    }
+    let temporary = temporary_target(target);
+    std::fs::copy(source, &temporary).map_err(|error| error.to_string())?;
+    if target.exists() {
+        std::fs::remove_file(target).map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(&temporary, target).map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn replace_optional_from_pending(source: &Path, target: &Path) -> Result<(), String> {
+    if source.exists() {
+        replace_from_pending(source, target)
+    } else {
+        if target.exists() {
+            std::fs::remove_file(target).map_err(|error| error.to_string())?;
+        }
+        Ok(())
+    }
+}
+
+fn temporary_target(target: &Path) -> PathBuf {
+    let mut value = target.as_os_str().to_os_string();
+    value.push(".migration-tmp");
+    PathBuf::from(value)
+}
+
+fn unique_download_path(directory: &Path, filename: &str) -> PathBuf {
+    let initial = directory.join(filename);
+    if !initial.exists() {
+        return initial;
+    }
+    let stem = filename.strip_suffix(".nkgbackup").unwrap_or(filename);
+    for index in 1..10_000 {
+        let candidate = directory.join(format!("{stem} ({index}).nkgbackup"));
+        if !candidate.exists() {
+            return candidate;
+        }
+    }
+    directory.join(format!("{stem}-{}.nkgbackup", std::process::id()))
+}
+
+fn read_optional_hex(path: &Path) -> Result<Option<String>, String> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let bytes = std::fs::read(path).map_err(|error| error.to_string())?;
+    Ok(Some(encode_hex(&bytes)))
+}
+
+fn write_optional_hex_file(path: &Path, value: Option<&str>) -> Result<(), String> {
+    match value {
+        Some(value) => write_hex_file(path, value),
+        None => Ok(()),
+    }
+}
+
+fn write_hex_file(path: &Path, value: &str) -> Result<(), String> {
+    let bytes = decode_hex(value)?;
+    std::fs::write(path, bytes).map_err(|error| error.to_string())
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() % 2 != 0 || !value.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("迁移包包含无效的二进制数据".to_string());
+    }
+    value.as_bytes().chunks_exact(2).map(|pair| {
+        let pair = std::str::from_utf8(pair).map_err(|error| error.to_string())?;
+        u8::from_str_radix(pair, 16).map_err(|error| error.to_string())
+    }).collect()
 }
 
 #[cfg(test)]
@@ -172,6 +360,10 @@ mod migration_tests {
             .execute(&pool)
             .await
             .expect("apply provider models migration");
+        sqlx::raw_sql(include_str!("../migrations/0009_conversation_groups.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply legacy conversation groups migration");
 
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
             .fetch_all(&pool)
@@ -190,6 +382,7 @@ mod migration_tests {
                 "assistant_skill_usage",
                 "assistant_versions",
                 "assistants",
+                "conversation_groups",
                 "conversations",
                 "eval_case_results",
                 "eval_cases",

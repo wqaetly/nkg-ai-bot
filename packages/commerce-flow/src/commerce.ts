@@ -2,6 +2,8 @@
 
 export type CommerceProvider = "jd" | "pdd";
 
+export const DEFAULT_COMMERCE_PROVIDER: CommerceProvider = "pdd";
+
 export interface JdAffiliateConfig {
   appKeyRef: string;
   secretKeyRef: string;

@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { AppearanceSettings } from "./AppearanceSettings";
+import { DataMigrationSettings } from "./DataMigrationSettings";
+import type { AppearancePreferences, ThemeMode } from "./appearance";
+import type { AppPanel } from "./appPanel";
 import {
   DEFAULT_SEARXNG_URL,
   providerSession,
-  type CommerceDraft,
   type ProviderDraft,
   type ProviderSessionSnapshot,
   type MemoryServiceDraft,
@@ -32,50 +35,53 @@ const EMPTY_MEMORY_DRAFT: MemoryServiceDraft = {
   enabled: false,
 };
 
-const EMPTY_COMMERCE_DRAFT: CommerceDraft = {
-  provider: "jd",
-  enabled: false,
-  key: "",
-  secret: "",
-  pid: "",
-  siteId: "",
-  positionId: "",
-};
-
-type SettingsSection = "models" | "search" | "memory" | "commerce";
+type SettingsSection = "appearance" | "tools" | "models" | "search" | "memory" | "data";
 
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSection;
   label: string;
   description: string;
 }> = [
+  { id: "appearance", label: "外观", description: "主题、缩放与背景" },
+  { id: "tools", label: "工具与能力", description: "记忆、能力与生图" },
   { id: "models", label: "模型服务", description: "API 与可用模型" },
   { id: "search", label: "联网搜索", description: "SearXNG 服务" },
   { id: "memory", label: "长期记忆", description: "MemOS 服务" },
-  { id: "commerce", label: "商品推荐", description: "联盟与返利" },
+  { id: "data", label: "数据迁移", description: "一键备份与恢复" },
 ];
 
-export function ProviderSettings({ onClose }: { onClose: () => void }) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>("models");
+export function ProviderSettings({
+  appearance,
+  themeMode,
+  onAppearanceChange,
+  onClose,
+  onOpenTool,
+  onThemeModeChange,
+}: {
+  appearance: AppearancePreferences;
+  themeMode: ThemeMode;
+  onAppearanceChange: (next: AppearancePreferences) => boolean;
+  onClose: () => void;
+  onOpenTool: (panel: AppPanel) => void;
+  onThemeModeChange: (mode: ThemeMode) => void;
+}) {
+  const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
   const [snapshot, setSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
   const [memoryDraft, setMemoryDraft] = useState<MemoryServiceDraft>(EMPTY_MEMORY_DRAFT);
-  const [commerceDraft, setCommerceDraft] = useState<CommerceDraft>(EMPTY_COMMERCE_DRAFT);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelQuery, setModelQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [searchBusy, setSearchBusy] = useState(false);
   const [memoryBusy, setMemoryBusy] = useState(false);
-  const [commerceBusy, setCommerceBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSearchApiKey, setShowSearchApiKey] = useState(false);
   const [showMemoryApiKey, setShowMemoryApiKey] = useState(false);
-  const [showCommerceSecrets, setShowCommerceSecrets] = useState(false);
   const [insecureHttpConfirmed, setInsecureHttpConfirmed] = useState(false);
   const [insecureSearchHttpConfirmed, setInsecureSearchHttpConfirmed] = useState(false);
   const [insecureMemoryHttpConfirmed, setInsecureMemoryHttpConfirmed] = useState(false);
@@ -131,10 +137,6 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
       enabled: snapshot.memory?.enabled ?? false,
     });
   }, [snapshot.memory?.baseUrl, snapshot.memory?.userId, snapshot.memory?.enabled]);
-
-  useEffect(() => {
-    setCommerceDraft(commerceDraftFromSnapshot(snapshot));
-  }, [snapshot.commerce]);
 
   async function perform(
     action: () => Promise<ProviderSessionSnapshot>,
@@ -245,41 +247,6 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
     }
   }
 
-  async function testCommerce() {
-    setCommerceBusy(true);
-    setError(undefined);
-    setNotice(undefined);
-    try {
-      const products = await providerSession.testCommerce(commerceDraft);
-      setNotice(products.length > 0
-        ? `${commerceDraft.provider === "jd" ? "京东" : "拼多多"}联盟连接成功，已生成测试推广链接`
-        : "联盟接口连接成功，但测试关键词没有返回匹配商品");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setCommerceBusy(false);
-    }
-  }
-
-  async function saveCommerce() {
-    setCommerceBusy(true);
-    setError(undefined);
-    setNotice(undefined);
-    try {
-      setSnapshot(await providerSession.saveCommerce(commerceDraft));
-      setCommerceDraft((current) => ({ ...current, key: "", secret: "" }));
-      setNotice("电商返利配置已保存；联盟凭据已进入本机加密存储");
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setCommerceBusy(false);
-    }
-  }
-
-  function selectCommerceProvider(provider: "jd" | "pdd") {
-    setCommerceDraft(commerceDraftFromSnapshot(snapshot, provider));
-  }
-
   function toggleModel(model: string, enabled: boolean) {
     setDraft((current) => {
       const enabledModels = enabled
@@ -352,7 +319,13 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
 
       <div className="settings-panel-scroll" key={activeSection}>
 
-      {initializing || !snapshot.unlocked ? (
+      {activeSection === "appearance" ? (
+        <AppearanceSettings value={appearance} themeMode={themeMode} onChange={onAppearanceChange} onThemeModeChange={onThemeModeChange} />
+      ) : activeSection === "tools" ? (
+        <SettingsToolHub onOpen={onOpenTool} />
+      ) : activeSection === "data" ? (
+        <DataMigrationSettings />
+      ) : initializing || !snapshot.unlocked ? (
         <section className="vault-unlock">
           <span className="vault-icon"><DeviceKeyIcon /></span>
           <h3>{initializing ? "正在准备本地安全存储" : "本地安全存储不可用"}</h3>
@@ -579,77 +552,6 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
         </form>
         ) : null}
 
-        {activeSection === "commerce" ? (
-        <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveCommerce(); }}>
-          <div className="settings-section-heading">
-            <div><strong>商品推荐与返利</strong><small>查询真实商品并生成京东或拼多多联盟推广链接</small></div>
-            <span className={`connection-dot ${snapshot.commerce?.enabled ? "online" : ""}`} />
-          </div>
-
-          <label htmlFor="commerce-provider">联盟平台</label>
-          <select id="commerce-provider" value={commerceDraft.provider} onChange={(event) => selectCommerceProvider(event.currentTarget.value as "jd" | "pdd")}>
-            <option value="jd">京东联盟</option>
-            <option value="pdd">拼多多联盟</option>
-          </select>
-
-          <label htmlFor="commerce-key">{commerceDraft.provider === "jd" ? "App Key" : "Client ID"}</label>
-          <div className="secret-input">
-            <input
-              autoComplete="off"
-              id="commerce-key"
-              placeholder={snapshot.commerce?.[commerceDraft.provider] ? "留空表示保留当前凭据" : "输入联盟应用标识"}
-              required={!snapshot.commerce?.[commerceDraft.provider]}
-              type={showCommerceSecrets ? "text" : "password"}
-              value={commerceDraft.key}
-              onChange={(event) => setCommerceDraft({ ...commerceDraft, key: event.currentTarget.value })}
-            />
-            <button aria-label={showCommerceSecrets ? "隐藏联盟凭据" : "显示联盟凭据"} type="button" onClick={() => setShowCommerceSecrets((value) => !value)}>
-              {showCommerceSecrets ? <EyeOffIcon /> : <EyeIcon />}
-            </button>
-          </div>
-
-          <label htmlFor="commerce-secret">{commerceDraft.provider === "jd" ? "Secret Key" : "Client Secret"}</label>
-          <div className="secret-input">
-            <input
-              autoComplete="off"
-              id="commerce-secret"
-              placeholder={snapshot.commerce?.[commerceDraft.provider] ? "留空表示保留当前密钥" : "输入联盟应用密钥"}
-              required={!snapshot.commerce?.[commerceDraft.provider]}
-              type={showCommerceSecrets ? "text" : "password"}
-              value={commerceDraft.secret}
-              onChange={(event) => setCommerceDraft({ ...commerceDraft, secret: event.currentTarget.value })}
-            />
-          </div>
-          <p className="field-hint">应用标识与密钥均由 Stronghold 加密保存，不写入 Flow、SQLite 或日志。</p>
-
-          <label htmlFor="commerce-pid">推广位 PID</label>
-          <input id="commerce-pid" required value={commerceDraft.pid} onChange={(event) => setCommerceDraft({ ...commerceDraft, pid: event.currentTarget.value })} />
-
-          {commerceDraft.provider === "jd" ? (
-            <>
-              <label htmlFor="commerce-site-id">网站/APP ID</label>
-              <input id="commerce-site-id" inputMode="numeric" pattern="[0-9]+" required value={commerceDraft.siteId ?? ""} onChange={(event) => setCommerceDraft({ ...commerceDraft, siteId: event.currentTarget.value })} />
-              <label htmlFor="commerce-position-id">推广位 ID</label>
-              <input id="commerce-position-id" inputMode="numeric" pattern="[0-9]+" required value={commerceDraft.positionId ?? ""} onChange={(event) => setCommerceDraft({ ...commerceDraft, positionId: event.currentTarget.value })} />
-            </>
-          ) : null}
-
-          <label className="search-enabled-option">
-            <input checked={commerceDraft.enabled} type="checkbox" onChange={(event) => setCommerceDraft({ ...commerceDraft, enabled: event.currentTarget.checked })} />
-            <span><strong>为电脑配置顾问启用联盟商品推荐</strong><small>模型先确定技术方案，再按匹配度和质量选择商品；不会按佣金高低排序。</small></span>
-          </label>
-          <p className="field-hint">对用户展示的购买链接会明确标注为推广链接；价格、库存和优惠以下单页为准。</p>
-
-          <div className="settings-actions">
-            <button className="ghost-button" disabled={commerceBusy} type="button" onClick={() => void testCommerce()}>
-              {commerceBusy ? "正在查询…" : "测试商品与转链"}
-            </button>
-            <button className="primary-button" disabled={commerceBusy} type="submit">
-              {commerceBusy ? "正在保存…" : "保存返利设置"}
-            </button>
-          </div>
-        </form>
-        ) : null}
         {notice ? <p className="form-message success settings-global-message" role="status">{notice}</p> : null}
         {error ? <p className="form-message error settings-global-message" role="alert">{error}</p> : null}
         </>
@@ -660,36 +562,46 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
   );
 }
 
-function commerceDraftFromSnapshot(
-  snapshot: ProviderSessionSnapshot,
-  provider = snapshot.commerce?.selectedProvider ?? "jd",
-): CommerceDraft {
-  if (provider === "jd") {
-    return {
-      provider,
-      enabled: snapshot.commerce?.enabled ?? false,
-      key: "",
-      secret: "",
-      pid: snapshot.commerce?.jd?.pid ?? "",
-      siteId: snapshot.commerce?.jd?.siteId ?? "",
-      positionId: snapshot.commerce?.jd?.positionId ?? "",
-    };
-  }
-  return {
-    provider,
-    enabled: snapshot.commerce?.enabled ?? false,
-    key: "",
-    secret: "",
-    pid: snapshot.commerce?.pdd?.pid ?? "",
-  };
-}
-
 function CloseIcon() { return <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>; }
 function SettingsNavIcon({ section }: { section: SettingsSection }) {
+  if (section === "appearance") return <svg viewBox="0 0 24 24"><path d="M4 16.5 16.5 4a2.1 2.1 0 0 1 3 3L7 19.5 3.5 20l.5-3.5Z" /><path d="m14.5 6 3.5 3.5M5 15l4 4" /></svg>;
+  if (section === "tools") return <svg viewBox="0 0 24 24"><path d="m12 3 2.1 4.9L19 10l-4.9 2.1L12 17l-2.1-4.9L5 10l4.9-2.1L12 3Z" /><path d="M5 17v4M3 19h4" /></svg>;
   if (section === "models") return <svg viewBox="0 0 24 24"><rect height="14" rx="2" width="18" x="3" y="5" /><path d="M7 9h10M7 13h6" /></svg>;
   if (section === "search") return <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></svg>;
   if (section === "memory") return <svg viewBox="0 0 24 24"><path d="M7 4h10v16H7zM10 8h4M10 12h4" /></svg>;
-  return <svg viewBox="0 0 24 24"><path d="M4 7h16l-1 12H5L4 7ZM8 7a4 4 0 0 1 8 0" /></svg>;
+  return <svg viewBox="0 0 24 24"><path d="M5 8h13m0 0-3-3m3 3-3 3M19 16H6m0 0 3-3m-3 3 3 3" /></svg>;
+}
+
+function SettingsToolHub({ onOpen }: { onOpen: (panel: AppPanel) => void }) {
+  const tools: Array<{ id: AppPanel; title: string; description: string }> = [
+    { id: "image-studio", title: "生图工作台", description: "文字生图与参考图编辑" },
+    { id: "memory", title: "本地记忆", description: "审核、编辑与停用已学习事实" },
+    { id: "skills", title: "能力中心", description: "管理 Skill、MCP 与能力市场" },
+    { id: "evaluation", title: "评测与发布", description: "冻结回放、质量门禁与版本发布" },
+  ];
+  return (
+    <section className="settings-tool-hub">
+      <div className="settings-section-heading">
+        <div><strong>工具与能力</strong><small>主页仅保留核心聊天入口，扩展功能从这里统一打开</small></div>
+      </div>
+      <div className="settings-tool-grid">
+        {tools.map((tool) => (
+          <button key={tool.id} type="button" onClick={() => onOpen(tool.id)}>
+            <span className="settings-tool-icon"><ToolHubIcon panel={tool.id} /></span>
+            <span><strong>{tool.title}</strong><small>{tool.description}</small></span>
+            <svg viewBox="0 0 24 24"><path d="m9 6 6 6-6 6" /></svg>
+          </button>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function ToolHubIcon({ panel }: { panel: AppPanel }) {
+  if (panel === "image-studio") return <svg viewBox="0 0 24 24"><rect height="16" rx="2" width="18" x="3" y="4" /><circle cx="9" cy="10" r="2" /><path d="m4 18 5-4 3 2 3-3 5 4" /></svg>;
+  if (panel === "memory") return <svg viewBox="0 0 24 24"><path d="M12 5.5c-1.2-2-4.4-1.6-4.8.8A3.4 3.4 0 0 0 5 11.8c-1.1 2.1.4 4.7 2.8 4.8.7 2.7 4.2 2.8 4.2.1V5.5ZM12 5.5c1.2-2 4.4-1.6 4.8.8a3.4 3.4 0 0 1 2.2 5.5c1.1 2.1-.4 4.7-2.8 4.8-.7 2.7-4.2 2.8-4.2.1" /></svg>;
+  if (panel === "skills") return <svg viewBox="0 0 24 24"><path d="m12 3 2.1 4.9L19 10l-4.9 2.1L12 17l-2.1-4.9L5 10l4.9-2.1L12 3Z" /></svg>;
+  return <svg viewBox="0 0 24 24"><path d="M5 4h14v16H5zM8 8h8M8 12h3M8 16h5" /><path d="m14 14 1.4 1.4L18 13" /></svg>;
 }
 function DeviceKeyIcon() { return <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z" /><path d="m9 12 2 2 4-4" /></svg>; }
 function EyeIcon() { return <svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>; }
