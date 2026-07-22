@@ -42,7 +42,21 @@ const EMPTY_COMMERCE_DRAFT: CommerceDraft = {
   positionId: "",
 };
 
+type SettingsSection = "models" | "search" | "memory" | "commerce";
+
+const SETTINGS_SECTIONS: Array<{
+  id: SettingsSection;
+  label: string;
+  description: string;
+}> = [
+  { id: "models", label: "模型服务", description: "API 与可用模型" },
+  { id: "search", label: "联网搜索", description: "SearXNG 服务" },
+  { id: "memory", label: "长期记忆", description: "MemOS 服务" },
+  { id: "commerce", label: "商品推荐", description: "联盟与返利" },
+];
+
 export function ProviderSettings({ onClose }: { onClose: () => void }) {
+  const [activeSection, setActiveSection] = useState<SettingsSection>("models");
   const [snapshot, setSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
@@ -296,19 +310,47 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
   }
 
   const invalidModels = draft.enabledModels.length === 0 || !draft.enabledModels.includes(draft.defaultModel);
+  const activeSectionMeta = SETTINGS_SECTIONS.find((section) => section.id === activeSection)!;
 
   return (
-    <div className="settings-content">
-      <header className="settings-header">
+    <div className="settings-content settings-content-split">
+      <aside className="settings-sidebar">
+        <div className="settings-sidebar-heading">
+          <span className="settings-sidebar-mark">N</span>
+          <div><strong>设置</strong><small>偏好与服务</small></div>
+        </div>
+        <nav aria-label="设置分类" className="settings-nav" role="tablist">
+          {SETTINGS_SECTIONS.map((section) => (
+            <button
+              aria-controls="settings-active-panel"
+              aria-selected={activeSection === section.id}
+              className={activeSection === section.id ? "active" : ""}
+              key={section.id}
+              role="tab"
+              type="button"
+              onClick={() => setActiveSection(section.id)}
+            >
+              <SettingsNavIcon section={section.id} />
+              <span><strong>{section.label}</strong><small>{section.description}</small></span>
+            </button>
+          ))}
+        </nav>
+        <p className="settings-sidebar-note"><DeviceKeyIcon />凭据仅加密保存在本机</p>
+      </aside>
+
+      <section className="settings-main" id="settings-active-panel" role="tabpanel">
+      <header className="settings-header settings-panel-header">
         <div>
-          <span className="settings-kicker">MODEL, WEB &amp; COMMERCE</span>
-          <h2>模型与联网设置</h2>
-          <p>连接模型、联网搜索和联盟商品推荐服务。</p>
+          <span className="settings-kicker">PREFERENCES</span>
+          <h2>{activeSectionMeta.label}</h2>
+          <p>{activeSectionMeta.description}</p>
         </div>
         <button aria-label="关闭设置" className="icon-button" type="button" onClick={onClose}>
           <CloseIcon />
         </button>
       </header>
+
+      <div className="settings-panel-scroll" key={activeSection}>
 
       {initializing || !snapshot.unlocked ? (
         <section className="vault-unlock">
@@ -320,6 +362,7 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
         </section>
       ) : (
         <>
+        {activeSection === "models" ? (
         <form className="openai-form" onSubmit={save}>
           <div className="connection-status">
             <span className="openai-mark">AI</span>
@@ -401,7 +444,9 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+        ) : null}
 
+        {activeSection === "search" ? (
         <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveSearch(); }}>
           <div className="settings-section-heading">
             <div><strong>联网搜索</strong><small>通过自建 SearXNG 为本轮回答补充最新资料与来源</small></div>
@@ -460,7 +505,9 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+        ) : null}
 
+        {activeSection === "memory" ? (
         <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveMemory(); }}>
           <div className="settings-section-heading">
             <div><strong>跨端长期记忆</strong><small>通过 MemOS 在回答前召回、完整回答后写入</small></div>
@@ -530,7 +577,9 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+        ) : null}
 
+        {activeSection === "commerce" ? (
         <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveCommerce(); }}>
           <div className="settings-section-heading">
             <div><strong>商品推荐与返利</strong><small>查询真实商品并生成京东或拼多多联盟推广链接</small></div>
@@ -600,10 +649,13 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+        ) : null}
         {notice ? <p className="form-message success settings-global-message" role="status">{notice}</p> : null}
         {error ? <p className="form-message error settings-global-message" role="alert">{error}</p> : null}
         </>
       )}
+      </div>
+      </section>
     </div>
   );
 }
@@ -633,6 +685,12 @@ function commerceDraftFromSnapshot(
 }
 
 function CloseIcon() { return <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>; }
+function SettingsNavIcon({ section }: { section: SettingsSection }) {
+  if (section === "models") return <svg viewBox="0 0 24 24"><rect height="14" rx="2" width="18" x="3" y="5" /><path d="M7 9h10M7 13h6" /></svg>;
+  if (section === "search") return <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></svg>;
+  if (section === "memory") return <svg viewBox="0 0 24 24"><path d="M7 4h10v16H7zM10 8h4M10 12h4" /></svg>;
+  return <svg viewBox="0 0 24 24"><path d="M4 7h16l-1 12H5L4 7ZM8 7a4 4 0 0 1 8 0" /></svg>;
+}
 function DeviceKeyIcon() { return <svg viewBox="0 0 24 24"><path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z" /><path d="m9 12 2 2 4-4" /></svg>; }
 function EyeIcon() { return <svg viewBox="0 0 24 24"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z" /><circle cx="12" cy="12" r="2.5" /></svg>; }
 function EyeOffIcon() { return <svg viewBox="0 0 24 24"><path d="m3 3 18 18M10.6 6.2A9.8 9.8 0 0 1 12 6c6 0 9.5 6 9.5 6a16 16 0 0 1-2.1 2.8M6.2 6.2C3.8 8 2.5 12 2.5 12s3.5 6 9.5 6a9 9 0 0 0 3-.5" /></svg>; }

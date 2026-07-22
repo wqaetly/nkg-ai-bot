@@ -48,6 +48,8 @@ describe("built-in Flow catalog", () => {
     ]);
     expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "affiliate_products"))
       .toMatchObject({ type: "affiliate_commerce", config: { maxQueries: 8, concurrency: 3 } });
+    expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "product_query_planner"))
+      .toMatchObject({ config: { jsonOutput: true, maxTokens: 4096, runtimeTimeoutMs: 120000 } });
   });
 
   it("preserves an existing locally edited built-in Flow", async () => {

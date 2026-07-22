@@ -230,6 +230,22 @@ export async function appendMessage(
   return { id: row.id, conversationId: row.conversation_id, sequence: row.sequence, role: row.role, content: JSON.parse(row.content_json) as unknown, createdAt: row.created_at };
 }
 
+export async function updateMessageContent(
+  id: string,
+  content: unknown,
+  client?: DatabaseClient,
+): Promise<LocalMessage> {
+  requireText(id, "Message id");
+  const database = client ?? await getDatabase();
+  await database.execute(
+    "UPDATE messages SET content_json=$2 WHERE id=$1 AND role='assistant'",
+    [id, JSON.stringify(content)],
+  );
+  const [row] = await database.select<MessageRow[]>("SELECT * FROM messages WHERE id=$1", [id]);
+  if (!row || row.role !== "assistant") throw new Error("Assistant message was not found");
+  return { id: row.id, conversationId: row.conversation_id, sequence: row.sequence, role: row.role, content: JSON.parse(row.content_json) as unknown, createdAt: row.created_at };
+}
+
 function requireText(value: string, label: string): void {
   if (!value.trim()) throw new Error(`${label} is required`);
 }

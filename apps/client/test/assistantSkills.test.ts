@@ -36,7 +36,7 @@ describe("built-in Assistant Skills", () => {
     expect(argumentsByCall).toContainEqual([
       COMPUTER_CONFIG_ASSISTANT_ID,
       COMPUTER_CONFIG_ASSISTANT_VERSION,
-      "1.0.0",
+      "2.0.0",
       expect.any(Number),
     ]);
   });

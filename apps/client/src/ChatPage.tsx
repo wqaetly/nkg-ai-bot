@@ -9,6 +9,7 @@ import {
 import {
   chatImageDataUrl,
   chatMessageImages,
+  chatMessageReferences,
   chatMessageReasoning,
   chatMessageSummary,
   chatMessageText,
@@ -16,6 +17,7 @@ import {
   filesToChatImages,
   MAX_CHAT_IMAGES,
   type ChatImageAttachment,
+  type ChatWebReference,
 } from "./chatContent";
 import {
   LocalChatSession,
@@ -47,6 +49,7 @@ import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import { themeModeLabel, type ThemeMode } from "./appearance";
 import { MarkdownContent } from "./MarkdownContent";
 import { ReasoningPanel } from "./ReasoningPanel";
+import { SearchReferencesPanel } from "./SearchReferencesPanel";
 import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
@@ -88,6 +91,7 @@ export function ChatPage({
   const [previewImage, setPreviewImage] = useState<ChatImageAttachment>();
   const [streamingText, setStreamingText] = useState("");
   const [streamingReasoning, setStreamingReasoning] = useState("");
+  const [streamingReferences, setStreamingReferences] = useState<ChatWebReference[]>([]);
   const [chatActivity, setChatActivity] = useState<ChatActivity>();
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
@@ -169,6 +173,7 @@ export function ChatPage({
     activeIdRef.current = activeId;
     setStreamingText("");
     setStreamingReasoning("");
+    setStreamingReferences([]);
     setChatActivity(undefined);
     setError("");
     if (!activeId || !runtime) return;
@@ -190,7 +195,7 @@ export function ChatPage({
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: streamingText ? "auto" : "smooth" });
-  }, [messages, streamingReasoning, streamingText, chatActivity, activeId]);
+  }, [messages, streamingReasoning, streamingReferences, streamingText, chatActivity, activeId]);
 
   useEffect(() => {
     const element = textareaRef.current;
@@ -324,6 +329,7 @@ export function ChatPage({
     setError("");
     setStreamingText("");
     setStreamingReasoning("");
+    setStreamingReferences([]);
     setChatActivity({ kind: "preparing", label: "正在准备请求" });
     setMessages((current) => [...current, optimistic]);
     setBusy(true);
@@ -347,6 +353,11 @@ export function ChatPage({
             setStreamingReasoning(accumulated);
           }
         },
+        onSearchResults: (references) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setStreamingReferences(references);
+          }
+        },
         onActivity: (activity) => {
           if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
             setChatActivity(activity);
@@ -357,6 +368,7 @@ export function ChatPage({
         setMessages(await session.load());
         setStreamingText("");
         setStreamingReasoning("");
+        setStreamingReferences([]);
         setChatActivity(undefined);
       }
       await refreshConversations();
@@ -364,11 +376,77 @@ export function ChatPage({
       if (activeIdRef.current === conversationId) {
         setStreamingText("");
         setStreamingReasoning("");
+        setStreamingReferences([]);
         setChatActivity(undefined);
         setMessages(await session.load());
         setError(describeChatError(cause));
       }
       await refreshConversations();
+    } finally {
+      if (activeRequestRef.current === requestId) {
+        abortRef.current = undefined;
+        activeRequestRef.current = undefined;
+        setBusy(false);
+      }
+    }
+  }
+
+  async function regenerateMessage(message: LocalMessage) {
+    if (!activeId || !runtime || busy || !unlocked || message.role !== "assistant") return;
+    const conversationId = activeId;
+    setError("");
+    setStreamingText("");
+    setStreamingReasoning("");
+    setStreamingReferences([]);
+    setChatActivity({ kind: "preparing", label: "正在重新生成回复" });
+    setBusy(true);
+    const controller = new AbortController();
+    const requestId = crypto.randomUUID();
+    abortRef.current = controller;
+    activeRequestRef.current = requestId;
+    const session = new LocalChatSession(conversationId, runtime);
+    try {
+      await session.regenerate(message.id, {
+        signal: controller.signal,
+        webSearch: webSearchEnabled && webSearchAvailable,
+        onDelta: (_delta, accumulated) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setStreamingText(accumulated);
+          }
+        },
+        onReasoningDelta: (_delta, accumulated) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setStreamingReasoning(accumulated);
+          }
+        },
+        onSearchResults: (references) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setStreamingReferences(references);
+          }
+        },
+        onActivity: (activity) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setChatActivity(activity);
+          }
+        },
+      });
+      if (activeIdRef.current === conversationId) {
+        setMessages(await session.load());
+        setStreamingText("");
+        setStreamingReasoning("");
+        setStreamingReferences([]);
+        setChatActivity(undefined);
+      }
+      await refreshConversations();
+    } catch (cause: unknown) {
+      if (activeIdRef.current === conversationId) {
+        setStreamingText("");
+        setStreamingReasoning("");
+        setStreamingReferences([]);
+        setChatActivity(undefined);
+        setMessages(await session.load());
+        setError(describeChatError(cause));
+      }
     } finally {
       if (activeRequestRef.current === requestId) {
         abortRef.current = undefined;
@@ -606,6 +684,7 @@ export function ChatPage({
             {visible.map((message) => {
               const text = chatMessageText(message.content);
               const reasoning = chatMessageReasoning(message.content);
+              const references = chatMessageReferences(message.content);
               const images = chatMessageImages(message.content);
               return (
               <article className={`message ${message.role}`} key={message.id}>
@@ -621,6 +700,9 @@ export function ChatPage({
                       ))}
                     </div>
                   ) : null}
+                  {message.role === "assistant" && references.length
+                    ? <SearchReferencesPanel references={references} />
+                    : null}
                   {message.role === "assistant" && reasoning
                     ? <ReasoningPanel reasoning={reasoning} />
                     : null}
@@ -629,6 +711,7 @@ export function ChatPage({
                     : <div className="message-content">{text}</div>
                   : null}
                   <div className="message-actions">
+                    {message.role === "assistant" ? <button disabled={busy || !unlocked} type="button" onClick={() => void regenerateMessage(message)}><RegenerateIcon />重新生成</button> : null}
                     <button type="button" onClick={() => void copyMessage(message)}>{copiedId === message.id ? <CheckIcon /> : <CopyIcon />}{copiedId === message.id ? "已复制" : "复制"}</button>
                     <button type="button" onClick={() => void rememberMessage(message)}><MemoryIcon />记住</button>
                     {message.role === "assistant" ? (
@@ -659,6 +742,9 @@ export function ChatPage({
                 <div className="message-body">
                   <strong className="message-author">NKG</strong>
                   {chatActivity ? <ChatActivityStatus activity={chatActivity} /> : null}
+                  {streamingReferences.length
+                    ? <SearchReferencesPanel references={streamingReferences} />
+                    : null}
                   {streamingReasoning
                     ? <ReasoningPanel active={chatActivity?.kind === "thinking"} reasoning={streamingReasoning} />
                     : null}
@@ -893,6 +979,7 @@ function ChevronIcon() { return <Icon><path d="m9 6 6 6-6 6" /></Icon>; }
 function ShieldIcon() { return <Icon><path d="M12 3 5 6v5c0 4.6 2.8 8 7 10 4.2-2 7-5.4 7-10V6l-7-3Z" /><path d="m9 12 2 2 4-4" /></Icon>; }
 function KeyIcon() { return <Icon><circle cx="8" cy="12" r="4" /><path d="M12 12h9M17 12v3M20 12v2" /></Icon>; }
 function CopyIcon() { return <Icon><rect x="8" y="8" width="11" height="11" rx="2" /><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" /></Icon>; }
+function RegenerateIcon() { return <Icon><path d="M20 7v5h-5M4 17v-5h5" /><path d="M18.1 9A7 7 0 0 0 6.2 6.2L4 9m16 6-2.2 2.8A7 7 0 0 1 5.9 15" /></Icon>; }
 function MemoryIcon() { return <Icon><path d="M12 5.5c-1.2-2-4.4-1.6-4.8.8A3.4 3.4 0 0 0 5 11.8c-1.1 2.1.4 4.7 2.8 4.8.7 2.7 4.2 2.8 4.2.1V5.5ZM12 5.5c1.2-2 4.4-1.6 4.8.8a3.4 3.4 0 0 1 2.2 5.5c1.1 2.1-.4 4.7-2.8 4.8-.7 2.7-4.2 2.8-4.2.1" /><path d="M8 9.5c1.3 0 2 .6 2 1.8M16 9.5c-1.3 0-2 .6-2 1.8M8.2 16.4c.1-1.5.8-2.4 2.1-2.7M15.8 16.4c-.1-1.5-.8-2.4-2.1-2.7" /></Icon>; }
 function SkillIcon() { return <Icon><path d="m12 3 2.1 4.9L19 10l-4.9 2.1L12 17l-2.1-4.9L5 10l4.9-2.1L12 3Z" /><path d="m19 16 .8 1.8L22 19l-2.2 1.2L19 22l-.8-1.8L16 19l2.2-1.2L19 16Z" /></Icon>; }
 function EvaluationIcon() { return <Icon><path d="M5 4h14v16H5zM8 8h8M8 12h3M8 16h5" /><path d="m14 14 1.4 1.4L18 13" /></Icon>; }

@@ -21,6 +21,14 @@ export interface AssistantChatContent {
   type: "assistant";
   text: string;
   reasoning: string;
+  references?: ChatWebReference[];
+}
+
+export interface ChatWebReference {
+  title: string;
+  url: string;
+  snippet?: string;
+  engine?: string;
 }
 
 export function createChatMessageContent(
@@ -32,11 +40,21 @@ export function createChatMessageContent(
   return { type: "multimodal", text: normalizedText, images: [...images] };
 }
 
-export function createAssistantMessageContent(text: string, reasoning = ""): string | AssistantChatContent {
+export function createAssistantMessageContent(
+  text: string,
+  reasoning = "",
+  references: ChatWebReference[] = [],
+): string | AssistantChatContent {
   const normalizedText = text.trim();
   const normalizedReasoning = reasoning.trim();
-  if (!normalizedReasoning) return normalizedText;
-  return { type: "assistant", text: normalizedText, reasoning: normalizedReasoning };
+  const normalizedReferences = normalizeChatWebReferences(references);
+  if (!normalizedReasoning && !normalizedReferences.length) return normalizedText;
+  return {
+    type: "assistant",
+    text: normalizedText,
+    reasoning: normalizedReasoning,
+    ...(normalizedReferences.length ? { references: normalizedReferences } : {}),
+  };
 }
 
 export function chatMessageText(content: unknown): string {
@@ -46,6 +64,10 @@ export function chatMessageText(content: unknown): string {
 
 export function chatMessageReasoning(content: unknown): string {
   return readAssistantChatContent(content)?.reasoning ?? "";
+}
+
+export function chatMessageReferences(content: unknown): ChatWebReference[] {
+  return readAssistantChatContent(content)?.references ?? [];
 }
 
 export function chatMessageImages(content: unknown): ChatImageAttachment[] {
@@ -108,13 +130,53 @@ function readMultimodalChatContent(content: unknown): MultimodalChatContent | un
 
 function readAssistantChatContent(content: unknown): AssistantChatContent | undefined {
   if (!content || typeof content !== "object") return undefined;
-  const candidate = content as { type?: unknown; text?: unknown; reasoning?: unknown };
+  const candidate = content as { type?: unknown; text?: unknown; reasoning?: unknown; references?: unknown };
   if (candidate.type !== "assistant"
     || typeof candidate.text !== "string"
     || typeof candidate.reasoning !== "string") {
     return undefined;
   }
-  return { type: "assistant", text: candidate.text, reasoning: candidate.reasoning };
+  const references = Array.isArray(candidate.references)
+    ? normalizeChatWebReferences(candidate.references)
+    : [];
+  return {
+    type: "assistant",
+    text: candidate.text,
+    reasoning: candidate.reasoning,
+    ...(references.length ? { references } : {}),
+  };
+}
+
+function normalizeChatWebReferences(values: unknown[]): ChatWebReference[] {
+  const references: ChatWebReference[] = [];
+  const seen = new Set<string>();
+  for (const value of values) {
+    if (!value || typeof value !== "object") continue;
+    const candidate = value as Partial<ChatWebReference>;
+    const title = typeof candidate.title === "string" ? candidate.title.trim().slice(0, 180) : "";
+    const url = typeof candidate.url === "string" ? candidate.url.trim() : "";
+    if (!title || !isSafeWebUrl(url) || seen.has(url)) continue;
+    seen.add(url);
+    const snippet = typeof candidate.snippet === "string" ? candidate.snippet.trim().slice(0, 320) : "";
+    const engine = typeof candidate.engine === "string" ? candidate.engine.trim().slice(0, 40) : "";
+    references.push({
+      title,
+      url,
+      ...(snippet ? { snippet } : {}),
+      ...(engine ? { engine } : {}),
+    });
+    if (references.length >= 6) break;
+  }
+  return references;
+}
+
+function isSafeWebUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function isChatImageAttachment(value: unknown): value is ChatImageAttachment {

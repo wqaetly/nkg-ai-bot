@@ -68,11 +68,46 @@ function memoryStore(initial: LocalMessage[] = []): ChatStore & { messages: Loca
       store.messages.push(saved);
       return saved;
     },
+    async updateMessageContent(id: string, content: unknown) {
+      const index = store.messages.findIndex((item) => item.id === id && item.role === "assistant");
+      if (index < 0) throw new Error("Assistant message was not found");
+      const saved = { ...store.messages[index]!, content };
+      store.messages[index] = saved;
+      return saved;
+    },
   };
   return store;
 }
 
 describe("LocalChatSession", () => {
+  it("regenerates an assistant reply in place without duplicating the user message", async () => {
+    const store = memoryStore([
+      message(0, "user", "原问题"),
+      message(1, "assistant", "旧回答"),
+      message(2, "user", "后续问题"),
+      message(3, "assistant", "后续回答"),
+    ]);
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("run_finished", { output: "新回答" });
+      }),
+    };
+
+    const result = await new LocalChatSession("c1", runtime, store).regenerate("m1");
+
+    expect(result.user.id).toBe("m0");
+    expect(result.assistant.id).toBe("m1");
+    expect(result.assistant.content).toBe("新回答");
+    expect(store.messages).toHaveLength(4);
+    expect(store.messages.map((item) => item.content)).toEqual([
+      "原问题", "新回答", "后续问题", "后续回答",
+    ]);
+    const prompt = runtime.stream.mock.calls[0]?.[1] as string;
+    expect(prompt).toContain("用户：原问题");
+    expect(prompt).not.toContain("旧回答");
+    expect(prompt).not.toContain("后续问题");
+  });
+
   it("streams the built-in Flow, publishes deltas, and persists both messages", async () => {
     const store = memoryStore();
     const runtime = {
@@ -346,9 +381,11 @@ describe("LocalChatSession", () => {
     };
 
     const activities: string[] = [];
-    await new LocalChatSession("c1", runtime, store, webSearch).send("今天发布了吗？", {
+    const reportedReferences: unknown[] = [];
+    const result = await new LocalChatSession("c1", runtime, store, webSearch).send("今天发布了吗？", {
       webSearch: true,
       onActivity: (activity) => activities.push(activity.kind),
+      onSearchResults: (references) => reportedReferences.push(...references),
     });
 
     expect(webSearch.searchWeb).toHaveBeenCalledWith(
@@ -362,6 +399,17 @@ describe("LocalChatSession", () => {
     expect(prompt).toContain("不得编造来源");
     expect(activities[0]).toBe("searching-web");
     expect(activities).toContain("thinking");
+    expect(reportedReferences).toEqual([expect.objectContaining({
+      title: "Release notes",
+      url: "https://example.test/releases/1",
+    })]);
+    expect(result.assistant.content).toEqual(expect.objectContaining({
+      type: "assistant",
+      references: [expect.objectContaining({
+        title: "Release notes",
+        url: "https://example.test/releases/1",
+      })],
+    }));
   });
 
   it("delegates the complete computer recommendation pipeline to one Flow run", async () => {

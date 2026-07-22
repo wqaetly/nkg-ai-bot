@@ -7,6 +7,7 @@ import {
   createChatMessageContent,
   MAX_CHAT_IMAGES_TOTAL_BYTES,
   type ChatImageAttachment,
+  type ChatWebReference,
 } from "./chatContent";
 import { listRelevantMemories, type MemoryItem } from "./learningRepository";
 import type { RemoteMemory } from "./memoryGateway";
@@ -27,6 +28,7 @@ import {
   appendMessage,
   getConversation,
   listMessages,
+  updateMessageContent,
   upsertConversation,
   type LocalConversation,
   type LocalMessage,
@@ -60,6 +62,7 @@ export interface ChatStore {
     role: LocalMessage["role"];
     content: unknown;
   }): Promise<LocalMessage>;
+  updateMessageContent(id: string, content: unknown): Promise<LocalMessage>;
   startAssistantRun(input: {
     id: string;
     conversationId: string;
@@ -84,6 +87,7 @@ const sqliteChatStore: ChatStore = {
   resolveAssistantSkill: (assistantId, version) => resolveAssistantSkill(assistantId, version),
   upsertConversation: (input) => upsertConversation(input),
   appendMessage: (input) => appendMessage(input),
+  updateMessageContent: (id, content) => updateMessageContent(id, content),
   startAssistantRun: (input) => startAssistantSkillRun(input),
   finishAssistantRun: (id, input) => finishAssistantSkillRun(id, input),
 };
@@ -92,6 +96,7 @@ export interface SendChatOptions {
   onDelta?: (delta: string, accumulated: string) => void;
   onReasoningDelta?: (delta: string, accumulated: string) => void;
   onActivity?: (activity: ChatActivity) => void;
+  onSearchResults?: (references: ChatWebReference[]) => void;
   signal?: AbortSignal;
   webSearch?: boolean;
   images?: ChatImageAttachment[];
@@ -155,8 +160,6 @@ export class LocalChatSession {
     const images = options.images ?? [];
     if (!content && !images.length) throw new Error("消息或图片不能为空");
     const storedContent = createChatMessageContent(content, images);
-    const retrievalQuery = content || images.map((image) => image.name).join(" ") || "图片消息";
-
     const [history, conversation] = await Promise.all([
       this.store.listMessages(this.conversationId),
       this.store.getConversation(this.conversationId),
@@ -165,10 +168,6 @@ export class LocalChatSession {
       conversation?.assistantId,
       conversation?.assistantVersion,
     );
-    if (options.webSearch && content && (!skill.capabilities.includes("network.http")
-      || !skill.capabilities.includes("secret.read"))) {
-      throw new Error("当前助手没有联网搜索所需的权限");
-    }
     await this.store.upsertConversation({
       id: this.conversationId,
       title: firstTitle(history, storedContent),
@@ -184,6 +183,53 @@ export class LocalChatSession {
       role: "user",
       content: storedContent,
     });
+
+    return this.completeAssistantTurn({
+      user,
+      promptMessages: [...history, user],
+      conversation,
+      skill,
+    }, options);
+  }
+
+  async regenerate(assistantMessageId: string, options: SendChatOptions = {}): Promise<SendChatResult> {
+    const [history, conversation] = await Promise.all([
+      this.store.listMessages(this.conversationId),
+      this.store.getConversation(this.conversationId),
+    ]);
+    const assistantIndex = history.findIndex((message) => message.id === assistantMessageId);
+    const target = history[assistantIndex];
+    if (!target || target.role !== "assistant") throw new Error("找不到要重新生成的回复");
+    const user = [...history.slice(0, assistantIndex)].reverse().find((message) => message.role === "user");
+    if (!user) throw new Error("找不到这条回复对应的用户消息");
+    const skill = await this.store.resolveAssistantSkill(
+      conversation?.assistantId,
+      conversation?.assistantVersion,
+    );
+    return this.completeAssistantTurn({
+      user,
+      promptMessages: history.slice(0, assistantIndex),
+      conversation,
+      skill,
+      replaceAssistantMessageId: target.id,
+    }, options);
+  }
+
+  private async completeAssistantTurn(input: {
+    user: LocalMessage;
+    promptMessages: LocalMessage[];
+    conversation?: LocalConversation;
+    skill: AssistantSkillVersion;
+    replaceAssistantMessageId?: string;
+  }, options: SendChatOptions): Promise<SendChatResult> {
+    const { user, promptMessages, conversation, skill, replaceAssistantMessageId } = input;
+    const content = chatMessageText(user.content).trim();
+    const images = chatMessageImages(user.content);
+    const retrievalQuery = content || images.map((image) => image.name).join(" ") || "图片消息";
+    if (options.webSearch && content && (!skill.capabilities.includes("network.http")
+      || !skill.capabilities.includes("secret.read"))) {
+      throw new Error("当前助手没有联网搜索所需的权限");
+    }
 
     options.onActivity?.(options.webSearch && content
       ? { kind: "searching-web", label: "正在联网搜索" }
@@ -205,8 +251,14 @@ export class LocalChatSession {
         ? this.webSearch.searchWeb(content, { signal: options.signal, maxResults: 6 })
         : Promise.resolve([]),
     ]);
+    const webReferences = searchResults.map((result) => ({
+      title: result.title,
+      url: result.url,
+      snippet: result.content,
+      ...(result.engine ? { engine: result.engine } : {}),
+    }));
+    options.onSearchResults?.(webReferences);
     const memories = mergePromptMemories(localMemories, remoteMemories);
-    const promptMessages = [...history, user];
     const prompt = buildChatPrompt(
       promptMessages,
       memories,
@@ -283,18 +335,21 @@ export class LocalChatSession {
       if (!answer.trim() && finalOutput.trim()) answer = finalOutput;
       if (!answer.trim()) throw new Error("模型没有返回文本内容");
 
-      const assistant = await this.store.appendMessage({
-        id: crypto.randomUUID(),
-        conversationId: this.conversationId,
-        role: "assistant",
-        content: createAssistantMessageContent(answer, reasoning),
-      });
+      const assistantContent = createAssistantMessageContent(answer, reasoning, webReferences);
+      const assistant = replaceAssistantMessageId
+        ? await this.store.updateMessageContent(replaceAssistantMessageId, assistantContent)
+        : await this.store.appendMessage({
+          id: crypto.randomUUID(),
+          conversationId: this.conversationId,
+          role: "assistant",
+          content: assistantContent,
+        });
       await this.store.finishAssistantRun(assistantRunId, {
         status: "succeeded",
         ...(runId ? { runtimeRunId: runId } : {}),
         assistantMessageId: assistant.id,
       });
-      if (this.remoteMemory.isMemoryEnabled()) {
+      if (this.remoteMemory.isMemoryEnabled() && !replaceAssistantMessageId) {
         await this.remoteMemory.addMemoryTurn(this.conversationId, [
           { role: "user", content: chatMessageText(user.content) },
           { role: "assistant", content: answer },

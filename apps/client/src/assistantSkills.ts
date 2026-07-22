@@ -11,7 +11,7 @@ export const DEFAULT_ASSISTANT_VERSION = "1.0.0";
 export const DEFAULT_ASSISTANT_SYSTEM_PROMPT =
   "你是一个可靠、自然的 AI 对话助手。请直接回答最后一条用户消息，并结合前文保持上下文一致。";
 export const COMPUTER_CONFIG_ASSISTANT_ID = "computer_config_advisor";
-export const COMPUTER_CONFIG_ASSISTANT_VERSION = "2.0.0";
+export const COMPUTER_CONFIG_ASSISTANT_VERSION = "2.1.0";
 export const COMPUTER_CONFIG_SYSTEM_PROMPT = `你是“电脑配置顾问”，专门提供客观、可执行、可核验的台式机装机、笔记本选购、现有配置诊断与升级建议。
 
 工作规则：
@@ -128,7 +128,7 @@ export async function ensureBuiltinAssistantSkills(client?: DatabaseClient): Pro
       memoryNamespace: "computer_config",
       capabilities: ["network.http", "secret.read"],
       activationHints: ["专业装机", "预算配置单", "兼容性检查", "升级建议", "笔记本选购"],
-      previousBuiltinVersion: "1.0.0",
+      previousBuiltinVersion: "2.0.0",
     },
   ] as const;
   for (const definition of definitions) {

@@ -7,7 +7,7 @@ describe("chat-first UI consistency", () => {
 
     expect(source).toContain('lazy(() => import("./ChatPage")');
     expect(source).toContain("<ProviderSettings");
-    expect(source).toContain('aria-label="模型与联网设置"');
+    expect(source).toContain('aria-label="应用设置"');
     expect(source).not.toContain("运行时基座");
     expect(source).not.toContain("角色");
     expect(source).not.toContain("助理");

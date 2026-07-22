@@ -54,9 +54,9 @@ function App() {
       {settingsOpen ? (
         <div className="settings-layer" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
           <section
-            aria-label="模型与联网设置"
+            aria-label="应用设置"
             aria-modal="true"
-            className="settings-dialog"
+            className="settings-dialog provider-settings-dialog"
             role="dialog"
             onMouseDown={(event) => event.stopPropagation()}
           >

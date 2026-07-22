@@ -3,7 +3,7 @@ import { listFlows, upsertFlow, type StoredFlow } from "./storage/repositories";
 export const BUILTIN_CHAT_FLOW_ID = "builtin_chat";
 export const BUILTIN_CHAT_FLOW_VERSION = "1.0.0";
 export const COMPUTER_CONFIG_FLOW_ID = "computer_config_advisor";
-export const COMPUTER_CONFIG_FLOW_VERSION = "2.0.0";
+export const COMPUTER_CONFIG_FLOW_VERSION = "2.1.0";
 export const BUILTIN_REFLECTION_FLOW_ID = "builtin_reflection";
 export const BUILTIN_REFLECTION_FLOW_VERSION = "1.0.0";
 
@@ -115,7 +115,8 @@ export const COMPUTER_CONFIG_FLOW = {
         apiKey: "$var:LLM_API_KEY",
         model: "$var:LLM_DEFAULT_MODEL",
         temperature: 0,
-        maxTokens: 1200,
+        maxTokens: 4096,
+        runtimeTimeoutMs: 120000,
         prompt: `你是电脑配置商品查询规划器。根据完整对话判断是否需要查询真实商品，只输出 JSON：
 {"queries":[{"keyword":"具体型号与品类","minPrice":1000,"maxPrice":2000,"count":2}]}
 

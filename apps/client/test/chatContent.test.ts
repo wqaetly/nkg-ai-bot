@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chatImageDataUrl,
   chatMessageImages,
+  chatMessageReferences,
   chatMessageReasoning,
   chatMessageSummary,
   chatMessageText,
@@ -28,6 +29,22 @@ describe("chat multimodal content", () => {
     expect(chatMessageText(content)).toBe("**答案**");
     expect(chatMessageReasoning(content)).toBe("先分析，再回答。");
     expect(chatMessageSummary(content)).toBe("**答案**");
+  });
+
+  it("stores safe, unique web references with the assistant answer", () => {
+    const content = createAssistantMessageContent("带来源的答案", "", [
+      { title: "Release notes", url: "https://example.test/releases/1", snippet: "Version 1 released." },
+      { title: "Duplicate", url: "https://example.test/releases/1" },
+      { title: "Unsafe", url: "javascript:alert(1)" },
+    ]);
+
+    expect(chatMessageText(content)).toBe("带来源的答案");
+    expect(chatMessageReasoning(content)).toBe("");
+    expect(chatMessageReferences(content)).toEqual([{
+      title: "Release notes",
+      url: "https://example.test/releases/1",
+      snippet: "Version 1 released.",
+    }]);
   });
 
   it("stores image metadata and base64 without losing the message text", async () => {
