@@ -1,10 +1,29 @@
-import { BUILTIN_CHAT_FLOW_ID, BUILTIN_CHAT_FLOW_VERSION } from "./builtinFlows";
+import {
+  BUILTIN_CHAT_FLOW_ID,
+  BUILTIN_CHAT_FLOW_VERSION,
+  COMPUTER_CONFIG_FLOW_ID,
+  COMPUTER_CONFIG_FLOW_VERSION,
+} from "./builtinFlows";
 import { getDatabase, type DatabaseClient } from "./storage/database";
 
 export const DEFAULT_ASSISTANT_ID = "builtin_assistant";
 export const DEFAULT_ASSISTANT_VERSION = "1.0.0";
 export const DEFAULT_ASSISTANT_SYSTEM_PROMPT =
   "你是一个可靠、自然的 AI 对话助手。请直接回答最后一条用户消息，并结合前文保持上下文一致。";
+export const COMPUTER_CONFIG_ASSISTANT_ID = "computer_config_advisor";
+export const COMPUTER_CONFIG_ASSISTANT_VERSION = "1.0.0";
+export const COMPUTER_CONFIG_SYSTEM_PROMPT = `你是“电脑配置顾问”，专门提供客观、可执行、可核验的台式机装机、笔记本选购、现有配置诊断与升级建议。
+
+工作规则：
+1. 先判断信息是否足够。关键字段包括购买地区与币种、总预算、设备类型、主要用途与常用软件/游戏、分辨率和刷新率、是否复用旧件、购买时间，以及体积、噪音、外观、接口、无线网络和品牌偏好。缺少会显著改变结论的信息时，先用一组简短问题补齐，不要急着给出虚假精确的配置。
+2. 信息足够时给出一套主推荐，并按需给出“更省预算”和“更重性能”的替代项。台式机配置至少覆盖 CPU、散热、主板、内存、显卡、存储、电源和机箱；笔记本方案说明 CPU/GPU 功耗档、内存与硬盘可扩展性、屏幕和接口。
+3. 必须检查兼容性与平衡性：CPU 插槽和主板芯片组、内存代际、散热高度/冷排、显卡长度与厚度、机箱规格、电源额定功率和接口、存储与 PCIe 通道、显示输出和前置接口。明确指出瓶颈、风险和仍需商家确认的尺寸或 BIOS 条件。
+4. 输出应包含：需求摘要、配置表（部件/建议型号或规格/价格区间/理由）、预算合计、兼容性结论、替代方案、升级路线和购买核对清单。价格是区间估算，不要伪装成实时成交价。
+5. 涉及当前价格、库存、新发布硬件或近期性能数据时，只能把本轮联网搜索结果当作时效证据，并注明地区与查询日期；没有搜索证据就明确说明需要开启联网搜索后再核价。不要编造来源、跑分、商品链接或优惠。
+6. 清楚区分事实、合理推断和个人取舍。优先考虑稳定性、售后、能效与真实用途，不因佣金或品牌偏好牺牲用户利益。
+7. 用户提供现有配置或截图时，先逐项提取并复述不确定字段，再分析兼容性、性能瓶颈和升级优先级。
+
+默认使用简体中文和人民币；如果用户给出其他地区、语言或币种，则跟随用户。`;
 
 export interface AssistantSkillVersion {
   assistantId: string;
@@ -81,30 +100,87 @@ type RunLinkRow = {
   status: string;
 };
 
-export async function ensureBuiltinAssistantSkill(client?: DatabaseClient): Promise<void> {
+export async function ensureBuiltinAssistantSkills(client?: DatabaseClient): Promise<void> {
   const database = client ?? await getDatabase();
   const now = Date.now();
+  const definitions = [
+    {
+      assistantId: DEFAULT_ASSISTANT_ID,
+      version: DEFAULT_ASSISTANT_VERSION,
+      name: "NKG",
+      description: "通用本地 AI 助手",
+      systemPrompt: DEFAULT_ASSISTANT_SYSTEM_PROMPT,
+      flowId: BUILTIN_CHAT_FLOW_ID,
+      flowVersion: BUILTIN_CHAT_FLOW_VERSION,
+      memoryNamespace: "global",
+      capabilities: ["network.http", "secret.read"],
+      activationHints: ["通用问答", "整理想法", "制定计划"],
+    },
+    {
+      assistantId: COMPUTER_CONFIG_ASSISTANT_ID,
+      version: COMPUTER_CONFIG_ASSISTANT_VERSION,
+      name: "电脑配置顾问",
+      description: "专业电脑配置、兼容性、性能瓶颈与升级建议",
+      systemPrompt: COMPUTER_CONFIG_SYSTEM_PROMPT,
+      flowId: COMPUTER_CONFIG_FLOW_ID,
+      flowVersion: COMPUTER_CONFIG_FLOW_VERSION,
+      memoryNamespace: "computer_config",
+      capabilities: ["network.http", "secret.read"],
+      activationHints: ["专业装机", "预算配置单", "兼容性检查", "升级建议", "笔记本选购"],
+    },
+  ] as const;
+  for (const definition of definitions) {
+    await seedBuiltinAssistantSkill(database, definition, now);
+  }
+}
+
+async function seedBuiltinAssistantSkill(
+  database: DatabaseClient,
+  definition: {
+    assistantId: string;
+    version: string;
+    name: string;
+    description: string;
+    systemPrompt: string;
+    flowId: string;
+    flowVersion: string;
+    memoryNamespace: string;
+    capabilities: readonly string[];
+    activationHints: readonly string[];
+  },
+  now: number,
+): Promise<void> {
   await database.execute(
     `INSERT INTO assistants
        (id, name, description, flow_id, flow_version, created_at, updated_at)
-     VALUES ($1, 'NKG', '通用本地 AI 助手', $2, $3, $4, $4)
+     VALUES ($1, $2, $3, $4, $5, $6, $6)
      ON CONFLICT(id) DO NOTHING`,
-    [DEFAULT_ASSISTANT_ID, BUILTIN_CHAT_FLOW_ID, BUILTIN_CHAT_FLOW_VERSION, now],
+    [
+      definition.assistantId,
+      definition.name,
+      definition.description,
+      definition.flowId,
+      definition.flowVersion,
+      now,
+    ],
   );
   await database.execute(
     `INSERT INTO assistant_versions
        (assistant_id, version, name, description, system_prompt, flow_id, flow_version,
         memory_namespace, capabilities_json, activation_hints_json, created_at)
-     VALUES ($1, $2, 'NKG', '通用本地 AI 助手', $3, $4, $5, 'global', $6, $7, $8)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
      ON CONFLICT(assistant_id, version) DO NOTHING`,
     [
-      DEFAULT_ASSISTANT_ID,
-      DEFAULT_ASSISTANT_VERSION,
-      DEFAULT_ASSISTANT_SYSTEM_PROMPT,
-      BUILTIN_CHAT_FLOW_ID,
-      BUILTIN_CHAT_FLOW_VERSION,
-      JSON.stringify(["network.http", "secret.read"]),
-      JSON.stringify(["通用问答", "整理想法", "制定计划"]),
+      definition.assistantId,
+      definition.version,
+      definition.name,
+      definition.description,
+      definition.systemPrompt,
+      definition.flowId,
+      definition.flowVersion,
+      definition.memoryNamespace,
+      JSON.stringify(definition.capabilities),
+      JSON.stringify(definition.activationHints),
       now,
     ],
   );
@@ -113,14 +189,14 @@ export async function ensureBuiltinAssistantSkill(client?: DatabaseClient): Prom
        (assistant_id, active_version, previous_version, pinned, archived_at, updated_at)
      VALUES ($1, $2, NULL, 1, NULL, $3)
      ON CONFLICT(assistant_id) DO NOTHING`,
-    [DEFAULT_ASSISTANT_ID, DEFAULT_ASSISTANT_VERSION, now],
+    [definition.assistantId, definition.version, now],
   );
   await database.execute(
     `INSERT INTO assistant_skill_usage
        (assistant_id, assistant_version, updated_at)
      VALUES ($1, $2, $3)
      ON CONFLICT(assistant_id, assistant_version) DO NOTHING`,
-    [DEFAULT_ASSISTANT_ID, DEFAULT_ASSISTANT_VERSION, now],
+    [definition.assistantId, definition.version, now],
   );
 }
 

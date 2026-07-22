@@ -39,4 +39,13 @@ describe("chat-first UI consistency", () => {
     expect(styles).toContain("env(safe-area-inset-bottom)");
     expect(styles).toContain(".composer-model-select");
   });
+
+  it("exposes the computer configuration Flow through the selectable skill experience", async () => {
+    const source = await readFile(new URL("../src/ChatPage.tsx", import.meta.url), "utf8");
+
+    expect(source).toContain("COMPUTER_CONFIG_ASSISTANT_ID");
+    expect(source).toContain("准备配一台怎样的电脑？");
+    expect(source).toContain("检查现有配置");
+    expect(source).toContain("规划升级路线");
+  });
 });

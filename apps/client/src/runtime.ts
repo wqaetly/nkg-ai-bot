@@ -25,7 +25,7 @@ import { listFlows } from "./storage/repositories";
 import { getDatabase } from "./storage/database";
 import { recoverInterruptedLearningJobs } from "./learningJobs";
 import {
-  ensureBuiltinAssistantSkill,
+  ensureBuiltinAssistantSkills,
   recoverInterruptedAssistantRuns,
 } from "./assistantSkills";
 import { recoverInterruptedEvalRuns } from "./evaluationRepository";
@@ -76,7 +76,7 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
   await services.router.start();
   await recoverInterruptedLearningJobs();
   await ensureBuiltinFlows();
-  await ensureBuiltinAssistantSkill();
+  await ensureBuiltinAssistantSkills();
   await recoverInterruptedAssistantRuns();
   await recoverInterruptedEvalRuns();
   const catalog = await syncRuntimeCatalog(services.client);

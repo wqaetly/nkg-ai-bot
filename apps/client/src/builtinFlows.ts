@@ -2,6 +2,8 @@ import { listFlows, upsertFlow, type StoredFlow } from "./storage/repositories";
 
 export const BUILTIN_CHAT_FLOW_ID = "builtin_chat";
 export const BUILTIN_CHAT_FLOW_VERSION = "1.0.0";
+export const COMPUTER_CONFIG_FLOW_ID = "computer_config_advisor";
+export const COMPUTER_CONFIG_FLOW_VERSION = "1.0.0";
 export const BUILTIN_REFLECTION_FLOW_ID = "builtin_reflection";
 export const BUILTIN_REFLECTION_FLOW_VERSION = "1.0.0";
 
@@ -62,6 +64,71 @@ export const BUILTIN_CHAT_FLOW = {
       ports: [
         { id: "in", direction: "input", kind: "control", label: "运行" },
       ],
+      config: {},
+    },
+  ],
+  edges: [
+    { id: "edge_01", from: { nodeId: "start", portId: "out" }, to: { nodeId: "chat_model", portId: "in" } },
+    { id: "edge_02", from: { nodeId: "start", portId: "runInput" }, to: { nodeId: "chat_model", portId: "prompt" } },
+    { id: "edge_03", from: { nodeId: "chat_model", portId: "out" }, to: { nodeId: "end", portId: "in" } },
+  ],
+} as const;
+
+/**
+ * Dedicated execution identity for the professional PC configuration skill.
+ * Its immutable expert instructions live in the bound Assistant Skill, while
+ * provider credentials remain run-scoped variables just like ordinary chat.
+ */
+export const COMPUTER_CONFIG_FLOW = {
+  id: COMPUTER_CONFIG_FLOW_ID,
+  version: COMPUTER_CONFIG_FLOW_VERSION,
+  schemaVersion: "flow.graph.v1",
+  label: "专业电脑配置推荐",
+  description: "根据预算、用途和约束生成可核验的电脑配置、兼容性与升级建议",
+  nodes: [
+    {
+      id: "start",
+      type: "start",
+      typeVersion: "1.0.0",
+      position: { x: 0, y: 0 },
+      size: { width: 280, height: 112 },
+      ports: [
+        { id: "out", direction: "output", kind: "control", label: "下一步" },
+        { id: "runInput", direction: "output", kind: "data", label: "装机需求" },
+      ],
+      config: {},
+    },
+    {
+      id: "chat_model",
+      type: "llm",
+      typeVersion: "1.0.0",
+      position: { x: 450, y: 0 },
+      size: { width: 280, height: 422 },
+      ports: [
+        { id: "in", direction: "input", kind: "control", label: "输入", multiple: true },
+        { id: "out", direction: "output", kind: "control", label: "输出" },
+        { id: "prompt", direction: "input", kind: "data", label: "提示词", schema: { type: "string" } },
+        { id: "result", direction: "output", kind: "data", label: "配置建议", schema: { type: "string" } },
+        { id: "summary", direction: "output", kind: "data", label: "Summary" },
+        { id: "error", direction: "output", kind: "error", label: "错误" },
+      ],
+      config: {
+        baseUrl: "$var:LLM_BASE_URL",
+        apiKey: "$var:LLM_API_KEY",
+        model: "$var:LLM_DEFAULT_MODEL",
+        temperature: 0.25,
+        maxTokens: 6144,
+        prompt: "",
+        stream: true,
+      },
+    },
+    {
+      id: "end",
+      type: "end",
+      typeVersion: "1.0.0",
+      position: { x: 900, y: 0 },
+      size: { width: 280, height: 96 },
+      ports: [{ id: "in", direction: "input", kind: "control", label: "运行" }],
       config: {},
     },
   ],
@@ -152,6 +219,12 @@ export async function ensureBuiltinFlows(store: BuiltinFlowStore = sqliteFlowSto
   const existing = await store.list();
   const definitions = [
     { id: BUILTIN_CHAT_FLOW_ID, version: BUILTIN_CHAT_FLOW_VERSION, name: "日常聊天", graph: BUILTIN_CHAT_FLOW },
+    {
+      id: COMPUTER_CONFIG_FLOW_ID,
+      version: COMPUTER_CONFIG_FLOW_VERSION,
+      name: "专业电脑配置推荐",
+      graph: COMPUTER_CONFIG_FLOW,
+    },
     { id: BUILTIN_REFLECTION_FLOW_ID, version: BUILTIN_REFLECTION_FLOW_VERSION, name: "本地学习反思", graph: BUILTIN_REFLECTION_FLOW },
   ] as const;
   let created = 0;

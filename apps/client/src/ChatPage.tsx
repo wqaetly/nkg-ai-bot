@@ -27,8 +27,12 @@ import {
 import { MemoryPanel } from "./MemoryPanel";
 import { createReflectionJob } from "./learningJobs";
 import { ReflectionJobRunner, type ReflectionRuntime } from "./reflectionRunner";
-import { resolveAssistantSkill } from "./assistantSkills";
-import { listAssistantSkillIndex, type AssistantSkillIndex } from "./assistantSkills";
+import {
+  COMPUTER_CONFIG_ASSISTANT_ID,
+  listAssistantSkillIndex,
+  resolveAssistantSkill,
+  type AssistantSkillIndex,
+} from "./assistantSkills";
 import { AssistantSkillsPanel } from "./AssistantSkillsPanel";
 import { EvaluationPanel } from "./EvaluationPanel";
 import { ImageGenerationPanel } from "./ImageGenerationPanel";
@@ -48,6 +52,12 @@ const SUGGESTIONS = [
   { icon: "✦", title: "帮我整理想法", prompt: "帮我把下面的想法整理成清晰的要点：" },
   { icon: "⌁", title: "解释一个概念", prompt: "请用简单直观的方式解释：" },
   { icon: "↗", title: "制定行动计划", prompt: "请为这个目标制定一份可执行的计划：" },
+];
+
+const COMPUTER_CONFIG_SUGGESTIONS = [
+  { icon: "⌘", title: "按预算配主机", prompt: "我在中国大陆购买，预算 8000 元，主要用于 2K 游戏和编程，请给我一套完整主机配置。" },
+  { icon: "✓", title: "检查现有配置", prompt: "请检查下面这套配置的兼容性、性能瓶颈和预算分配：" },
+  { icon: "↗", title: "规划升级路线", prompt: "请根据我的现有电脑、主要用途和预算，给出优先级明确的升级方案：" },
 ];
 
 export function ChatPage({ openProviders }: { openProviders: () => void }) {
@@ -547,7 +557,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
             {loadingMessages ? (
               <div className="message-loading"><span /><span /><span /></div>
             ) : visible.length === 0 && !streamingText ? (
-              <Welcome onSelect={(prompt) => {
+              <Welcome assistantId={activeConversation?.assistantId} onSelect={(prompt) => {
                 if (!activeId) return;
                 setDrafts((current) => ({ ...current, [activeId]: prompt }));
                 requestAnimationFrame(() => textareaRef.current?.focus());
@@ -748,14 +758,24 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   );
 }
 
-function Welcome({ onSelect }: { onSelect: (prompt: string) => void }) {
+function Welcome({
+  assistantId,
+  onSelect,
+}: {
+  assistantId?: string;
+  onSelect: (prompt: string) => void;
+}) {
+  const computerConfigMode = assistantId === COMPUTER_CONFIG_ASSISTANT_ID;
+  const suggestions = computerConfigMode ? COMPUTER_CONFIG_SUGGESTIONS : SUGGESTIONS;
   return (
     <div className="welcome">
-      <span className="welcome-mark">N</span>
-      <h2>今天想聊些什么？</h2>
-      <p>我可以帮你梳理想法、解释问题，或一起制定下一步计划。</p>
+      <span className="welcome-mark">{computerConfigMode ? "PC" : "N"}</span>
+      <h2>{computerConfigMode ? "准备配一台怎样的电脑？" : "今天想聊些什么？"}</h2>
+      <p>{computerConfigMode
+        ? "告诉我预算、购买地区、用途和偏好，我会给出配置、兼容性检查与升级路线。"
+        : "我可以帮你梳理想法、解释问题，或一起制定下一步计划。"}</p>
       <div className="suggestion-grid">
-        {SUGGESTIONS.map((suggestion) => (
+        {suggestions.map((suggestion) => (
           <button key={suggestion.title} type="button" onClick={() => onSelect(suggestion.prompt)}>
             <span>{suggestion.icon}</span><strong>{suggestion.title}</strong><small>{suggestion.prompt}</small>
           </button>

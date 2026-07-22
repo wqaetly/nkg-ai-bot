@@ -17,7 +17,8 @@
   schema、Provider/API Key 设置页、Stronghold vault、移动原生 HTTP adapter 与
   Android 原生工程；启动/恢复时会把 SQLite Flow 目录同步到当前 Runtime，移动端
   挂起会取消活动 run 并中止流式请求；内置日常聊天同样通过 Flow 执行，消息仅写入
-  本地 SQLite；
+  本地 SQLite；内置“电脑配置顾问”可在空对话的“助手技能”中选择，提供预算装机、
+  兼容性检查、现有配置诊断和升级建议，并在启用联网搜索时核验时效价格信息；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
 - `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 portable MSI 与
@@ -156,7 +157,7 @@ HTTP；真机外部网络仍需在实际设备上复核。
 当前测试只扫描本项目 `packages/`，上游子模块保持自己的依赖、测试配置和
 发布节奏。
 
-当前验证基线：本项目 156 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
+当前验证基线：本项目 178 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
 Android arm64 Release APK、Android Emulator 流式聊天与
 前后台恢复通过；子模块 757 项测试、类型检查和 browser bundle Node builtin 门禁通过。
 Windows portable MSI 约 5.77 MiB，Android arm64 APK 约 14.40 MiB。macOS DMG、
