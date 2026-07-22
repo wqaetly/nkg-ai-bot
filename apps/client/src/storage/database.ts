@@ -1,8 +1,10 @@
 import Database from "@tauri-apps/plugin-sql";
+import type { AffiliateCommerceConfig } from "../commerce";
 
 const DATABASE_URL = "sqlite:nkg-ai-bot.db";
 const SELECTED_PROVIDER_KEY = "selected_provider_id";
 const WEB_SEARCH_CONFIG_KEY = "web_search_config";
+const AFFILIATE_COMMERCE_CONFIG_KEY = "affiliate_commerce_config";
 let databasePromise: Promise<Database> | undefined;
 
 export interface DatabaseClient {
@@ -44,6 +46,8 @@ export interface WebSearchConfig {
   apiKeyRef: string;
   enabled: boolean;
 }
+
+export type { AffiliateCommerceConfig } from "../commerce";
 
 interface ProviderProfileRow {
   id: string;
@@ -196,6 +200,39 @@ export async function setWebSearchConfig(
   return config;
 }
 
+export async function getAffiliateCommerceConfig(
+  client?: DatabaseClient,
+): Promise<AffiliateCommerceConfig | undefined> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<SettingRow[]>(
+    "SELECT value_json FROM app_settings WHERE key = $1",
+    [AFFILIATE_COMMERCE_CONFIG_KEY],
+  );
+  if (!row) return undefined;
+  try {
+    return normalizeAffiliateCommerceConfig(JSON.parse(row.value_json) as AffiliateCommerceConfig);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function setAffiliateCommerceConfig(
+  input: AffiliateCommerceConfig,
+  client?: DatabaseClient,
+): Promise<AffiliateCommerceConfig> {
+  const config = normalizeAffiliateCommerceConfig(input);
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `INSERT INTO app_settings (key, value_json, updated_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = excluded.value_json,
+       updated_at = excluded.updated_at`,
+    [AFFILIATE_COMMERCE_CONFIG_KEY, JSON.stringify(config), Date.now()],
+  );
+  return config;
+}
+
 export function normalizeProviderProfile(input: ProviderProfileInput): ProviderProfileInput {
   const id = input.id.trim();
   const name = input.name.trim();
@@ -245,6 +282,46 @@ export function normalizeWebSearchConfig(input: WebSearchConfig): WebSearchConfi
     apiKeyRef,
     enabled: input.enabled,
   };
+}
+
+export function normalizeAffiliateCommerceConfig(
+  input: AffiliateCommerceConfig,
+): AffiliateCommerceConfig {
+  if (input.selectedProvider !== "jd" && input.selectedProvider !== "pdd") {
+    throw new Error("不支持的电商返利平台");
+  }
+  const jd = input.jd ? {
+    appKeyRef: requireSetting(input.jd.appKeyRef, "京东 App Key 引用"),
+    secretKeyRef: requireSetting(input.jd.secretKeyRef, "京东 Secret Key 引用"),
+    pid: requireSetting(input.jd.pid, "京东 PID"),
+    siteId: requireDigits(input.jd.siteId, "京东网站 ID"),
+    positionId: requireDigits(input.jd.positionId, "京东推广位 ID"),
+  } : undefined;
+  const pdd = input.pdd ? {
+    clientIdRef: requireSetting(input.pdd.clientIdRef, "拼多多 Client ID 引用"),
+    clientSecretRef: requireSetting(input.pdd.clientSecretRef, "拼多多 Client Secret 引用"),
+    pid: requireSetting(input.pdd.pid, "拼多多 PID"),
+  } : undefined;
+  if (input.enabled && input.selectedProvider === "jd" && !jd) throw new Error("京东联盟配置不完整");
+  if (input.enabled && input.selectedProvider === "pdd" && !pdd) throw new Error("拼多多联盟配置不完整");
+  return {
+    enabled: Boolean(input.enabled),
+    selectedProvider: input.selectedProvider,
+    ...(jd ? { jd } : {}),
+    ...(pdd ? { pdd } : {}),
+  };
+}
+
+function requireSetting(value: string, label: string): string {
+  const normalized = value.trim();
+  if (!normalized || normalized.length > 256) throw new Error(`${label}不能为空`);
+  return normalized;
+}
+
+function requireDigits(value: string, label: string): string {
+  const normalized = requireSetting(value, label);
+  if (!/^\d+$/.test(normalized)) throw new Error(`${label}必须为数字`);
+  return normalized;
 }
 
 function mapProviderProfile(row: ProviderProfileRow): ProviderProfile {

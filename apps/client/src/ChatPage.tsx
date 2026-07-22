@@ -103,6 +103,8 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
   );
   const unlocked = providerSnapshot.unlocked && Boolean(selectedProvider);
   const webSearchAvailable = providerSnapshot.webSearch?.enabled === true;
+  const affiliateCommerceActive = activeConversation?.assistantId === COMPUTER_CONFIG_ASSISTANT_ID
+    && providerSnapshot.commerce?.enabled === true;
   const conversationModel = selectedProvider && activeConversation?.providerId === selectedProvider.id
     && activeConversation.modelId && selectedProvider.enabledModels.includes(activeConversation.modelId)
     ? activeConversation.modelId
@@ -699,7 +701,7 @@ export function ChatPage({ openProviders }: { openProviders: () => void }) {
               </div>
             </div>
           </form>
-          <p className="composer-disclaimer">AI 生成的内容可能不准确，请核查重要信息。</p>
+          <p className="composer-disclaimer">AI 生成的内容可能不准确，请核查重要信息。{affiliateCommerceActive ? " 商品购买链接属于推广链接，成交后平台可能向我们支付佣金。" : ""}</p>
         </div>
       </section>
       {memoryOpen ? (

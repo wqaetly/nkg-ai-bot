@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   DEFAULT_SEARXNG_URL,
   providerSession,
+  type CommerceDraft,
   type ProviderDraft,
   type ProviderSessionSnapshot,
   type WebSearchDraft,
@@ -22,20 +23,33 @@ const EMPTY_SEARCH_DRAFT: WebSearchDraft = {
   enabled: true,
 };
 
+const EMPTY_COMMERCE_DRAFT: CommerceDraft = {
+  provider: "jd",
+  enabled: false,
+  key: "",
+  secret: "",
+  pid: "",
+  siteId: "",
+  positionId: "",
+};
+
 export function ProviderSettings({ onClose }: { onClose: () => void }) {
   const [snapshot, setSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
+  const [commerceDraft, setCommerceDraft] = useState<CommerceDraft>(EMPTY_COMMERCE_DRAFT);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelQuery, setModelQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [searchBusy, setSearchBusy] = useState(false);
+  const [commerceBusy, setCommerceBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSearchApiKey, setShowSearchApiKey] = useState(false);
+  const [showCommerceSecrets, setShowCommerceSecrets] = useState(false);
   const [insecureHttpConfirmed, setInsecureHttpConfirmed] = useState(false);
   const [insecureSearchHttpConfirmed, setInsecureSearchHttpConfirmed] = useState(false);
   const insecureDraft = isPlainHttpProviderUrl(draft.baseUrl);
@@ -80,6 +94,10 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
       enabled: snapshot.webSearch?.enabled ?? true,
     });
   }, [snapshot.webSearch?.baseUrl, snapshot.webSearch?.enabled]);
+
+  useEffect(() => {
+    setCommerceDraft(commerceDraftFromSnapshot(snapshot));
+  }, [snapshot.commerce]);
 
   async function perform(
     action: () => Promise<ProviderSessionSnapshot>,
@@ -154,6 +172,41 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
     }
   }
 
+  async function testCommerce() {
+    setCommerceBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const products = await providerSession.testCommerce(commerceDraft);
+      setNotice(products.length > 0
+        ? `${commerceDraft.provider === "jd" ? "京东" : "拼多多"}联盟连接成功，已生成测试推广链接`
+        : "联盟接口连接成功，但测试关键词没有返回匹配商品");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setCommerceBusy(false);
+    }
+  }
+
+  async function saveCommerce() {
+    setCommerceBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      setSnapshot(await providerSession.saveCommerce(commerceDraft));
+      setCommerceDraft((current) => ({ ...current, key: "", secret: "" }));
+      setNotice("电商返利配置已保存；联盟凭据已进入本机加密存储");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setCommerceBusy(false);
+    }
+  }
+
+  function selectCommerceProvider(provider: "jd" | "pdd") {
+    setCommerceDraft(commerceDraftFromSnapshot(snapshot, provider));
+  }
+
   function toggleModel(model: string, enabled: boolean) {
     setDraft((current) => {
       const enabledModels = enabled
@@ -189,9 +242,9 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
     <div className="settings-content">
       <header className="settings-header">
         <div>
-          <span className="settings-kicker">MODEL &amp; WEB SEARCH</span>
+          <span className="settings-kicker">MODEL, WEB &amp; COMMERCE</span>
           <h2>模型与联网设置</h2>
-          <p>连接 OpenAI 兼容模型服务与自建 SearXNG。</p>
+          <p>连接模型、联网搜索和联盟商品推荐服务。</p>
         </div>
         <button aria-label="关闭设置" className="icon-button" type="button" onClick={onClose}>
           <CloseIcon />
@@ -348,12 +401,106 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
             </button>
           </div>
         </form>
+
+        <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveCommerce(); }}>
+          <div className="settings-section-heading">
+            <div><strong>商品推荐与返利</strong><small>查询真实商品并生成京东或拼多多联盟推广链接</small></div>
+            <span className={`connection-dot ${snapshot.commerce?.enabled ? "online" : ""}`} />
+          </div>
+
+          <label htmlFor="commerce-provider">联盟平台</label>
+          <select id="commerce-provider" value={commerceDraft.provider} onChange={(event) => selectCommerceProvider(event.currentTarget.value as "jd" | "pdd")}>
+            <option value="jd">京东联盟</option>
+            <option value="pdd">拼多多联盟</option>
+          </select>
+
+          <label htmlFor="commerce-key">{commerceDraft.provider === "jd" ? "App Key" : "Client ID"}</label>
+          <div className="secret-input">
+            <input
+              autoComplete="off"
+              id="commerce-key"
+              placeholder={snapshot.commerce?.[commerceDraft.provider] ? "留空表示保留当前凭据" : "输入联盟应用标识"}
+              required={!snapshot.commerce?.[commerceDraft.provider]}
+              type={showCommerceSecrets ? "text" : "password"}
+              value={commerceDraft.key}
+              onChange={(event) => setCommerceDraft({ ...commerceDraft, key: event.currentTarget.value })}
+            />
+            <button aria-label={showCommerceSecrets ? "隐藏联盟凭据" : "显示联盟凭据"} type="button" onClick={() => setShowCommerceSecrets((value) => !value)}>
+              {showCommerceSecrets ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </div>
+
+          <label htmlFor="commerce-secret">{commerceDraft.provider === "jd" ? "Secret Key" : "Client Secret"}</label>
+          <div className="secret-input">
+            <input
+              autoComplete="off"
+              id="commerce-secret"
+              placeholder={snapshot.commerce?.[commerceDraft.provider] ? "留空表示保留当前密钥" : "输入联盟应用密钥"}
+              required={!snapshot.commerce?.[commerceDraft.provider]}
+              type={showCommerceSecrets ? "text" : "password"}
+              value={commerceDraft.secret}
+              onChange={(event) => setCommerceDraft({ ...commerceDraft, secret: event.currentTarget.value })}
+            />
+          </div>
+          <p className="field-hint">应用标识与密钥均由 Stronghold 加密保存，不写入 Flow、SQLite 或日志。</p>
+
+          <label htmlFor="commerce-pid">推广位 PID</label>
+          <input id="commerce-pid" required value={commerceDraft.pid} onChange={(event) => setCommerceDraft({ ...commerceDraft, pid: event.currentTarget.value })} />
+
+          {commerceDraft.provider === "jd" ? (
+            <>
+              <label htmlFor="commerce-site-id">网站/APP ID</label>
+              <input id="commerce-site-id" inputMode="numeric" pattern="[0-9]+" required value={commerceDraft.siteId ?? ""} onChange={(event) => setCommerceDraft({ ...commerceDraft, siteId: event.currentTarget.value })} />
+              <label htmlFor="commerce-position-id">推广位 ID</label>
+              <input id="commerce-position-id" inputMode="numeric" pattern="[0-9]+" required value={commerceDraft.positionId ?? ""} onChange={(event) => setCommerceDraft({ ...commerceDraft, positionId: event.currentTarget.value })} />
+            </>
+          ) : null}
+
+          <label className="search-enabled-option">
+            <input checked={commerceDraft.enabled} type="checkbox" onChange={(event) => setCommerceDraft({ ...commerceDraft, enabled: event.currentTarget.checked })} />
+            <span><strong>为电脑配置顾问启用联盟商品推荐</strong><small>模型先确定技术方案，再按匹配度和质量选择商品；不会按佣金高低排序。</small></span>
+          </label>
+          <p className="field-hint">对用户展示的购买链接会明确标注为推广链接；价格、库存和优惠以下单页为准。</p>
+
+          <div className="settings-actions">
+            <button className="ghost-button" disabled={commerceBusy} type="button" onClick={() => void testCommerce()}>
+              {commerceBusy ? "正在查询…" : "测试商品与转链"}
+            </button>
+            <button className="primary-button" disabled={commerceBusy} type="submit">
+              {commerceBusy ? "正在保存…" : "保存返利设置"}
+            </button>
+          </div>
+        </form>
         {notice ? <p className="form-message success settings-global-message" role="status">{notice}</p> : null}
         {error ? <p className="form-message error settings-global-message" role="alert">{error}</p> : null}
         </>
       )}
     </div>
   );
+}
+
+function commerceDraftFromSnapshot(
+  snapshot: ProviderSessionSnapshot,
+  provider = snapshot.commerce?.selectedProvider ?? "jd",
+): CommerceDraft {
+  if (provider === "jd") {
+    return {
+      provider,
+      enabled: snapshot.commerce?.enabled ?? false,
+      key: "",
+      secret: "",
+      pid: snapshot.commerce?.jd?.pid ?? "",
+      siteId: snapshot.commerce?.jd?.siteId ?? "",
+      positionId: snapshot.commerce?.jd?.positionId ?? "",
+    };
+  }
+  return {
+    provider,
+    enabled: snapshot.commerce?.enabled ?? false,
+    key: "",
+    secret: "",
+    pid: snapshot.commerce?.pdd?.pid ?? "",
+  };
 }
 
 function CloseIcon() { return <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>; }

@@ -1,5 +1,13 @@
 import type { FlowInvokeOptions } from "@nkg-ai-bot/runtime-router";
 import {
+  searchAffiliateProducts,
+  type AffiliateCommerceConfig,
+  type AffiliateCredentials,
+  type AffiliateProduct,
+  type AffiliateProductQuery,
+  type CommerceProvider,
+} from "./commerce";
+import {
   requestImageGeneration,
   type ImageGenerationRequest,
   type ImageGenerationResult,
@@ -8,9 +16,11 @@ import { withProviderEnvironment } from "./providerRuntime";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
 import {
   deleteProviderProfile,
+  getAffiliateCommerceConfig,
   getWebSearchConfig,
   getSelectedProviderId,
   listProviderProfiles,
+  setAffiliateCommerceConfig,
   setWebSearchConfig,
   setSelectedProviderId,
   upsertProviderProfile,
@@ -37,6 +47,19 @@ export interface ProviderSessionSnapshot {
   profiles: ProviderProfile[];
   selectedProviderId?: string;
   webSearch?: WebSearchConfig;
+  commerce?: AffiliateCommerceConfig;
+}
+
+export interface CommerceDraft {
+  provider: CommerceProvider;
+  enabled: boolean;
+  /** Empty on edit means keep the existing identifier. */
+  key: string;
+  /** Empty on edit means keep the existing secret. */
+  secret: string;
+  pid: string;
+  siteId?: string;
+  positionId?: string;
 }
 
 export interface WebSearchDraft {
@@ -72,6 +95,8 @@ export interface ProviderDataStore {
   setSelectedId(id: string | undefined): Promise<void>;
   getWebSearchConfig?(): Promise<WebSearchConfig | undefined>;
   setWebSearchConfig?(config: WebSearchConfig): Promise<WebSearchConfig>;
+  getCommerceConfig?(): Promise<AffiliateCommerceConfig | undefined>;
+  setCommerceConfig?(config: AffiliateCommerceConfig): Promise<AffiliateCommerceConfig>;
 }
 
 const sqliteProviderStore: ProviderDataStore = {
@@ -82,10 +107,16 @@ const sqliteProviderStore: ProviderDataStore = {
   setSelectedId: (id) => setSelectedProviderId(id),
   getWebSearchConfig: () => getWebSearchConfig(),
   setWebSearchConfig: (config) => setWebSearchConfig(config),
+  getCommerceConfig: () => getAffiliateCommerceConfig(),
+  setCommerceConfig: (config) => setAffiliateCommerceConfig(config),
 };
 
 export const DEFAULT_SEARXNG_URL = "https://search.lfzxb.top";
 const WEB_SEARCH_API_KEY_REF = "search:searxng:api-key";
+const JD_APP_KEY_REF = "commerce:jd:app-key";
+const JD_SECRET_KEY_REF = "commerce:jd:secret-key";
+const PDD_CLIENT_ID_REF = "commerce:pdd:client-id";
+const PDD_CLIENT_SECRET_REF = "commerce:pdd:client-secret";
 
 export class ProviderSession {
   private vault: ApiKeyVault | undefined;
@@ -139,10 +170,11 @@ export class ProviderSession {
 
   async refresh(): Promise<ProviderSessionSnapshot> {
     this.requireVault();
-    const [profiles, storedSelection, webSearch] = await Promise.all([
+    const [profiles, storedSelection, webSearch, commerce] = await Promise.all([
       this.dataStore.list(),
       this.dataStore.getSelectedId(),
       this.dataStore.getWebSearchConfig?.(),
+      this.dataStore.getCommerceConfig?.(),
     ]);
     const selectedProviderId = profiles.some((profile) => profile.id === storedSelection)
       ? storedSelection
@@ -155,6 +187,7 @@ export class ProviderSession {
       profiles,
       ...(selectedProviderId ? { selectedProviderId } : {}),
       ...(webSearch ? { webSearch } : {}),
+      ...(commerce ? { commerce } : {}),
     };
     this.notify();
     return this.snapshot;
@@ -298,6 +331,52 @@ export class ProviderSession {
     );
   }
 
+  async saveCommerce(draft: CommerceDraft): Promise<ProviderSessionSnapshot> {
+    const vault = this.requireVault();
+    if (!this.dataStore.setCommerceConfig) throw new Error("电商返利配置存储不可用");
+    const resolved = await this.resolveCommerceDraft(draft, vault);
+    const previousKey = await vault.getApiKey(resolved.keyRef);
+    const previousSecret = await vault.getApiKey(resolved.secretRef);
+    if (draft.key.trim()) await vault.setApiKey(resolved.keyRef, draft.key);
+    if (draft.secret.trim()) await vault.setApiKey(resolved.secretRef, draft.secret);
+    try {
+      await this.dataStore.setCommerceConfig(resolved.config);
+    } catch (error) {
+      await restoreVaultValue(vault, resolved.keyRef, previousKey);
+      await restoreVaultValue(vault, resolved.secretRef, previousSecret);
+      throw error;
+    }
+    return this.refresh();
+  }
+
+  async testCommerce(draft: CommerceDraft, signal?: AbortSignal): Promise<AffiliateProduct[]> {
+    const vault = this.requireVault();
+    const resolved = await this.resolveCommerceDraft(draft, vault);
+    return searchAffiliateProducts(
+      resolved.config,
+      resolved.credentials,
+      { keyword: "RTX 4060 显卡", count: 1 },
+      this.fetchImpl,
+      { signal },
+    );
+  }
+
+  async searchAffiliateProducts(
+    query: AffiliateProductQuery,
+    options: { signal?: AbortSignal } = {},
+  ): Promise<AffiliateProduct[]> {
+    const vault = this.requireVault();
+    const config = this.snapshotValue.commerce;
+    if (!config?.enabled) throw new Error("电商返利商品推荐尚未启用");
+    const credentials = await readCommerceCredentials(config, vault);
+    return searchAffiliateProducts(config, credentials, query, this.fetchImpl, options);
+  }
+
+  isAffiliateCommerceEnabled(): boolean {
+    const config = this.snapshotValue.commerce;
+    return config?.enabled === true && Boolean(config[config.selectedProvider]);
+  }
+
   async searchWeb(
     query: string,
     options: WebSearchQueryOptions = {},
@@ -323,6 +402,62 @@ export class ProviderSession {
     return requestImageGeneration(profile.baseUrl, apiKey, request, this.fetchImpl);
   }
 
+  private async resolveCommerceDraft(
+    draft: CommerceDraft,
+    vault: ApiKeyVault,
+  ): Promise<{
+    config: AffiliateCommerceConfig;
+    credentials: AffiliateCredentials;
+    keyRef: string;
+    secretRef: string;
+  }> {
+    const current = this.snapshotValue.commerce;
+    if (draft.provider === "jd") {
+      const keyRef = current?.jd?.appKeyRef ?? JD_APP_KEY_REF;
+      const secretRef = current?.jd?.secretKeyRef ?? JD_SECRET_KEY_REF;
+      const appKey = draft.key.trim() || await vault.getApiKey(keyRef);
+      const secretKey = draft.secret.trim() || await vault.getApiKey(secretRef);
+      if (!appKey || !secretKey) throw new Error("请填写京东联盟 App Key 与 Secret Key");
+      return {
+        keyRef,
+        secretRef,
+        credentials: { provider: "jd", appKey, secretKey },
+        config: {
+          enabled: draft.enabled,
+          selectedProvider: "jd",
+          ...(current?.pdd ? { pdd: current.pdd } : {}),
+          jd: {
+            appKeyRef: keyRef,
+            secretKeyRef: secretRef,
+            pid: draft.pid,
+            siteId: draft.siteId ?? "",
+            positionId: draft.positionId ?? "",
+          },
+        },
+      };
+    }
+    const keyRef = current?.pdd?.clientIdRef ?? PDD_CLIENT_ID_REF;
+    const secretRef = current?.pdd?.clientSecretRef ?? PDD_CLIENT_SECRET_REF;
+    const clientId = draft.key.trim() || await vault.getApiKey(keyRef);
+    const clientSecret = draft.secret.trim() || await vault.getApiKey(secretRef);
+    if (!clientId || !clientSecret) throw new Error("请填写拼多多联盟 Client ID 与 Client Secret");
+    return {
+      keyRef,
+      secretRef,
+      credentials: { provider: "pdd", clientId, clientSecret },
+      config: {
+        enabled: draft.enabled,
+        selectedProvider: "pdd",
+        ...(current?.jd ? { jd: current.jd } : {}),
+        pdd: {
+          clientIdRef: keyRef,
+          clientSecretRef: secretRef,
+          pid: draft.pid,
+        },
+      },
+    };
+  }
+
   private requireVault(): ApiKeyVault {
     if (!this.vault) throw new Error("Local secret vault is locked");
     return this.vault;
@@ -331,6 +466,37 @@ export class ProviderSession {
   private notify(): void {
     for (const subscriber of this.subscribers) subscriber();
   }
+}
+
+async function readCommerceCredentials(
+  config: AffiliateCommerceConfig,
+  vault: ApiKeyVault,
+): Promise<AffiliateCredentials> {
+  if (config.selectedProvider === "jd") {
+    if (!config.jd) throw new Error("京东联盟配置不完整");
+    const [appKey, secretKey] = await Promise.all([
+      vault.getApiKey(config.jd.appKeyRef),
+      vault.getApiKey(config.jd.secretKeyRef),
+    ]);
+    if (!appKey || !secretKey) throw new Error("京东联盟凭据不可用，请在设置中重新保存");
+    return { provider: "jd", appKey, secretKey };
+  }
+  if (!config.pdd) throw new Error("拼多多联盟配置不完整");
+  const [clientId, clientSecret] = await Promise.all([
+    vault.getApiKey(config.pdd.clientIdRef),
+    vault.getApiKey(config.pdd.clientSecretRef),
+  ]);
+  if (!clientId || !clientSecret) throw new Error("拼多多联盟凭据不可用，请在设置中重新保存");
+  return { provider: "pdd", clientId, clientSecret };
+}
+
+async function restoreVaultValue(
+  vault: ApiKeyVault,
+  reference: string,
+  value: string | undefined,
+): Promise<void> {
+  if (value) await vault.setApiKey(reference, value);
+  else await vault.removeApiKey(reference);
 }
 
 export async function fetchCompatibleModels(

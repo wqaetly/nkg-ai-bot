@@ -6,6 +6,7 @@ import {
   type ProviderDataStore,
 } from "../src/providerSession";
 import type {
+  AffiliateCommerceConfig,
   ProviderProfile,
   ProviderProfileInput,
   WebSearchConfig,
@@ -24,6 +25,7 @@ class MemoryVault implements ApiKeyVault {
 class MemoryStore implements ProviderDataStore {
   readonly profiles = new Map<string, ProviderProfile>();
   webSearchConfig: WebSearchConfig | undefined;
+  commerceConfig: AffiliateCommerceConfig | undefined;
   selectedId: string | undefined;
   failUpsert = false;
   failDelete = false;
@@ -44,6 +46,11 @@ class MemoryStore implements ProviderDataStore {
   async getWebSearchConfig() { return this.webSearchConfig; }
   async setWebSearchConfig(config: WebSearchConfig) {
     this.webSearchConfig = config;
+    return config;
+  }
+  async getCommerceConfig() { return this.commerceConfig; }
+  async setCommerceConfig(config: AffiliateCommerceConfig) {
+    this.commerceConfig = config;
     return config;
   }
 }
@@ -190,6 +197,62 @@ describe("ProviderSession", () => {
     expect(error).toBeInstanceOf(Error);
     expect((error as Error).message).toContain("HTTP 401");
     expect((error as Error).message).not.toContain("never-print-this");
+  });
+
+  it("stores affiliate credentials in the vault and uses them for PDD search and promotion", async () => {
+    const vault = new MemoryVault();
+    const store = new MemoryStore();
+    const request = vi.fn(async () => {
+      if (request.mock.calls.length === 1) {
+        return new Response(JSON.stringify({
+          goods_search_response: {
+            search_id: "search-1",
+            goods_list: [{
+              goods_name: "七彩虹 RTX 4060 8GB 游戏显卡",
+              goods_sign: "gpu-1",
+              min_group_price: 299900,
+              has_coupon: false,
+              mall_name: "品牌旗舰店",
+              merchant_type: 3,
+            }],
+          },
+        }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      return new Response(JSON.stringify({
+        goods_promotion_url_generate_response: {
+          goods_promotion_url_list: [{ short_url: "https://p.pinduoduo.com/affiliate" }],
+        },
+      }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const session = new ProviderSession(store, async () => vault, request);
+    await session.initialize();
+
+    await session.saveCommerce({
+      provider: "pdd",
+      enabled: true,
+      key: "pdd-client-id",
+      secret: "pdd-client-secret",
+      pid: "100_200",
+    });
+    const products = await session.searchAffiliateProducts({ keyword: "RTX 4060 显卡", count: 1 });
+
+    expect(store.commerceConfig).toEqual({
+      enabled: true,
+      selectedProvider: "pdd",
+      pdd: {
+        clientIdRef: "commerce:pdd:client-id",
+        clientSecretRef: "commerce:pdd:client-secret",
+        pid: "100_200",
+      },
+    });
+    expect(JSON.stringify(store.commerceConfig)).not.toContain("pdd-client-secret");
+    expect(vault.values.get("commerce:pdd:client-id")).toBe("pdd-client-id");
+    expect(vault.values.get("commerce:pdd:client-secret")).toBe("pdd-client-secret");
+    expect(products).toEqual([expect.objectContaining({
+      name: "七彩虹 RTX 4060 8GB 游戏显卡",
+      promotionUrl: "https://p.pinduoduo.com/affiliate",
+      affiliate: true,
+    })]);
   });
 
   it("generates images with an enabled model and the selected provider secret", async () => {

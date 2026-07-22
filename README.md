@@ -18,7 +18,8 @@
   Android 原生工程；启动/恢复时会把 SQLite Flow 目录同步到当前 Runtime，移动端
   挂起会取消活动 run 并中止流式请求；内置日常聊天同样通过 Flow 执行，消息仅写入
   本地 SQLite；内置“电脑配置顾问”可在空对话的“助手技能”中选择，提供预算装机、
-  兼容性检查、现有配置诊断和升级建议，并在启用联网搜索时核验时效价格信息；
+  兼容性检查、现有配置诊断和升级建议；启用京东联盟或拼多多联盟后，隐藏商品规划
+  Flow 会查询、筛选并生成推广链接，顾问按匹配度和商品质量推荐并明确披露返利关系；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
 - `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 portable MSI 与
@@ -35,6 +36,17 @@ npm test
 npm run rust:check
 npm run build:client
 ```
+
+### 电脑配置顾问与电商返利
+
+在“模型与联网设置”的“电商返利商品推荐”中选择京东联盟或拼多多联盟，填写对应的
+开放平台凭据与推广位信息并启用。Client ID/App Key 与 Secret 只写入本地 Stronghold，
+SQLite 仅保存密钥引用、PID 和推广位等非敏感元数据。
+
+用户选择“电脑配置顾问”后，应用会先通过只输出结构化查询的隐藏 Flow 规划最多 8 个
+具体商品搜索，再调用联盟商品搜索与推广转链接口。候选商品按需求匹配、价格、店铺与
+质量信息筛选，不读取或按佣金比例排序；最终建议会标明推广链接，并提醒用户在下单前
+复核型号、店铺、券后价和库存。常规聊天及其他助手不会触发联盟查询。
 
 桌面联调通常直接启动 Tauri 开发模式；需要验证 Windows 安装流程、但尚未准备正式发布时，
 使用保留增量编译并关闭 LTO 的快速 MSI：
@@ -157,7 +169,7 @@ HTTP；真机外部网络仍需在实际设备上复核。
 当前测试只扫描本项目 `packages/`，上游子模块保持自己的依赖、测试配置和
 发布节奏。
 
-当前验证基线：本项目 178 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
+当前验证基线：本项目 187 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
 Android arm64 Release APK、Android Emulator 流式聊天与
 前后台恢复通过；子模块 757 项测试、类型检查和 browser bundle Node builtin 门禁通过。
 Windows portable MSI 约 5.77 MiB，Android arm64 APK 约 14.40 MiB。macOS DMG、

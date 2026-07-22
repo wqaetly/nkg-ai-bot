@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { normalizeProviderProfile, normalizeWebSearchConfig } from "../src/storage/database";
+import {
+  normalizeAffiliateCommerceConfig,
+  normalizeProviderProfile,
+  normalizeWebSearchConfig,
+} from "../src/storage/database";
 
 describe("provider profile normalization", () => {
   it("normalizes a valid custom endpoint without weakening its scheme", () => {
@@ -49,5 +53,52 @@ describe("web search configuration normalization", () => {
       apiKeyRef: "search:searxng:api-key",
       enabled: true,
     })).toThrow();
+  });
+});
+
+describe("affiliate commerce configuration normalization", () => {
+  it("normalizes public metadata and secret references without accepting raw credentials", () => {
+    const config = normalizeAffiliateCommerceConfig({
+      enabled: true,
+      selectedProvider: "jd",
+      jd: {
+        appKeyRef: " commerce:jd:app-key ",
+        secretKeyRef: " commerce:jd:secret-key ",
+        pid: " 100:200:300 ",
+        siteId: " 12345 ",
+        positionId: " 67890 ",
+      },
+    });
+
+    expect(config).toEqual({
+      enabled: true,
+      selectedProvider: "jd",
+      jd: {
+        appKeyRef: "commerce:jd:app-key",
+        secretKeyRef: "commerce:jd:secret-key",
+        pid: "100:200:300",
+        siteId: "12345",
+        positionId: "67890",
+      },
+    });
+    expect(JSON.stringify(config)).not.toContain("secret-value");
+  });
+
+  it("rejects invalid platform metadata and enabled incomplete configurations", () => {
+    expect(() => normalizeAffiliateCommerceConfig({
+      enabled: true,
+      selectedProvider: "jd",
+    })).toThrow("京东联盟配置不完整");
+    expect(() => normalizeAffiliateCommerceConfig({
+      enabled: true,
+      selectedProvider: "jd",
+      jd: {
+        appKeyRef: "commerce:jd:app-key",
+        secretKeyRef: "commerce:jd:secret-key",
+        pid: "100:200:300",
+        siteId: "not-a-number",
+        positionId: "67890",
+      },
+    })).toThrow("必须为数字");
   });
 });

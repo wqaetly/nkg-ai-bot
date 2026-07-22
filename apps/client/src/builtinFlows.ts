@@ -4,6 +4,8 @@ export const BUILTIN_CHAT_FLOW_ID = "builtin_chat";
 export const BUILTIN_CHAT_FLOW_VERSION = "1.0.0";
 export const COMPUTER_CONFIG_FLOW_ID = "computer_config_advisor";
 export const COMPUTER_CONFIG_FLOW_VERSION = "1.0.0";
+export const COMPUTER_PRODUCT_PLANNER_FLOW_ID = "computer_product_query_planner";
+export const COMPUTER_PRODUCT_PLANNER_FLOW_VERSION = "1.0.0";
 export const BUILTIN_REFLECTION_FLOW_ID = "builtin_reflection";
 export const BUILTIN_REFLECTION_FLOW_VERSION = "1.0.0";
 
@@ -139,6 +141,70 @@ export const COMPUTER_CONFIG_FLOW = {
   ],
 } as const;
 
+/** Hidden planning Flow that turns a shopping/configuration request into a
+ * bounded set of concrete affiliate-catalog queries. Its JSON is validated by
+ * the client before any commerce API call is made. */
+export const COMPUTER_PRODUCT_PLANNER_FLOW = {
+  id: COMPUTER_PRODUCT_PLANNER_FLOW_ID,
+  version: COMPUTER_PRODUCT_PLANNER_FLOW_VERSION,
+  schemaVersion: "flow.graph.v1",
+  label: "电脑商品查询规划",
+  description: "为电脑配置顾问生成受限、具体的联盟商品搜索词",
+  nodes: [
+    {
+      id: "start",
+      type: "start",
+      typeVersion: "1.0.0",
+      position: { x: 0, y: 0 },
+      size: { width: 280, height: 112 },
+      ports: [
+        { id: "out", direction: "output", kind: "control", label: "下一步" },
+        { id: "runInput", direction: "output", kind: "data", label: "用户需求" },
+      ],
+      config: {},
+    },
+    {
+      id: "product_query_planner",
+      type: "llm",
+      typeVersion: "1.0.0",
+      position: { x: 450, y: 0 },
+      size: { width: 280, height: 422 },
+      ports: [
+        { id: "in", direction: "input", kind: "control", label: "输入", multiple: true },
+        { id: "out", direction: "output", kind: "control", label: "输出" },
+        { id: "prompt", direction: "input", kind: "data", label: "提示词", schema: { type: "string" } },
+        { id: "result", direction: "output", kind: "data", label: "查询计划", schema: { type: "string" } },
+        { id: "summary", direction: "output", kind: "data", label: "Summary" },
+        { id: "error", direction: "output", kind: "error", label: "错误" },
+      ],
+      config: {
+        baseUrl: "$var:LLM_BASE_URL",
+        apiKey: "$var:LLM_API_KEY",
+        model: "$var:LLM_DEFAULT_MODEL",
+        temperature: 0,
+        maxTokens: 1200,
+        prompt: "",
+        jsonOutput: true,
+        stream: false,
+      },
+    },
+    {
+      id: "end",
+      type: "end",
+      typeVersion: "1.0.0",
+      position: { x: 900, y: 0 },
+      size: { width: 280, height: 96 },
+      ports: [{ id: "in", direction: "input", kind: "control", label: "运行" }],
+      config: {},
+    },
+  ],
+  edges: [
+    { id: "edge_01", from: { nodeId: "start", portId: "out" }, to: { nodeId: "product_query_planner", portId: "in" } },
+    { id: "edge_02", from: { nodeId: "start", portId: "runInput" }, to: { nodeId: "product_query_planner", portId: "prompt" } },
+    { id: "edge_03", from: { nodeId: "product_query_planner", portId: "out" }, to: { nodeId: "end", portId: "in" } },
+  ],
+} as const;
+
 /**
  * Produces a small JSON proposal document from bounded local evidence. The
  * graph never writes learning state itself; the client validates its output
@@ -224,6 +290,12 @@ export async function ensureBuiltinFlows(store: BuiltinFlowStore = sqliteFlowSto
       version: COMPUTER_CONFIG_FLOW_VERSION,
       name: "专业电脑配置推荐",
       graph: COMPUTER_CONFIG_FLOW,
+    },
+    {
+      id: COMPUTER_PRODUCT_PLANNER_FLOW_ID,
+      version: COMPUTER_PRODUCT_PLANNER_FLOW_VERSION,
+      name: "电脑商品查询规划",
+      graph: COMPUTER_PRODUCT_PLANNER_FLOW,
     },
     { id: BUILTIN_REFLECTION_FLOW_ID, version: BUILTIN_REFLECTION_FLOW_VERSION, name: "本地学习反思", graph: BUILTIN_REFLECTION_FLOW },
   ] as const;
