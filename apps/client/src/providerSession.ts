@@ -16,17 +16,27 @@ import {
 import { withProviderEnvironment } from "./providerRuntime";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
 import {
+  addMemosTurn,
+  searchMemosMemories,
+  testMemosConnection,
+  type MemorySearchOptions,
+  type RemoteMemory,
+} from "./memoryGateway";
+import {
   deleteProviderProfile,
   getAffiliateCommerceConfig,
+  getMemoryServiceConfig,
   getWebSearchConfig,
   getSelectedProviderId,
   listProviderProfiles,
   setAffiliateCommerceConfig,
+  setMemoryServiceConfig,
   setWebSearchConfig,
   setSelectedProviderId,
   upsertProviderProfile,
   type ProviderProfile,
   type ProviderProfileInput,
+  type MemoryServiceConfig,
   type WebSearchConfig,
 } from "./storage/database";
 import { SecretVault, type ApiKeyVault } from "./storage/secretVault";
@@ -48,6 +58,7 @@ export interface ProviderSessionSnapshot {
   profiles: ProviderProfile[];
   selectedProviderId?: string;
   webSearch?: WebSearchConfig;
+  memory?: MemoryServiceConfig;
   commerce?: AffiliateCommerceConfig;
 }
 
@@ -65,6 +76,16 @@ export interface CommerceDraft {
 
 export interface WebSearchDraft {
   baseUrl: string;
+  /** Empty on edit means keep the existing key. */
+  apiKey: string;
+  enabled: boolean;
+  /** Must be explicitly true for each save that uses a plaintext HTTP URL. */
+  allowInsecureHttp?: boolean;
+}
+
+export interface MemoryServiceDraft {
+  baseUrl: string;
+  userId: string;
   /** Empty on edit means keep the existing key. */
   apiKey: string;
   enabled: boolean;
@@ -96,6 +117,8 @@ export interface ProviderDataStore {
   setSelectedId(id: string | undefined): Promise<void>;
   getWebSearchConfig?(): Promise<WebSearchConfig | undefined>;
   setWebSearchConfig?(config: WebSearchConfig): Promise<WebSearchConfig>;
+  getMemoryConfig?(): Promise<MemoryServiceConfig | undefined>;
+  setMemoryConfig?(config: MemoryServiceConfig): Promise<MemoryServiceConfig>;
   getCommerceConfig?(): Promise<AffiliateCommerceConfig | undefined>;
   setCommerceConfig?(config: AffiliateCommerceConfig): Promise<AffiliateCommerceConfig>;
 }
@@ -108,12 +131,15 @@ const sqliteProviderStore: ProviderDataStore = {
   setSelectedId: (id) => setSelectedProviderId(id),
   getWebSearchConfig: () => getWebSearchConfig(),
   setWebSearchConfig: (config) => setWebSearchConfig(config),
+  getMemoryConfig: () => getMemoryServiceConfig(),
+  setMemoryConfig: (config) => setMemoryServiceConfig(config),
   getCommerceConfig: () => getAffiliateCommerceConfig(),
   setCommerceConfig: (config) => setAffiliateCommerceConfig(config),
 };
 
 export const DEFAULT_SEARXNG_URL = "https://search.lfzxb.top";
 const WEB_SEARCH_API_KEY_REF = "search:searxng:api-key";
+const MEMORY_API_KEY_REF = "memory:memos:api-key";
 const JD_APP_KEY_REF = "commerce:jd:app-key";
 const JD_SECRET_KEY_REF = "commerce:jd:secret-key";
 const PDD_CLIENT_ID_REF = "commerce:pdd:client-id";
@@ -171,10 +197,11 @@ export class ProviderSession {
 
   async refresh(): Promise<ProviderSessionSnapshot> {
     this.requireVault();
-    const [profiles, storedSelection, webSearch, commerce] = await Promise.all([
+    const [profiles, storedSelection, webSearch, memory, commerce] = await Promise.all([
       this.dataStore.list(),
       this.dataStore.getSelectedId(),
       this.dataStore.getWebSearchConfig?.(),
+      this.dataStore.getMemoryConfig?.(),
       this.dataStore.getCommerceConfig?.(),
     ]);
     const selectedProviderId = profiles.some((profile) => profile.id === storedSelection)
@@ -188,6 +215,7 @@ export class ProviderSession {
       profiles,
       ...(selectedProviderId ? { selectedProviderId } : {}),
       ...(webSearch ? { webSearch } : {}),
+      ...(memory ? { memory } : {}),
       ...(commerce ? { commerce } : {}),
     };
     this.notify();
@@ -335,6 +363,80 @@ export class ProviderSession {
       this.fetchImpl,
       { signal, maxResults: 3 },
     );
+  }
+
+  async saveMemoryService(draft: MemoryServiceDraft): Promise<ProviderSessionSnapshot> {
+    const vault = this.requireVault();
+    if (!this.dataStore.setMemoryConfig) throw new Error("记忆服务配置存储不可用");
+    if (isPlainHttpProviderUrl(draft.baseUrl) && draft.allowInsecureHttp !== true) {
+      throw new Error(`保存明文 HTTP 记忆服务前必须确认风险。${INSECURE_PROVIDER_WARNING}`);
+    }
+    const apiKeyRef = this.snapshotValue.memory?.apiKeyRef ?? MEMORY_API_KEY_REF;
+    const previousKey = await vault.getApiKey(apiKeyRef);
+    const nextKey = draft.apiKey.trim();
+    if (!nextKey && !previousKey) throw new Error("请填写 MemOS API Key");
+    if (nextKey) await vault.setApiKey(apiKeyRef, nextKey);
+    try {
+      await this.dataStore.setMemoryConfig({
+        provider: "memos",
+        baseUrl: draft.baseUrl,
+        userId: draft.userId,
+        apiKeyRef,
+        enabled: draft.enabled,
+      });
+    } catch (error) {
+      if (nextKey) await restoreVaultValue(vault, apiKeyRef, previousKey);
+      throw error;
+    }
+    return this.refresh();
+  }
+
+  async testMemoryService(draft: MemoryServiceDraft, signal?: AbortSignal): Promise<number> {
+    const vault = this.requireVault();
+    if (isPlainHttpProviderUrl(draft.baseUrl) && draft.allowInsecureHttp !== true) {
+      throw new Error(`通过明文 HTTP 测试记忆服务前必须确认风险。${INSECURE_PROVIDER_WARNING}`);
+    }
+    const current = this.snapshotValue.memory;
+    const apiKeyRef = current?.apiKeyRef ?? MEMORY_API_KEY_REF;
+    const apiKey = draft.apiKey.trim() || await vault.getApiKey(apiKeyRef);
+    if (!apiKey) throw new Error("请先填写 MemOS API Key");
+    return testMemosConnection({
+      provider: "memos",
+      baseUrl: draft.baseUrl,
+      userId: draft.userId,
+      apiKeyRef,
+      enabled: true,
+    }, apiKey, this.fetchImpl, signal);
+  }
+
+  async searchMemory(
+    query: string,
+    conversationId: string,
+    options: MemorySearchOptions = {},
+  ): Promise<RemoteMemory[]> {
+    const vault = this.requireVault();
+    const config = this.snapshotValue.memory;
+    if (!config?.enabled) return [];
+    const apiKey = await vault.getApiKey(config.apiKeyRef);
+    if (!apiKey) throw new Error("MemOS API Key 不可用，请在设置中重新保存");
+    return searchMemosMemories(config, apiKey, query, conversationId, this.fetchImpl, options);
+  }
+
+  async addMemoryTurn(
+    conversationId: string,
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const vault = this.requireVault();
+    const config = this.snapshotValue.memory;
+    if (!config?.enabled) return;
+    const apiKey = await vault.getApiKey(config.apiKeyRef);
+    if (!apiKey) throw new Error("MemOS API Key 不可用，请在设置中重新保存");
+    await addMemosTurn(config, apiKey, conversationId, messages, this.fetchImpl, signal);
+  }
+
+  isMemoryEnabled(): boolean {
+    return this.snapshotValue.memory?.enabled === true;
   }
 
   async saveCommerce(draft: CommerceDraft): Promise<ProviderSessionSnapshot> {

@@ -102,6 +102,82 @@ describe("LocalChatSession", () => {
     ]);
   });
 
+  it("streams and persists deep reasoning separately from the final answer", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("stream_artifact", {
+          kind: "thinking_delta",
+          text: "先确认需求。",
+        }, { nodeId: "chat_model", portId: "answer" });
+        yield event("stream_artifact", {
+          kind: "thinking_delta",
+          text: "再给出结论。",
+        }, { nodeId: "chat_model", portId: "answer" });
+        yield event("stream_delta", { text: "**完成**" }, { nodeId: "chat_model", portId: "answer" });
+        yield event("run_finished", {});
+      }),
+    };
+    const reasoning: string[] = [];
+    const activities: string[] = [];
+
+    const result = await new LocalChatSession("c1", runtime, store).send("处理一下", {
+      onReasoningDelta: (_delta, accumulated) => reasoning.push(accumulated),
+      onActivity: (activity) => activities.push(activity.kind),
+    });
+
+    expect(reasoning).toEqual(["先确认需求。", "先确认需求。再给出结论。"]);
+    expect(activities).toContain("thinking");
+    expect(activities.at(-1)).toBe("responding");
+    expect(result.assistant.content).toEqual({
+      type: "assistant",
+      text: "**完成**",
+      reasoning: "先确认需求。再给出结论。",
+    });
+  });
+
+  it("recalls remote memory before the run and writes only the completed turn", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* () {
+        yield event("run_finished", { output: "已切换到深色主题" });
+      }),
+    };
+    const remoteMemory = {
+      isMemoryEnabled: vi.fn(() => true),
+      searchMemory: vi.fn(async () => [{
+        id: "remote-1",
+        content: "用户偏好深色主题",
+        relativity: 0.95,
+        source: "memos" as const,
+      }]),
+      addMemoryTurn: vi.fn(async () => undefined),
+    };
+
+    await new LocalChatSession(
+      "c1",
+      runtime,
+      store,
+      { searchWeb: vi.fn(async () => []) },
+      remoteMemory,
+    ).send("切换主题");
+
+    expect(remoteMemory.searchMemory).toHaveBeenCalledWith(
+      "切换主题",
+      "c1",
+      expect.objectContaining({ limit: 6 }),
+    );
+    expect(runtime.stream).toHaveBeenCalledWith(
+      "builtin_chat",
+      expect.stringContaining("用户偏好深色主题"),
+      expect.objectContaining({ flowVersion: "1.0.0" }),
+    );
+    expect(remoteMemory.addMemoryTurn).toHaveBeenCalledWith("c1", [
+      { role: "user", content: "切换主题" },
+      { role: "assistant", content: "已切换到深色主题" },
+    ]);
+  });
+
   it("does not persist a partial assistant response when the Flow fails", async () => {
     const store = memoryStore();
     store.finishAssistantRun = vi.fn(store.finishAssistantRun);
@@ -269,8 +345,10 @@ describe("LocalChatSession", () => {
       }]),
     };
 
+    const activities: string[] = [];
     await new LocalChatSession("c1", runtime, store, webSearch).send("今天发布了吗？", {
       webSearch: true,
+      onActivity: (activity) => activities.push(activity.kind),
     });
 
     expect(webSearch.searchWeb).toHaveBeenCalledWith(
@@ -282,6 +360,8 @@ describe("LocalChatSession", () => {
     expect(prompt).toContain("来源：https://example.test/releases/1");
     expect(prompt).toContain("不可信外部内容");
     expect(prompt).toContain("不得编造来源");
+    expect(activities[0]).toBe("searching-web");
+    expect(activities).toContain("thinking");
   });
 
   it("delegates the complete computer recommendation pipeline to one Flow run", async () => {

@@ -17,6 +17,12 @@ export interface MultimodalChatContent {
   images: ChatImageAttachment[];
 }
 
+export interface AssistantChatContent {
+  type: "assistant";
+  text: string;
+  reasoning: string;
+}
+
 export function createChatMessageContent(
   text: string,
   images: ChatImageAttachment[] = [],
@@ -26,9 +32,20 @@ export function createChatMessageContent(
   return { type: "multimodal", text: normalizedText, images: [...images] };
 }
 
+export function createAssistantMessageContent(text: string, reasoning = ""): string | AssistantChatContent {
+  const normalizedText = text.trim();
+  const normalizedReasoning = reasoning.trim();
+  if (!normalizedReasoning) return normalizedText;
+  return { type: "assistant", text: normalizedText, reasoning: normalizedReasoning };
+}
+
 export function chatMessageText(content: unknown): string {
   if (typeof content === "string") return content;
-  return readMultimodalChatContent(content)?.text ?? "";
+  return readMultimodalChatContent(content)?.text ?? readAssistantChatContent(content)?.text ?? "";
+}
+
+export function chatMessageReasoning(content: unknown): string {
+  return readAssistantChatContent(content)?.reasoning ?? "";
 }
 
 export function chatMessageImages(content: unknown): ChatImageAttachment[] {
@@ -87,6 +104,17 @@ function readMultimodalChatContent(content: unknown): MultimodalChatContent | un
   }
   const images = candidate.images.filter(isChatImageAttachment);
   return { type: "multimodal", text: candidate.text, images };
+}
+
+function readAssistantChatContent(content: unknown): AssistantChatContent | undefined {
+  if (!content || typeof content !== "object") return undefined;
+  const candidate = content as { type?: unknown; text?: unknown; reasoning?: unknown };
+  if (candidate.type !== "assistant"
+    || typeof candidate.text !== "string"
+    || typeof candidate.reasoning !== "string") {
+    return undefined;
+  }
+  return { type: "assistant", text: candidate.text, reasoning: candidate.reasoning };
 }
 
 function isChatImageAttachment(value: unknown): value is ChatImageAttachment {

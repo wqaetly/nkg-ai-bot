@@ -5,8 +5,10 @@ import {
   type CommerceDraft,
   type ProviderDraft,
   type ProviderSessionSnapshot,
+  type MemoryServiceDraft,
   type WebSearchDraft,
 } from "./providerSession";
+import { DEFAULT_MEMOS_URL } from "./memoryGateway";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
 
 const EMPTY_DRAFT: ProviderDraft = {
@@ -23,6 +25,13 @@ const EMPTY_SEARCH_DRAFT: WebSearchDraft = {
   enabled: true,
 };
 
+const EMPTY_MEMORY_DRAFT: MemoryServiceDraft = {
+  baseUrl: DEFAULT_MEMOS_URL,
+  userId: "",
+  apiKey: "",
+  enabled: false,
+};
+
 const EMPTY_COMMERCE_DRAFT: CommerceDraft = {
   provider: "jd",
   enabled: false,
@@ -37,23 +46,28 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
   const [snapshot, setSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
+  const [memoryDraft, setMemoryDraft] = useState<MemoryServiceDraft>(EMPTY_MEMORY_DRAFT);
   const [commerceDraft, setCommerceDraft] = useState<CommerceDraft>(EMPTY_COMMERCE_DRAFT);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelQuery, setModelQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [fetchingModels, setFetchingModels] = useState(false);
   const [searchBusy, setSearchBusy] = useState(false);
+  const [memoryBusy, setMemoryBusy] = useState(false);
   const [commerceBusy, setCommerceBusy] = useState(false);
   const [initializing, setInitializing] = useState(true);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const [showApiKey, setShowApiKey] = useState(false);
   const [showSearchApiKey, setShowSearchApiKey] = useState(false);
+  const [showMemoryApiKey, setShowMemoryApiKey] = useState(false);
   const [showCommerceSecrets, setShowCommerceSecrets] = useState(false);
   const [insecureHttpConfirmed, setInsecureHttpConfirmed] = useState(false);
   const [insecureSearchHttpConfirmed, setInsecureSearchHttpConfirmed] = useState(false);
+  const [insecureMemoryHttpConfirmed, setInsecureMemoryHttpConfirmed] = useState(false);
   const insecureDraft = isPlainHttpProviderUrl(draft.baseUrl);
   const insecureSearchDraft = isPlainHttpProviderUrl(searchDraft.baseUrl);
+  const insecureMemoryDraft = isPlainHttpProviderUrl(memoryDraft.baseUrl);
   const selected = snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId)
     ?? snapshot.profiles[0];
   const availableModels = useMemo(
@@ -94,6 +108,15 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
       enabled: snapshot.webSearch?.enabled ?? true,
     });
   }, [snapshot.webSearch?.baseUrl, snapshot.webSearch?.enabled]);
+
+  useEffect(() => {
+    setMemoryDraft({
+      baseUrl: snapshot.memory?.baseUrl ?? DEFAULT_MEMOS_URL,
+      userId: snapshot.memory?.userId ?? "",
+      apiKey: "",
+      enabled: snapshot.memory?.enabled ?? false,
+    });
+  }, [snapshot.memory?.baseUrl, snapshot.memory?.userId, snapshot.memory?.enabled]);
 
   useEffect(() => {
     setCommerceDraft(commerceDraftFromSnapshot(snapshot));
@@ -169,6 +192,42 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
       setSearchBusy(false);
+    }
+  }
+
+  async function testMemory() {
+    setMemoryBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const count = await providerSession.testMemoryService({
+        ...memoryDraft,
+        ...(insecureMemoryDraft ? { allowInsecureHttp: insecureMemoryHttpConfirmed } : {}),
+      });
+      setNotice(`MemOS 连接成功${count > 0 ? `，召回 ${count} 条测试记忆` : ""}`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  }
+
+  async function saveMemory() {
+    setMemoryBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      setSnapshot(await providerSession.saveMemoryService({
+        ...memoryDraft,
+        ...(insecureMemoryDraft ? { allowInsecureHttp: insecureMemoryHttpConfirmed } : {}),
+      }));
+      setMemoryDraft((current) => ({ ...current, apiKey: "" }));
+      setInsecureMemoryHttpConfirmed(false);
+      setNotice("MemOS 记忆配置已保存，API Key 已进入本机加密存储");
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
     }
   }
 
@@ -398,6 +457,76 @@ export function ProviderSettings({ onClose }: { onClose: () => void }) {
             </button>
             <button className="primary-button" disabled={searchBusy || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="submit">
               {searchBusy ? "正在保存…" : "保存联网设置"}
+            </button>
+          </div>
+        </form>
+
+        <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveMemory(); }}>
+          <div className="settings-section-heading">
+            <div><strong>跨端长期记忆</strong><small>通过 MemOS 在回答前召回、完整回答后写入</small></div>
+            <span className={`connection-dot ${snapshot.memory?.enabled ? "online" : ""}`} />
+          </div>
+
+          <label htmlFor="memos-url">MemOS API URL</label>
+          <input
+            id="memos-url"
+            placeholder={DEFAULT_MEMOS_URL}
+            required
+            type="url"
+            value={memoryDraft.baseUrl}
+            onChange={(event) => {
+              setMemoryDraft({ ...memoryDraft, baseUrl: event.currentTarget.value });
+              setInsecureMemoryHttpConfirmed(false);
+            }}
+          />
+          <p className="field-hint">云服务默认使用 <code>/api/openmem/v1</code>；请求通过跨平台原生 HTTP 传输。</p>
+
+          <label htmlFor="memos-user-id">用户标识</label>
+          <input
+            id="memos-user-id"
+            maxLength={256}
+            placeholder="同一用户在所有设备上保持一致"
+            required
+            value={memoryDraft.userId}
+            onChange={(event) => setMemoryDraft({ ...memoryDraft, userId: event.currentTarget.value })}
+          />
+          <p className="field-hint">建议使用账号系统中的稳定 ID，不要填写邮箱、手机号等明文个人信息。</p>
+
+          <label htmlFor="memos-key">MemOS API Key</label>
+          <div className="secret-input">
+            <input
+              autoComplete="off"
+              id="memos-key"
+              placeholder={snapshot.memory ? "留空表示保留当前密钥" : "mpg-..."}
+              required={!snapshot.memory}
+              type={showMemoryApiKey ? "text" : "password"}
+              value={memoryDraft.apiKey}
+              onChange={(event) => setMemoryDraft({ ...memoryDraft, apiKey: event.currentTarget.value })}
+            />
+            <button aria-label={showMemoryApiKey ? "隐藏 MemOS API Key" : "显示 MemOS API Key"} type="button" onClick={() => setShowMemoryApiKey((value) => !value)}>
+              {showMemoryApiKey ? <EyeOffIcon /> : <EyeIcon />}
+            </button>
+          </div>
+          <p className="field-hint">使用 <code>Authorization: Token</code>；密钥只保存在本机 Stronghold。</p>
+
+          <label className="search-enabled-option">
+            <input checked={memoryDraft.enabled} type="checkbox" onChange={(event) => setMemoryDraft({ ...memoryDraft, enabled: event.currentTarget.checked })} />
+            <span><strong>启用 MemOS 长期记忆</strong><small>远程召回失败时继续使用本地已批准记忆，不阻断聊天。</small></span>
+          </label>
+
+          {insecureMemoryDraft ? (
+            <label className="security-warning">
+              <input checked={insecureMemoryHttpConfirmed} type="checkbox" onChange={(event) => setInsecureMemoryHttpConfirmed(event.currentTarget.checked)} />
+              <span><strong>确认记忆服务使用明文 HTTP</strong><small>{INSECURE_PROVIDER_WARNING}</small></span>
+            </label>
+          ) : null}
+
+          <div className="settings-actions">
+            <button className="ghost-button" disabled={memoryBusy || !memoryDraft.userId.trim() || (insecureMemoryDraft && !insecureMemoryHttpConfirmed)} type="button" onClick={() => void testMemory()}>
+              {memoryBusy ? "正在连接…" : "测试连接"}
+            </button>
+            <button className="primary-button" disabled={memoryBusy || !memoryDraft.userId.trim() || (insecureMemoryDraft && !insecureMemoryHttpConfirmed)} type="submit">
+              {memoryBusy ? "正在保存…" : "保存记忆设置"}
             </button>
           </div>
         </form>

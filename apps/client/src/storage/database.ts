@@ -1,9 +1,10 @@
 import Database from "@tauri-apps/plugin-sql";
-import type { AffiliateCommerceConfig } from "../commerce";
+import type { AffiliateCommerceConfig } from "@nkg-ai-bot/commerce-flow";
 
 const DATABASE_URL = "sqlite:nkg-ai-bot.db";
 const SELECTED_PROVIDER_KEY = "selected_provider_id";
 const WEB_SEARCH_CONFIG_KEY = "web_search_config";
+const MEMORY_SERVICE_CONFIG_KEY = "memory_service_config";
 const AFFILIATE_COMMERCE_CONFIG_KEY = "affiliate_commerce_config";
 let databasePromise: Promise<Database> | undefined;
 
@@ -47,7 +48,15 @@ export interface WebSearchConfig {
   enabled: boolean;
 }
 
-export type { AffiliateCommerceConfig } from "../commerce";
+export interface MemoryServiceConfig {
+  provider: "memos";
+  baseUrl: string;
+  userId: string;
+  apiKeyRef: string;
+  enabled: boolean;
+}
+
+export type { AffiliateCommerceConfig } from "@nkg-ai-bot/commerce-flow";
 
 interface ProviderProfileRow {
   id: string;
@@ -200,6 +209,39 @@ export async function setWebSearchConfig(
   return config;
 }
 
+export async function getMemoryServiceConfig(
+  client?: DatabaseClient,
+): Promise<MemoryServiceConfig | undefined> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<SettingRow[]>(
+    "SELECT value_json FROM app_settings WHERE key = $1",
+    [MEMORY_SERVICE_CONFIG_KEY],
+  );
+  if (!row) return undefined;
+  try {
+    return normalizeMemoryServiceConfig(JSON.parse(row.value_json) as MemoryServiceConfig);
+  } catch {
+    return undefined;
+  }
+}
+
+export async function setMemoryServiceConfig(
+  input: MemoryServiceConfig,
+  client?: DatabaseClient,
+): Promise<MemoryServiceConfig> {
+  const config = normalizeMemoryServiceConfig(input);
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `INSERT INTO app_settings (key, value_json, updated_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = excluded.value_json,
+       updated_at = excluded.updated_at`,
+    [MEMORY_SERVICE_CONFIG_KEY, JSON.stringify(config), Date.now()],
+  );
+  return config;
+}
+
 export async function getAffiliateCommerceConfig(
   client?: DatabaseClient,
 ): Promise<AffiliateCommerceConfig | undefined> {
@@ -281,6 +323,28 @@ export function normalizeWebSearchConfig(input: WebSearchConfig): WebSearchConfi
     baseUrl: url.toString().replace(/\/$/, ""),
     apiKeyRef,
     enabled: input.enabled,
+  };
+}
+
+export function normalizeMemoryServiceConfig(input: MemoryServiceConfig): MemoryServiceConfig {
+  if (input.provider !== "memos") throw new Error("Unsupported memory service provider");
+  const userId = input.userId.trim();
+  const apiKeyRef = input.apiKeyRef.trim();
+  if (!userId || userId.length > 256) throw new Error("MemOS 用户标识不能为空且不能超过 256 个字符");
+  if (!apiKeyRef) throw new Error("MemOS API Key 引用不能为空");
+  const url = new URL(input.baseUrl.trim());
+  if (url.protocol !== "https:" && url.protocol !== "http:") {
+    throw new Error("MemOS URL 必须使用 HTTP 或 HTTPS");
+  }
+  if (url.username || url.password || url.search || url.hash) {
+    throw new Error("MemOS URL 不能包含凭据、查询参数或片段");
+  }
+  return {
+    provider: "memos",
+    baseUrl: url.toString().replace(/\/$/, ""),
+    userId,
+    apiKeyRef,
+    enabled: Boolean(input.enabled),
   };
 }
 

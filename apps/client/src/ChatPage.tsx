@@ -9,6 +9,7 @@ import {
 import {
   chatImageDataUrl,
   chatMessageImages,
+  chatMessageReasoning,
   chatMessageSummary,
   chatMessageText,
   createChatMessageContent,
@@ -16,7 +17,11 @@ import {
   MAX_CHAT_IMAGES,
   type ChatImageAttachment,
 } from "./chatContent";
-import { LocalChatSession, type ChatRuntime } from "./chatSession";
+import {
+  LocalChatSession,
+  type ChatActivity,
+  type ChatRuntime,
+} from "./chatSession";
 import { describeChatError } from "./chatError";
 import {
   listMessageFeedback,
@@ -40,6 +45,8 @@ import { createEvalCaseFromCorrection } from "./evaluationRepository";
 import type { EvaluationRuntime } from "./evaluation";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import { themeModeLabel, type ThemeMode } from "./appearance";
+import { MarkdownContent } from "./MarkdownContent";
+import { ReasoningPanel } from "./ReasoningPanel";
 import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
@@ -80,6 +87,8 @@ export function ChatPage({
   const [imageUploadBusy, setImageUploadBusy] = useState(false);
   const [previewImage, setPreviewImage] = useState<ChatImageAttachment>();
   const [streamingText, setStreamingText] = useState("");
+  const [streamingReasoning, setStreamingReasoning] = useState("");
+  const [chatActivity, setChatActivity] = useState<ChatActivity>();
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [error, setError] = useState("");
@@ -159,6 +168,8 @@ export function ChatPage({
   useEffect(() => {
     activeIdRef.current = activeId;
     setStreamingText("");
+    setStreamingReasoning("");
+    setChatActivity(undefined);
     setError("");
     if (!activeId || !runtime) return;
     let active = true;
@@ -179,7 +190,7 @@ export function ChatPage({
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: streamingText ? "auto" : "smooth" });
-  }, [messages, streamingText, activeId]);
+  }, [messages, streamingReasoning, streamingText, chatActivity, activeId]);
 
   useEffect(() => {
     const element = textareaRef.current;
@@ -312,6 +323,8 @@ export function ChatPage({
     setDraftImages((current) => ({ ...current, [conversationId]: [] }));
     setError("");
     setStreamingText("");
+    setStreamingReasoning("");
+    setChatActivity({ kind: "preparing", label: "正在准备请求" });
     setMessages((current) => [...current, optimistic]);
     setBusy(true);
     const controller = new AbortController();
@@ -329,15 +342,29 @@ export function ChatPage({
             setStreamingText(accumulated);
           }
         },
+        onReasoningDelta: (_delta, accumulated) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setStreamingReasoning(accumulated);
+          }
+        },
+        onActivity: (activity) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            setChatActivity(activity);
+          }
+        },
       });
       if (activeIdRef.current === conversationId) {
         setMessages(await session.load());
         setStreamingText("");
+        setStreamingReasoning("");
+        setChatActivity(undefined);
       }
       await refreshConversations();
     } catch (cause: unknown) {
       if (activeIdRef.current === conversationId) {
         setStreamingText("");
+        setStreamingReasoning("");
+        setChatActivity(undefined);
         setMessages(await session.load());
         setError(describeChatError(cause));
       }
@@ -564,11 +591,11 @@ export function ChatPage({
           </div>
         </header>
 
-        <div className={`message-scroll ${visible.length === 0 && !streamingText ? "empty" : ""}`} aria-live="polite">
+        <div className={`message-scroll ${visible.length === 0 && !busy ? "empty" : ""}`} aria-live="polite">
           <div className="message-column">
             {loadingMessages ? (
               <div className="message-loading"><span /><span /><span /></div>
-            ) : visible.length === 0 && !streamingText ? (
+            ) : visible.length === 0 && !busy ? (
               <Welcome assistantId={activeConversation?.assistantId} onSelect={(prompt) => {
                 if (!activeId) return;
                 setDrafts((current) => ({ ...current, [activeId]: prompt }));
@@ -578,6 +605,7 @@ export function ChatPage({
 
             {visible.map((message) => {
               const text = chatMessageText(message.content);
+              const reasoning = chatMessageReasoning(message.content);
               const images = chatMessageImages(message.content);
               return (
               <article className={`message ${message.role}`} key={message.id}>
@@ -593,7 +621,13 @@ export function ChatPage({
                       ))}
                     </div>
                   ) : null}
-                  {text ? <div className="message-content">{text}</div> : null}
+                  {message.role === "assistant" && reasoning
+                    ? <ReasoningPanel reasoning={reasoning} />
+                    : null}
+                  {text ? message.role === "assistant"
+                    ? <MarkdownContent className="message-content" content={text} />
+                    : <div className="message-content">{text}</div>
+                  : null}
                   <div className="message-actions">
                     <button type="button" onClick={() => void copyMessage(message)}>{copiedId === message.id ? <CheckIcon /> : <CopyIcon />}{copiedId === message.id ? "已复制" : "复制"}</button>
                     <button type="button" onClick={() => void rememberMessage(message)}><MemoryIcon />记住</button>
@@ -619,15 +653,19 @@ export function ChatPage({
               );
             })}
 
-            {streamingText ? (
+            {busy ? (
               <article className="message assistant streaming">
                 <span className="message-avatar">N</span>
-                <div className="message-body"><strong className="message-author">NKG</strong><div className="message-content">{streamingText}<span className="stream-cursor" /></div></div>
-              </article>
-            ) : busy ? (
-              <article className="message assistant streaming">
-                <span className="message-avatar">N</span>
-                <div className="message-body"><strong className="message-author">NKG</strong><div className="thinking-dots"><i /><i /><i /></div></div>
+                <div className="message-body">
+                  <strong className="message-author">NKG</strong>
+                  {chatActivity ? <ChatActivityStatus activity={chatActivity} /> : null}
+                  {streamingReasoning
+                    ? <ReasoningPanel active={chatActivity?.kind === "thinking"} reasoning={streamingReasoning} />
+                    : null}
+                  {streamingText
+                    ? <div className="streaming-markdown"><MarkdownContent className="message-content" content={streamingText} /><span className="stream-cursor" /></div>
+                    : !streamingReasoning ? <div className="thinking-dots"><i /><i /><i /></div> : null}
+                </div>
               </article>
             ) : null}
             <div ref={messageEndRef} />
@@ -766,6 +804,15 @@ export function ChatPage({
           </section>
         </div>
       ) : null}
+    </div>
+  );
+}
+
+function ChatActivityStatus({ activity }: { activity: ChatActivity }) {
+  return (
+    <div className={`chat-activity ${activity.kind}`} role="status">
+      <span className="chat-activity-indicator" aria-hidden="true"><i /><i /><i /></span>
+      <span>{activity.label}</span>
     </div>
   );
 }

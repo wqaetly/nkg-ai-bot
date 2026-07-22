@@ -1,9 +1,42 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeAffiliateCommerceConfig,
+  normalizeMemoryServiceConfig,
   normalizeProviderProfile,
   normalizeWebSearchConfig,
 } from "../src/storage/database";
+
+describe("memory service configuration normalization", () => {
+  it("normalizes MemOS public metadata without accepting a raw key", () => {
+    expect(normalizeMemoryServiceConfig({
+      provider: "memos",
+      baseUrl: "https://memory.example.test/api/openmem/v1/",
+      userId: " user-42 ",
+      apiKeyRef: " memory:memos:api-key ",
+      enabled: true,
+    })).toEqual({
+      provider: "memos",
+      baseUrl: "https://memory.example.test/api/openmem/v1",
+      userId: "user-42",
+      apiKeyRef: "memory:memos:api-key",
+      enabled: true,
+    });
+  });
+
+  it.each([
+    "file:///tmp/memory",
+    "https://user:password@memory.example.test/v1",
+    "https://memory.example.test/v1?token=secret",
+  ])("rejects an unsafe MemOS endpoint %s", (baseUrl) => {
+    expect(() => normalizeMemoryServiceConfig({
+      provider: "memos",
+      baseUrl,
+      userId: "user-42",
+      apiKeyRef: "memory:memos:api-key",
+      enabled: true,
+    })).toThrow();
+  });
+});
 
 describe("provider profile normalization", () => {
   it("normalizes a valid custom endpoint without weakening its scheme", () => {

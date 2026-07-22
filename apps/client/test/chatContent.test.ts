@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 import {
   chatImageDataUrl,
   chatMessageImages,
+  chatMessageReasoning,
   chatMessageSummary,
   chatMessageText,
+  createAssistantMessageContent,
   createChatMessageContent,
   filesToChatImages,
 } from "../src/chatContent";
@@ -13,6 +15,19 @@ describe("chat multimodal content", () => {
     expect(createChatMessageContent(" hello ")).toBe("hello");
     expect(chatMessageText("hello")).toBe("hello");
     expect(chatMessageImages("hello")).toEqual([]);
+  });
+
+  it("keeps model reasoning separate from the answer text", () => {
+    const content = createAssistantMessageContent(" **答案** ", " 先分析，再回答。 ");
+
+    expect(content).toEqual({
+      type: "assistant",
+      text: "**答案**",
+      reasoning: "先分析，再回答。",
+    });
+    expect(chatMessageText(content)).toBe("**答案**");
+    expect(chatMessageReasoning(content)).toBe("先分析，再回答。");
+    expect(chatMessageSummary(content)).toBe("**答案**");
   });
 
   it("stores image metadata and base64 without losing the message text", async () => {

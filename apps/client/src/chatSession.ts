@@ -3,11 +3,13 @@ import {
   chatMessageImages,
   chatMessageSummary,
   chatMessageText,
+  createAssistantMessageContent,
   createChatMessageContent,
   MAX_CHAT_IMAGES_TOTAL_BYTES,
   type ChatImageAttachment,
 } from "./chatContent";
 import { listRelevantMemories, type MemoryItem } from "./learningRepository";
+import type { RemoteMemory } from "./memoryGateway";
 import {
   finishAssistantSkillRun,
   resolveAssistantSkill,
@@ -88,6 +90,8 @@ const sqliteChatStore: ChatStore = {
 
 export interface SendChatOptions {
   onDelta?: (delta: string, accumulated: string) => void;
+  onReasoningDelta?: (delta: string, accumulated: string) => void;
+  onActivity?: (activity: ChatActivity) => void;
   signal?: AbortSignal;
   webSearch?: boolean;
   images?: ChatImageAttachment[];
@@ -103,13 +107,44 @@ export interface WebSearchClient {
   searchWeb(query: string, options?: WebSearchQueryOptions): Promise<WebSearchResult[]>;
 }
 
+export type ChatActivityKind =
+  | "preparing"
+  | "recalling-memory"
+  | "searching-web"
+  | "thinking"
+  | "using-tool"
+  | "responding";
+
+export interface ChatActivity {
+  kind: ChatActivityKind;
+  label: string;
+}
+
+export interface RemoteMemoryClient {
+  isMemoryEnabled(): boolean;
+  searchMemory(
+    query: string,
+    conversationId: string,
+    options?: { signal?: AbortSignal; limit?: number },
+  ): Promise<RemoteMemory[]>;
+  addMemoryTurn(
+    conversationId: string,
+    messages: Array<{ role: "user" | "assistant"; content: string }>,
+  ): Promise<void>;
+}
+
 export class LocalChatSession {
+  private readonly remoteMemory: RemoteMemoryClient;
+
   constructor(
     readonly conversationId: string,
     private readonly runtime: ChatRuntime,
     private readonly store: ChatStore = sqliteChatStore,
     private readonly webSearch: WebSearchClient = providerSession,
-  ) {}
+    remoteMemory: RemoteMemoryClient | unknown = providerSession,
+  ) {
+    this.remoteMemory = isRemoteMemoryClient(remoteMemory) ? remoteMemory : providerSession;
+  }
 
   load(): Promise<LocalMessage[]> {
     return this.store.listMessages(this.conversationId);
@@ -150,12 +185,27 @@ export class LocalChatSession {
       content: storedContent,
     });
 
-    const [memories, searchResults] = await Promise.all([
+    options.onActivity?.(options.webSearch && content
+      ? { kind: "searching-web", label: "正在联网搜索" }
+      : this.remoteMemory.isMemoryEnabled()
+        ? { kind: "recalling-memory", label: "正在检索相关记忆" }
+        : { kind: "preparing", label: "正在整理上下文" });
+    const [localMemories, remoteMemories, searchResults] = await Promise.all([
       this.store.listRelevantMemories(retrievalQuery, skill.memoryNamespace),
+      this.remoteMemory.isMemoryEnabled()
+        ? this.remoteMemory.searchMemory(retrievalQuery, this.conversationId, {
+          signal: options.signal,
+          limit: 6,
+        }).catch((cause: unknown) => {
+          if (isAbort(cause)) throw cause;
+          return [];
+        })
+        : Promise.resolve([]),
       options.webSearch && content
         ? this.webSearch.searchWeb(content, { signal: options.signal, maxResults: 6 })
         : Promise.resolve([]),
     ]);
+    const memories = mergePromptMemories(localMemories, remoteMemories);
     const promptMessages = [...history, user];
     const prompt = buildChatPrompt(
       promptMessages,
@@ -174,6 +224,7 @@ export class LocalChatSession {
       }
       : prompt;
     let answer = "";
+    let reasoning = "";
     let finalOutput = "";
     let terminalError: Error | undefined;
     let runId: string | undefined;
@@ -186,6 +237,7 @@ export class LocalChatSession {
     });
 
     try {
+      options.onActivity?.({ kind: "thinking", label: "模型正在思考" });
       for await (const event of this.runtime.stream(skill.flowId, runtimeInput, {
         flowVersion: skill.flowVersion,
         ...(options.signal ? { signal: options.signal } : {}),
@@ -194,12 +246,27 @@ export class LocalChatSession {
         } : {}),
       })) {
         runId ??= event.runId;
+        if (event.kind === "stream_artifact") {
+          const delta = readThinkingDelta(event.payload);
+          if (delta) {
+            reasoning += delta;
+            options.onActivity?.({ kind: "thinking", label: "模型正在深度思考" });
+            options.onReasoningDelta?.(delta, reasoning);
+          }
+        }
         if (event.kind === "stream_delta" && (event.portId === "answer" || event.nodeId === "chat_model")) {
           const delta = readTextDelta(event.payload);
           if (delta) {
             answer += delta;
+            options.onActivity?.({ kind: "responding", label: "正在生成回复" });
             options.onDelta?.(delta, answer);
           }
+        }
+        if (event.kind === "tool_call_started") {
+          options.onActivity?.({ kind: "using-tool", label: toolActivityLabel(event.payload) });
+        }
+        if (event.kind === "tool_call_finished") {
+          options.onActivity?.({ kind: "thinking", label: "正在分析工具结果" });
         }
         if (event.kind === "run_finished") {
           finalOutput = readRunOutput(event.payload);
@@ -220,13 +287,19 @@ export class LocalChatSession {
         id: crypto.randomUUID(),
         conversationId: this.conversationId,
         role: "assistant",
-        content: answer,
+        content: createAssistantMessageContent(answer, reasoning),
       });
       await this.store.finishAssistantRun(assistantRunId, {
         status: "succeeded",
         ...(runId ? { runtimeRunId: runId } : {}),
         assistantMessageId: assistant.id,
       });
+      if (this.remoteMemory.isMemoryEnabled()) {
+        await this.remoteMemory.addMemoryTurn(this.conversationId, [
+          { role: "user", content: chatMessageText(user.content) },
+          { role: "assistant", content: answer },
+        ]).catch(() => undefined);
+      }
       return { user, assistant, ...(runId ? { runId } : {}) };
     } catch (error: unknown) {
       await this.store.finishAssistantRun(assistantRunId, {
@@ -241,7 +314,7 @@ export class LocalChatSession {
 
 export function buildChatPrompt(
   messages: LocalMessage[],
-  memories: MemoryItem[] = [],
+  memories: Array<Pick<MemoryItem, "content">> = [],
   systemPrompt = DEFAULT_ASSISTANT_SYSTEM_PROMPT,
   searchResults: WebSearchResult[] = [],
 ): string {
@@ -276,7 +349,6 @@ export function buildChatPrompt(
     "助手：",
   ].filter(Boolean).join("\n\n");
 }
-
 
 export function collectContextImages(
   messages: LocalMessage[],
@@ -324,7 +396,10 @@ function boundedSearchResultLines(results: WebSearchResult[], maxCharacters = 8_
   return lines;
 }
 
-function boundedMemoryLines(memories: MemoryItem[], maxCharacters = 4_000): string[] {
+function boundedMemoryLines(
+  memories: Array<Pick<MemoryItem, "content">>,
+  maxCharacters = 4_000,
+): string[] {
   const lines: string[] = [];
   let characters = 0;
   for (const memory of memories.slice(0, 20)) {
@@ -334,6 +409,29 @@ function boundedMemoryLines(memories: MemoryItem[], maxCharacters = 4_000): stri
     characters += line.length;
   }
   return lines;
+}
+
+function mergePromptMemories(
+  localMemories: Array<Pick<MemoryItem, "content">>,
+  remoteMemories: RemoteMemory[],
+): Array<Pick<MemoryItem, "content">> {
+  const seen = new Set<string>();
+  return [...localMemories, ...remoteMemories].filter((memory) => {
+    const content = memory.content.trim();
+    if (!content || seen.has(content)) return false;
+    seen.add(content);
+    return true;
+  });
+}
+
+function isRemoteMemoryClient(value: unknown): value is RemoteMemoryClient {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const candidate = value as Partial<RemoteMemoryClient>;
+  return typeof candidate.isMemoryEnabled === "function"
+    && typeof candidate.searchMemory === "function"
+    && typeof candidate.addMemoryTurn === "function";
 }
 
 function roleLabel(role: LocalMessage["role"]): string {
@@ -352,6 +450,24 @@ function readTextDelta(payload: unknown): string {
   if (!payload || typeof payload !== "object") return "";
   const text = (payload as { text?: unknown }).text;
   return typeof text === "string" ? text : "";
+}
+
+function readThinkingDelta(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const candidate = payload as { kind?: unknown; text?: unknown };
+  return candidate.kind === "thinking_delta" && typeof candidate.text === "string"
+    ? candidate.text
+    : "";
+}
+
+function toolActivityLabel(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "正在调用工具";
+  const name = (payload as { toolName?: unknown }).toolName;
+  if (typeof name !== "string" || !name.trim()) return "正在调用工具";
+  const normalized = name.trim().replace(/_/g, " ");
+  return /search|web|browse|联网|搜索/i.test(normalized)
+    ? "正在联网搜索"
+    : `正在调用 ${normalized}`;
 }
 
 function readRuntimeError(payload: unknown): string {
