@@ -1,5 +1,6 @@
 import { AiSdkOpenAICompatibleLlmProvider } from "@ai-native-flow/runtime";
 import { startHttpRunner } from "@ai-native-flow/transport-http-runner";
+import { createAffiliateCommerceNode } from "@nkg-ai-bot/commerce-flow";
 
 const token = process.env.ANF_RUNTIME_TOKEN?.trim();
 if (!token) fatal("ANF_RUNTIME_TOKEN is required");
@@ -12,6 +13,7 @@ const runner = await startHttpRunner({
   builtinRootDir: null,
   cors: ["http://localhost:1420", "http://tauri.localhost", "tauri://localhost"],
   llmProvider: new AiSdkOpenAICompatibleLlmProvider(),
+  extraNodes: [createAffiliateCommerceNode(globalThis.fetch)],
 });
 
 process.stdout.write(`${JSON.stringify({

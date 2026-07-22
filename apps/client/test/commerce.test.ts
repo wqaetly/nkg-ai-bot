@@ -3,7 +3,7 @@ import {
   searchAffiliateProducts,
   signParameters,
   type AffiliateCommerceConfig,
-} from "../src/commerce";
+} from "@nkg-ai-bot/commerce-flow";
 
 describe("affiliate commerce clients", () => {
   it("matches the platform MD5 signing contract", () => {

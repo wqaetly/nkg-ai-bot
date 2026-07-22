@@ -1,12 +1,13 @@
 import type { FlowInvokeOptions } from "@nkg-ai-bot/runtime-router";
 import {
+  AFFILIATE_ENV_KEYS,
   searchAffiliateProducts,
   type AffiliateCommerceConfig,
   type AffiliateCredentials,
   type AffiliateProduct,
-  type AffiliateProductQuery,
   type CommerceProvider,
-} from "./commerce";
+} from "@nkg-ai-bot/commerce-flow";
+import { COMPUTER_CONFIG_FLOW_ID } from "./builtinFlows";
 import {
   requestImageGeneration,
   type ImageGenerationRequest,
@@ -254,7 +255,10 @@ export class ProviderSession {
     return this.refresh();
   }
 
-  async createRunOptions(options: FlowInvokeOptions = {}): Promise<FlowInvokeOptions> {
+  async createRunOptions(
+    options: FlowInvokeOptions = {},
+    context: { flowId?: string } = {},
+  ): Promise<FlowInvokeOptions> {
     const vault = this.requireVault();
     const selected = this.snapshotValue.profiles.find(
       (profile) => profile.id === this.snapshotValue.selectedProviderId,
@@ -267,7 +271,9 @@ export class ProviderSession {
     if (!selected.enabledModels.includes(model)) {
       throw new Error(`模型“${model}”未在 OpenAI 设置中启用`);
     }
-    return withProviderEnvironment(selected, vault, options, model);
+    const providerOptions = await withProviderEnvironment(selected, vault, options, model);
+    if (context.flowId !== COMPUTER_CONFIG_FLOW_ID) return providerOptions;
+    return withAffiliateFlowEnvironment(this.snapshotValue.commerce, vault, providerOptions);
   }
 
   async discoverModels(draft: ProviderDraft, signal?: AbortSignal): Promise<string[]> {
@@ -359,22 +365,6 @@ export class ProviderSession {
       this.fetchImpl,
       { signal },
     );
-  }
-
-  async searchAffiliateProducts(
-    query: AffiliateProductQuery,
-    options: { signal?: AbortSignal } = {},
-  ): Promise<AffiliateProduct[]> {
-    const vault = this.requireVault();
-    const config = this.snapshotValue.commerce;
-    if (!config?.enabled) throw new Error("电商返利商品推荐尚未启用");
-    const credentials = await readCommerceCredentials(config, vault);
-    return searchAffiliateProducts(config, credentials, query, this.fetchImpl, options);
-  }
-
-  isAffiliateCommerceEnabled(): boolean {
-    const config = this.snapshotValue.commerce;
-    return config?.enabled === true && Boolean(config[config.selectedProvider]);
   }
 
   async searchWeb(
@@ -488,6 +478,64 @@ async function readCommerceCredentials(
   ]);
   if (!clientId || !clientSecret) throw new Error("拼多多联盟凭据不可用，请在设置中重新保存");
   return { provider: "pdd", clientId, clientSecret };
+}
+
+async function withAffiliateFlowEnvironment(
+  config: AffiliateCommerceConfig | undefined,
+  vault: ApiKeyVault,
+  options: FlowInvokeOptions,
+): Promise<FlowInvokeOptions> {
+  if (!config?.enabled) {
+    return {
+      ...options,
+      envOverrides: {
+        variables: {
+          ...options.envOverrides?.variables,
+          [AFFILIATE_ENV_KEYS.enabled]: false,
+        },
+        secrets: { ...options.envOverrides?.secrets },
+      },
+    };
+  }
+  const credentials = await readCommerceCredentials(config, vault);
+  if (credentials.provider === "jd") {
+    if (!config.jd) throw new Error("京东联盟配置不完整");
+    return {
+      ...options,
+      envOverrides: {
+        variables: {
+          ...options.envOverrides?.variables,
+          [AFFILIATE_ENV_KEYS.enabled]: true,
+          [AFFILIATE_ENV_KEYS.provider]: "jd",
+          [AFFILIATE_ENV_KEYS.jdPid]: config.jd.pid,
+          [AFFILIATE_ENV_KEYS.jdSiteId]: config.jd.siteId,
+          [AFFILIATE_ENV_KEYS.jdPositionId]: config.jd.positionId,
+        },
+        secrets: {
+          ...options.envOverrides?.secrets,
+          [AFFILIATE_ENV_KEYS.jdAppKey]: credentials.appKey,
+          [AFFILIATE_ENV_KEYS.jdSecretKey]: credentials.secretKey,
+        },
+      },
+    };
+  }
+  if (!config.pdd) throw new Error("拼多多联盟配置不完整");
+  return {
+    ...options,
+    envOverrides: {
+      variables: {
+        ...options.envOverrides?.variables,
+        [AFFILIATE_ENV_KEYS.enabled]: true,
+        [AFFILIATE_ENV_KEYS.provider]: "pdd",
+        [AFFILIATE_ENV_KEYS.pddPid]: config.pdd.pid,
+      },
+      secrets: {
+        ...options.envOverrides?.secrets,
+        [AFFILIATE_ENV_KEYS.pddClientId]: credentials.clientId,
+        [AFFILIATE_ENV_KEYS.pddClientSecret]: credentials.clientSecret,
+      },
+    },
+  };
 }
 
 async function restoreVaultValue(

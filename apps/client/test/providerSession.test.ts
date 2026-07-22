@@ -234,7 +234,13 @@ describe("ProviderSession", () => {
       secret: "pdd-client-secret",
       pid: "100_200",
     });
-    const products = await session.searchAffiliateProducts({ keyword: "RTX 4060 显卡", count: 1 });
+    const products = await session.testCommerce({
+      provider: "pdd",
+      enabled: true,
+      key: "",
+      secret: "",
+      pid: "100_200",
+    });
 
     expect(store.commerceConfig).toEqual({
       enabled: true,
@@ -248,6 +254,30 @@ describe("ProviderSession", () => {
     expect(JSON.stringify(store.commerceConfig)).not.toContain("pdd-client-secret");
     expect(vault.values.get("commerce:pdd:client-id")).toBe("pdd-client-id");
     expect(vault.values.get("commerce:pdd:client-secret")).toBe("pdd-client-secret");
+    await session.save({
+      id: "model",
+      name: "Model",
+      baseUrl: "https://model.example.test/v1",
+      defaultModel: "model-1",
+      enabledModels: ["model-1"],
+      apiKey: "model-secret",
+    });
+    await expect(session.createRunOptions({}, { flowId: "computer_config_advisor" }))
+      .resolves.toMatchObject({
+        envOverrides: {
+          variables: {
+            AFFILIATE_COMMERCE_ENABLED: true,
+            AFFILIATE_COMMERCE_PROVIDER: "pdd",
+            AFFILIATE_PDD_PID: "100_200",
+          },
+          secrets: {
+            AFFILIATE_PDD_CLIENT_ID: "pdd-client-id",
+            AFFILIATE_PDD_CLIENT_SECRET: "pdd-client-secret",
+          },
+        },
+      });
+    const ordinaryOptions = await session.createRunOptions({}, { flowId: "builtin_chat" });
+    expect(ordinaryOptions.envOverrides?.secrets).not.toHaveProperty("AFFILIATE_PDD_CLIENT_SECRET");
     expect(products).toEqual([expect.objectContaining({
       name: "七彩虹 RTX 4060 8GB 游戏显卡",
       promotionUrl: "https://p.pinduoduo.com/affiliate",

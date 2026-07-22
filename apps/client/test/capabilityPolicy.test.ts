@@ -42,4 +42,15 @@ describe("Flow capability policy", () => {
     expect(authorizer.isAuthorized("flow-a", "filesystem.read")).toBe(false);
     expect(listener).toHaveBeenCalledTimes(2);
   });
+
+  it("declares affiliate commerce as a network and run-secret node", () => {
+    const report = analyzeFlowCapabilities({
+      id: "computer_config_advisor",
+      version: "2.0.0",
+      nodes: [{ id: "affiliate_products", type: "affiliate_commerce", config: {} }],
+    }, "android");
+
+    expect(report.required).toEqual(["network.http", "secret.read"]);
+    expect(report.unavailable).toEqual([]);
+  });
 });

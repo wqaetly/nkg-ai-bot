@@ -17,10 +17,13 @@ describe("ProviderFlowRuntimeClient", () => {
 
     await client.invoke("chat", { text: "hello" }, { traceId: "trace" });
 
-    expect(providers.createRunOptions).toHaveBeenCalledWith(expect.objectContaining({
-      traceId: "trace",
-      signal: expect.any(AbortSignal),
-    }));
+    expect(providers.createRunOptions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        traceId: "trace",
+        signal: expect.any(AbortSignal),
+      }),
+      { flowId: "chat" },
+    );
     expect(runtime.invoke).toHaveBeenCalledWith("chat", { text: "hello" }, expect.objectContaining({
       traceId: "trace",
       envOverrides: { secrets: { LLM_API_KEY: "transient" } },

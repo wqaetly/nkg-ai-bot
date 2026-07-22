@@ -49,7 +49,7 @@ export class ProviderFlowRuntimeClient {
       return await this.runtime.invoke(
         flowId,
         input,
-        await this.providers.createRunOptions({ ...options, signal: execution.signal }),
+        await this.providers.createRunOptions({ ...options, signal: execution.signal }, { flowId }),
       );
     } catch (cause: unknown) {
       throw normalizeExecutionError(cause, execution.signal);
@@ -71,7 +71,7 @@ export class ProviderFlowRuntimeClient {
         flowId,
         nodeId,
         input,
-        await this.providers.createRunOptions({ ...options, signal: execution.signal }),
+        await this.providers.createRunOptions({ ...options, signal: execution.signal }, { flowId }),
       );
     } catch (cause: unknown) {
       throw normalizeExecutionError(cause, execution.signal);
@@ -95,7 +95,7 @@ export class ProviderFlowRuntimeClient {
           execution.observeRun(runId);
           options.onRunStarted?.(runId);
         },
-      });
+      }, { flowId });
       for await (const event of this.runtime.stream(flowId, input, runOptions)) {
         execution.observeRun(event.runId);
         if (isTerminalRunEvent(event.kind)) execution.observeTerminal();
@@ -124,7 +124,7 @@ export class ProviderFlowRuntimeClient {
           execution.observeRun(runId);
           options.onRunStarted?.(runId);
         },
-      });
+      }, { flowId });
       for await (const event of this.runtime.streamNode(flowId, nodeId, input, runOptions)) {
         execution.observeRun(event.runId);
         if (isTerminalRunEvent(event.kind)) execution.observeTerminal();

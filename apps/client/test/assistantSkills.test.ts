@@ -19,7 +19,7 @@ describe("built-in Assistant Skills", () => {
 
     await ensureBuiltinAssistantSkills(database);
 
-    expect(execute).toHaveBeenCalledTimes(8);
+    expect(execute).toHaveBeenCalledTimes(9);
     const argumentsByCall = execute.mock.calls.map((call) => call[1] as unknown[] | undefined);
     expect(argumentsByCall.some((args) => args?.[0] === DEFAULT_ASSISTANT_ID)).toBe(true);
     expect(argumentsByCall.some((args) => args?.[0] === COMPUTER_CONFIG_ASSISTANT_ID)).toBe(true);
@@ -33,6 +33,12 @@ describe("built-in Assistant Skills", () => {
       COMPUTER_CONFIG_FLOW_VERSION,
       "computer_config",
     ]));
+    expect(argumentsByCall).toContainEqual([
+      COMPUTER_CONFIG_ASSISTANT_ID,
+      COMPUTER_CONFIG_ASSISTANT_VERSION,
+      "1.0.0",
+      expect.any(Number),
+    ]);
   });
 
   it("requires compatibility checks and evidence-aware pricing", () => {

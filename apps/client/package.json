@@ -16,9 +16,9 @@
   },
   "dependencies": {
     "@ai-native-flow/flow-validator": "0.0.1",
+    "@nkg-ai-bot/commerce-flow": "0.0.1",
     "@nkg-ai-bot/runtime-router": "0.0.1",
     "@nkg-ai-bot/tauri-runtime-adapter": "0.0.1",
-    "@noble/hashes": "^1.8.0",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-http": "^2",
     "@tauri-apps/plugin-sql": "^2",

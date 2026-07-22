@@ -7,7 +7,6 @@ import {
   type AssistantSkillVersion,
 } from "../src/assistantSkills";
 import type { ChatImageAttachment } from "../src/chatContent";
-import { COMPUTER_PRODUCT_PLANNER_FLOW_ID } from "../src/builtinFlows";
 
 const defaultSkill: AssistantSkillVersion = {
   assistantId: "builtin_assistant",
@@ -285,7 +284,7 @@ describe("LocalChatSession", () => {
     expect(prompt).toContain("不得编造来源");
   });
 
-  it("closes the computer recommendation loop through planning, affiliate search, and disclosed links", async () => {
+  it("delegates the complete computer recommendation pipeline to one Flow run", async () => {
     const store = memoryStore();
     const computerSkill: AssistantSkillVersion = {
       ...defaultSkill,
@@ -297,48 +296,21 @@ describe("LocalChatSession", () => {
     };
     store.resolveAssistantSkill = vi.fn(async () => computerSkill);
     const runtime = {
-      stream: vi.fn(async function* (flowId: string) {
-        if (flowId === COMPUTER_PRODUCT_PLANNER_FLOW_ID) {
-          yield event("run_finished", {
-            output: JSON.stringify({ queries: [{ keyword: "七彩虹 RTX 4060 显卡", count: 1 }] }),
-          });
-          return;
-        }
+      stream: vi.fn(async function* () {
         yield event("run_finished", { output: "这是包含推广披露的配置建议" });
       }),
     };
-    const commerce = {
-      isAffiliateCommerceEnabled: vi.fn(() => true),
-      searchAffiliateProducts: vi.fn(async () => [{
-        provider: "pdd" as const,
-        productId: "gpu-1",
-        name: "七彩虹 RTX 4060 8GB 游戏显卡",
-        price: 2999,
-        promotionUrl: "https://p.pinduoduo.com/affiliate",
-        shopName: "品牌旗舰店",
-        hasCoupon: false,
-        capturedAt: "2026-07-22T02:00:00.000Z",
-        affiliate: true as const,
-      }]),
-    };
     const webSearch = { searchWeb: vi.fn(async () => []) };
 
-    await new LocalChatSession("c1", runtime, store, webSearch, commerce)
+    await new LocalChatSession("c1", runtime, store, webSearch)
       .send("预算 6000 元，帮我配一台 2K 游戏电脑");
 
-    expect(commerce.searchAffiliateProducts).toHaveBeenCalledWith(
-      { keyword: "七彩虹 RTX 4060 显卡", count: 1 },
-      {},
-    );
-    expect(runtime.stream.mock.calls.map((call) => call[0])).toEqual([
-      COMPUTER_PRODUCT_PLANNER_FLOW_ID,
+    expect(runtime.stream).toHaveBeenCalledTimes(1);
+    expect(runtime.stream).toHaveBeenCalledWith(
       "computer_config_advisor",
-    ]);
-    const advisorPrompt = runtime.stream.mock.calls[1]?.[1] as string;
-    expect(advisorPrompt).toContain("七彩虹 RTX 4060 8GB 游戏显卡");
-    expect(advisorPrompt).toContain("https://p.pinduoduo.com/affiliate");
-    expect(advisorPrompt).toContain("推广链接");
-    expect(advisorPrompt).toContain("不得按佣金高低排序");
+      expect.stringContaining("预算 6000 元"),
+      expect.objectContaining({ flowVersion: computerSkill.flowVersion }),
+    );
   });
 
   it("builds a local multi-turn transcript without leaking tool messages", () => {
