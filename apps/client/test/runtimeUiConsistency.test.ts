@@ -27,6 +27,18 @@ describe("chat-first UI consistency", () => {
     expect(source).not.toContain('className="sidebar-brand"');
     expect(source).not.toContain('className="brand-orb">N</span>');
     expect(source).not.toContain('className="assistant-avatar">');
+    expect(source).not.toContain('className="message-avatar"');
+  });
+
+  it("uses auto-hiding rounded scrollbars without native arrow buttons", async () => {
+    const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+    const styles = await readFile(new URL("../src/App.css", import.meta.url), "utf8");
+
+    expect(app).toContain('classList.add("scrollbar-active")');
+    expect(app).toContain('classList.remove("scrollbar-active")');
+    expect(styles).toContain("*::-webkit-scrollbar-button");
+    expect(styles).toContain("border-radius: 999px");
+    expect(styles).toContain(".scrollbar-active::-webkit-scrollbar-thumb");
   });
 
   it("uses the generated application icon in the custom desktop title bar", async () => {

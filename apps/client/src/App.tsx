@@ -89,6 +89,31 @@ function App() {
   }, [appearance.uiScale]);
 
   useEffect(() => {
+    const hideTimers = new Map<HTMLElement, number>();
+    const showScrollbarWhileScrolling = (event: Event) => {
+      if (!(event.target instanceof HTMLElement)) return;
+      const scroller = event.target;
+      scroller.classList.add("scrollbar-active");
+      const previousTimer = hideTimers.get(scroller);
+      if (previousTimer !== undefined) window.clearTimeout(previousTimer);
+      hideTimers.set(scroller, window.setTimeout(() => {
+        scroller.classList.remove("scrollbar-active");
+        hideTimers.delete(scroller);
+      }, 700));
+    };
+
+    document.addEventListener("scroll", showScrollbarWhileScrolling, true);
+    return () => {
+      document.removeEventListener("scroll", showScrollbarWhileScrolling, true);
+      hideTimers.forEach((timer, scroller) => {
+        window.clearTimeout(timer);
+        scroller.classList.remove("scrollbar-active");
+      });
+      hideTimers.clear();
+    };
+  }, []);
+
+  useEffect(() => {
     if (!settingsOpen) return;
     const closeOnEscape = (event: KeyboardEvent) => {
       if (event.key === "Escape") setSettingsOpen(false);
