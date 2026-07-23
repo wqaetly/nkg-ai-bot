@@ -96,6 +96,7 @@ export interface SendChatOptions {
   onDelta?: (delta: string, accumulated: string) => void;
   onReasoningDelta?: (delta: string, accumulated: string) => void;
   onActivity?: (activity: ChatActivity) => void;
+  onFlowEvent?: (event: NodeEvent) => void;
   onSearchResults?: (references: ChatWebReference[]) => void;
   signal?: AbortSignal;
   webSearch?: boolean;
@@ -298,6 +299,7 @@ export class LocalChatSession {
         } : {}),
       })) {
         runId ??= event.runId;
+        options.onFlowEvent?.(event);
         if (event.kind === "stream_artifact") {
           const delta = readThinkingDelta(event.payload);
           if (delta) {

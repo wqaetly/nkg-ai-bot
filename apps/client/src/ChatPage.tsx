@@ -46,8 +46,12 @@ import { EvaluationPanel } from "./EvaluationPanel";
 import { ImageGenerationPanel } from "./ImageGenerationPanel";
 import { createEvalCaseFromCorrection } from "./evaluationRepository";
 import type { EvaluationRuntime } from "./evaluation";
-import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
+import type { AppPlatform, NodeEvent } from "@nkg-ai-bot/runtime-router";
+import {
+  type FlowPreviewGraph,
+} from "@ai-native-flow/studio/flowPreview";
 import { subscribeAppPanel } from "./appPanel";
+import { FlowPreviewPanel } from "./FlowPreviewPanel";
 import { MarkdownContent } from "./MarkdownContent";
 import { ReasoningPanel } from "./ReasoningPanel";
 import { SearchReferencesPanel } from "./SearchReferencesPanel";
@@ -55,6 +59,7 @@ import { ConversationSidebar } from "./ConversationSidebar";
 import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
+  getStoredFlow,
   listConversations,
   upsertConversation,
   type LocalConversation,
@@ -93,6 +98,9 @@ export function ChatPage({
   const [streamingReasoning, setStreamingReasoning] = useState("");
   const [streamingReferences, setStreamingReferences] = useState<ChatWebReference[]>([]);
   const [chatActivity, setChatActivity] = useState<ChatActivity>();
+  const [streamingFlowEvents, setStreamingFlowEvents] = useState<NodeEvent[]>([]);
+  const [flowEventsByMessage, setFlowEventsByMessage] = useState<Record<string, NodeEvent[]>>({});
+  const [activeFlow, setActiveFlow] = useState<{ graph: FlowPreviewGraph; name: string }>();
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [error, setError] = useState("");
@@ -184,6 +192,8 @@ export function ChatPage({
     setStreamingText("");
     setStreamingReasoning("");
     setStreamingReferences([]);
+    setStreamingFlowEvents([]);
+    setFlowEventsByMessage({});
     setChatActivity(undefined);
     setError("");
     if (!activeId || !runtime) return;
@@ -202,6 +212,24 @@ export function ChatPage({
       .finally(() => { if (active) setLoadingMessages(false); });
     return () => { active = false; };
   }, [activeId, runtime]);
+
+  useEffect(() => {
+    let active = true;
+    const assistantId = activeConversation?.assistantId;
+    const assistantVersion = activeConversation?.assistantVersion;
+    setActiveFlow(undefined);
+    if (!activeConversation) return () => { active = false; };
+    resolveAssistantSkill(assistantId, assistantVersion)
+      .then((skill) => getStoredFlow(skill.flowId, skill.flowVersion))
+      .then((stored) => {
+        if (!active || !stored || !isFlowPreviewGraph(stored.graph)) return;
+        setActiveFlow({ graph: stored.graph, name: stored.name });
+      })
+      .catch(() => {
+        // A missing preview must never block chat; runtime errors still surface normally.
+      });
+    return () => { active = false; };
+  }, [activeConversation?.id, activeConversation?.assistantId, activeConversation?.assistantVersion]);
 
   useEffect(() => {
     window.scrollTo(0, 0);
@@ -383,6 +411,7 @@ export function ChatPage({
     setStreamingText("");
     setStreamingReasoning("");
     setStreamingReferences([]);
+    setStreamingFlowEvents([]);
     setChatActivity({ kind: "preparing", label: "正在准备请求" });
     setMessages((current) => [...current, optimistic]);
     setBusy(true);
@@ -391,8 +420,9 @@ export function ChatPage({
     abortRef.current = controller;
     activeRequestRef.current = requestId;
     const session = new LocalChatSession(conversationId, runtime);
+    const requestFlowEvents: NodeEvent[] = [];
     try {
-      await session.send(text, {
+      const result = await session.send(text, {
         signal: controller.signal,
         webSearch: webSearchEnabled && webSearchAvailable,
         images: outgoingImages,
@@ -416,8 +446,18 @@ export function ChatPage({
             setChatActivity(activity);
           }
         },
+        onFlowEvent: (event) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            requestFlowEvents.push(event);
+            setStreamingFlowEvents([...requestFlowEvents]);
+          }
+        },
       });
       if (activeIdRef.current === conversationId) {
+        setFlowEventsByMessage((current) => ({
+          ...current,
+          [result.assistant.id]: [...requestFlowEvents],
+        }));
         setMessages(await session.load());
         setStreamingText("");
         setStreamingReasoning("");
@@ -451,6 +491,7 @@ export function ChatPage({
     setStreamingText("");
     setStreamingReasoning("");
     setStreamingReferences([]);
+    setStreamingFlowEvents([]);
     setChatActivity({ kind: "preparing", label: "正在重新生成回复" });
     setBusy(true);
     const controller = new AbortController();
@@ -458,8 +499,9 @@ export function ChatPage({
     abortRef.current = controller;
     activeRequestRef.current = requestId;
     const session = new LocalChatSession(conversationId, runtime);
+    const requestFlowEvents: NodeEvent[] = [];
     try {
-      await session.regenerate(message.id, {
+      const result = await session.regenerate(message.id, {
         signal: controller.signal,
         webSearch: webSearchEnabled && webSearchAvailable,
         onDelta: (_delta, accumulated) => {
@@ -482,8 +524,18 @@ export function ChatPage({
             setChatActivity(activity);
           }
         },
+        onFlowEvent: (event) => {
+          if (activeRequestRef.current === requestId && activeIdRef.current === conversationId) {
+            requestFlowEvents.push(event);
+            setStreamingFlowEvents([...requestFlowEvents]);
+          }
+        },
       });
       if (activeIdRef.current === conversationId) {
+        setFlowEventsByMessage((current) => ({
+          ...current,
+          [result.assistant.id]: [...requestFlowEvents],
+        }));
         setMessages(await session.load());
         setStreamingText("");
         setStreamingReasoning("");
@@ -715,7 +767,6 @@ export function ChatPage({
               const images = chatMessageImages(message.content);
               return (
               <article className={`message ${message.role}`} key={message.id}>
-                {message.role === "assistant" ? <span className="message-avatar">N</span> : null}
                 <div className="message-body">
                   {message.role === "assistant" ? <strong className="message-author">NKG</strong> : null}
                   {images.length ? (
@@ -732,6 +783,13 @@ export function ChatPage({
                     : null}
                   {message.role === "assistant" && reasoning
                     ? <ReasoningPanel reasoning={reasoning} />
+                    : null}
+                  {message.role === "assistant" && activeFlow
+                    ? <FlowPreviewPanel
+                        graph={activeFlow.graph}
+                        name={activeFlow.name}
+                        runtimeEvents={flowEventsByMessage[message.id]}
+                      />
                     : null}
                   {text ? message.role === "assistant"
                     ? <MarkdownContent className="message-content" content={text} />
@@ -765,10 +823,17 @@ export function ChatPage({
 
             {busy ? (
               <article className="message assistant streaming">
-                <span className="message-avatar">N</span>
                 <div className="message-body">
                   <strong className="message-author">NKG</strong>
                   {chatActivity ? <ChatActivityStatus activity={chatActivity} /> : null}
+                  {activeFlow
+                    ? <FlowPreviewPanel
+                        active
+                        graph={activeFlow.graph}
+                        name={activeFlow.name}
+                        runtimeEvents={streamingFlowEvents}
+                      />
+                    : null}
                   {streamingReferences.length
                     ? <SearchReferencesPanel references={streamingReferences} />
                     : null}
@@ -1057,6 +1122,12 @@ function activeSkillName(
   conversation: LocalConversation | undefined,
 ): string {
   return skills.find((skill) => skill.assistantId === conversation?.assistantId)?.name ?? "NKG";
+}
+
+function isFlowPreviewGraph(value: unknown): value is FlowPreviewGraph {
+  if (!value || typeof value !== "object") return false;
+  const graph = value as { nodes?: unknown; edges?: unknown };
+  return Array.isArray(graph.nodes) && Array.isArray(graph.edges);
 }
 
 function Icon({ children }: { children: React.ReactNode }) { return <svg aria-hidden viewBox="0 0 24 24">{children}</svg>; }
