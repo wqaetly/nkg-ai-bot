@@ -37,6 +37,7 @@
     "android:e2e:lifecycle": "node scripts/android-chat-e2e.mjs --lifecycle",
     "tauri": "npm run tauri -w @nkg-ai-bot/client --",
     "rust:check": "node scripts/cargo.mjs check --manifest-path apps/client/src-tauri/Cargo.toml",
+    "rust:check:ios-bonjour": "node scripts/cargo.mjs check --manifest-path apps/client/src-tauri/Cargo.toml --features ios-bonjour-check",
     "rust:test": "node scripts/cargo.mjs test --manifest-path apps/client/src-tauri/Cargo.toml"
   },
   "devDependencies": {

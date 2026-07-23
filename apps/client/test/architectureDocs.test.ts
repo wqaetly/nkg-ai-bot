@@ -21,6 +21,17 @@ describe("architecture documentation", () => {
     expect(audit).toContain("可选 Google Play 上传基线，不在默认 Release 中生成");
     expect(audit).toContain("不等同于五端真机产品验收");
   });
+
+  it("documents iOS Bonjour discovery without the restricted multicast entitlement", () => {
+    const sync = document("lan-sync.md");
+    const plist = readFileSync(join(root, "apps", "client", "src-tauri", "Info.ios.plist"), "utf8");
+    expect(sync).toContain("`_nkg-sync._tcp`");
+    expect(sync).toContain("不要求受限的");
+    expect(plist).toContain("<key>NSLocalNetworkUsageDescription</key>");
+    expect(plist).toContain("<key>NSBonjourServices</key>");
+    expect(plist).toContain("<string>_nkg-sync._tcp</string>");
+    expect(plist).not.toContain("com.apple.developer.networking.multicast");
+  });
 });
 
 function document(name: string): string {

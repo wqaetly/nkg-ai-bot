@@ -1,7 +1,12 @@
+mod lan_sync;
 #[cfg(all(desktop, feature = "desktop-power"))]
 mod runtime_sidecar;
 mod runtime_tools;
 
+use lan_sync::{
+    lan_sync_cancel_share, lan_sync_discover, lan_sync_receive, lan_sync_share_status,
+    lan_sync_start_share, LanSyncState,
+};
 use rand::{rngs::OsRng, RngCore};
 #[cfg(all(desktop, feature = "desktop-power"))]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
@@ -151,6 +156,7 @@ pub fn run() {
     ];
 
     let builder = tauri::Builder::default()
+        .manage(LanSyncState::default())
         .plugin(tauri_plugin_http::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
@@ -183,6 +189,11 @@ pub fn run() {
             save_migration_bundle,
             stage_app_import,
             restart_app,
+            lan_sync_start_share,
+            lan_sync_cancel_share,
+            lan_sync_share_status,
+            lan_sync_discover,
+            lan_sync_receive,
             runtime_tool_call,
             runtime_sidecar_start,
             runtime_sidecar_stop
@@ -196,6 +207,11 @@ pub fn run() {
         save_migration_bundle,
         stage_app_import,
         restart_app,
+        lan_sync_start_share,
+        lan_sync_cancel_share,
+        lan_sync_share_status,
+        lan_sync_discover,
+        lan_sync_receive,
         runtime_tool_call
     ]);
 
@@ -207,6 +223,11 @@ pub fn run() {
         save_migration_bundle,
         stage_app_import,
         restart_app,
+        lan_sync_start_share,
+        lan_sync_cancel_share,
+        lan_sync_share_status,
+        lan_sync_discover,
+        lan_sync_receive,
         runtime_tool_call
     ]);
 

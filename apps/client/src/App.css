@@ -569,6 +569,36 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .migration-content-list svg { width: 15px; height: 15px; grid-row: 1 / 3; margin-top: 1px; color: var(--accent); }
 .migration-content-list strong { color: var(--text); font-size: 11px; }
 .migration-content-list small { margin-top: 3px; overflow: hidden; color: var(--text-tertiary); font-size: 9px; text-overflow: ellipsis; white-space: nowrap; }
+.lan-sync-panel { display: grid; gap: 11px; padding: 13px; border: 1px solid color-mix(in srgb, var(--accent) 28%, var(--border)); border-radius: 6px; background: color-mix(in srgb, var(--accent-soft) 38%, var(--surface-secondary)); }
+.lan-sync-panel > header { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: 9px; }
+.lan-sync-icon { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 5px; color: var(--accent); background: var(--accent-soft); }
+.lan-sync-icon svg { width: 18px; height: 18px; }
+.lan-sync-panel h4 { margin: 0; color: var(--text); font-size: 12px; }
+.lan-sync-panel header p { margin: 4px 0 0; color: var(--text-tertiary); font-size: 9px; line-height: 1.5; }
+.lan-sync-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.lan-sync-actions button { width: 100%; border-radius: 4px; box-shadow: none; }
+.lan-share-session { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--border); border-radius: 5px; background: var(--surface); }
+.lan-pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 16%, transparent); animation: lan-pulse 1.8s ease-in-out infinite; }
+.lan-share-session > div { display: grid; gap: 3px; }
+.lan-share-session strong { color: var(--text); font-size: 10px; }
+.lan-share-session small { color: var(--text-tertiary); font-size: 8px; }
+.lan-share-session code { padding: 5px 8px; border-radius: 4px; color: var(--accent); background: var(--accent-soft); font-size: 17px; font-weight: 700; letter-spacing: 3px; }
+.lan-share-session button { min-height: 29px; padding: 0 10px; border-radius: 4px; }
+.lan-device-list { display: grid; gap: 6px; }
+.lan-device-list > button { display: grid; grid-template-columns: 25px minmax(0, 1fr) 14px; align-items: center; gap: 8px; width: 100%; padding: 9px; border: 1px solid var(--border); border-radius: 5px; color: var(--text-secondary); background: var(--surface); text-align: left; }
+.lan-device-list > button:hover, .lan-device-list > button.selected { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); background: var(--accent-soft); }
+.lan-device-list svg { width: 17px; height: 17px; }
+.lan-device-list span { display: grid; gap: 2px; }
+.lan-device-list strong { color: var(--text); font-size: 10px; }
+.lan-device-list small { color: var(--text-tertiary); font-size: 8px; }
+.lan-device-list span + svg { width: 13px; height: 13px; }
+.lan-pairing-form { display: grid; gap: 7px; }
+.lan-pairing-form label { color: var(--text-secondary); font-size: 9px; }
+.lan-pairing-form > div { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 8px; }
+.lan-pairing-form input { min-width: 0; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; color: var(--text); background: var(--surface); font: 700 15px/1 monospace; letter-spacing: 5px; }
+.lan-pairing-form input:focus { border-color: var(--accent); outline: none; }
+.lan-pairing-form button { border-radius: 4px; }
+@keyframes lan-pulse { 50% { opacity: .45; transform: scale(.82); } }
 .migration-actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 .migration-actions-grid article { min-width: 0; display: grid; gap: 14px; padding: 13px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface-secondary); }
 .migration-actions-grid article > div { min-width: 0; display: grid; grid-template-columns: 25px minmax(0, 1fr); align-items: start; gap: 8px; }
@@ -1332,6 +1362,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
   .appearance-scale-controls { grid-template-columns: 36px minmax(64px, 1fr) 36px; }
   .settings-tool-grid { grid-template-columns: 1fr; }
   .migration-content-list, .migration-actions-grid { grid-template-columns: 1fr; }
+  .lan-sync-actions { grid-template-columns: 1fr; }
+  .lan-share-session { grid-template-columns: 10px minmax(0, 1fr) auto; }
+  .lan-share-session code { grid-column: 2; justify-self: start; }
+  .lan-share-session button { grid-column: 3; grid-row: 1 / 3; }
 }
 
 /* Frameless desktop chrome and square structural edges prevent seams between layout regions. */

@@ -17,11 +17,13 @@
   schema、Provider/API Key 设置页、Stronghold vault、移动原生 HTTP adapter 与
   Android 原生工程；启动/恢复时会把 SQLite Flow 目录同步到当前 Runtime，移动端
   挂起会取消活动 run 并中止流式请求；内置日常聊天同样通过 Flow 执行，消息仅写入
-  本地 SQLite；内置“电脑配置顾问”可在空对话的“助手技能”中选择，提供预算装机、
+  本地 SQLite；数据迁移页支持同一 WiFi 或设备热点内自动发现，通过一次性配对码和
+  端到端加密直接同步完整本地数据；内置“电脑配置顾问”可在空对话的“助手技能”中选择，提供预算装机、
   兼容性检查、现有配置诊断和升级建议；启用 Flow 自带的联盟商品能力后，同一个电脑顾问
   Flow 会依次规划查询、解析计划、检索筛选、生成推广链接并输出带返利披露的建议；
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
+- `docs/architecture/lan-sync.md`：局域网发现、iOS Bonjour、配对加密和平台验证边界。
 - `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 portable MSI 与
   Android APK，macOS 产出 DMG 与 App Store Connect IPA。Google Play AAB 按需生成；发布过程不依赖
   GitHub Actions，并复用本机 npm、Cargo、Gradle 与 Xcode 缓存。

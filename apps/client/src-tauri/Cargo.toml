@@ -19,9 +19,9 @@ tauri-build = { version = "2", features = [] }
 
 [features]
 default = []
+ios-bonjour-check = []
 desktop-power = [
   "dep:tauri-plugin-shell",
-  "dep:serde",
   "dep:tokio",
   "dep:url",
   "dep:uuid",
@@ -33,14 +33,21 @@ tauri-plugin-http = { version = "2", default-features = false, features = ["rust
 tauri-plugin-sql = { version = "2", features = ["sqlite"] }
 tauri-plugin-stronghold = "2"
 serde_json = "1"
+serde = { version = "1", features = ["derive"] }
 rand = "0.8"
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+x25519-dalek = { version = "2", features = ["static_secrets"] }
+libc = "0.2"
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-shell = { version = "2", optional = true }
-serde = { version = "1", features = ["derive"], optional = true }
 tokio = { version = "1", features = ["time"], optional = true }
 url = { version = "2", optional = true }
 uuid = { version = "1", features = ["v4"], optional = true }
+
+[target.'cfg(not(target_os = "ios"))'.dependencies]
+mdns-sd = "0.20"
 
 [profile.dev.package.scrypt]
 opt-level = 3
