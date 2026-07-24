@@ -179,7 +179,7 @@ function App() {
       </Suspense>
 
       {settingsOpen ? (
-        <div className="settings-layer" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
+        <div className="settings-layer provider-settings-layer" role="presentation" onMouseDown={() => setSettingsOpen(false)}>
           <section
             aria-label="应用设置"
             aria-modal="true"

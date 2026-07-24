@@ -90,6 +90,28 @@ describe("platform build configuration", () => {
     expect(cargoToml).toContain('tauri = { version = "2", default-features = false, features = ["wry"] }');
   });
 
+  it("keeps Android immersive and the mobile settings panel viewport-sized", async () => {
+    const activity = await readFile(
+      new URL("../src-tauri/gen/android/app/src/main/java/com/nkg/ai/bot/MainActivity.kt", import.meta.url),
+      "utf8",
+    );
+    const theme = await readFile(
+      new URL("../src-tauri/gen/android/app/src/main/res/values/themes.xml", import.meta.url),
+      "utf8",
+    );
+    const app = await readFile(new URL("../src/App.tsx", import.meta.url), "utf8");
+    const styles = await readFile(new URL("../src/App.css", import.meta.url), "utf8");
+
+    expect(activity).toContain("WindowCompat.setDecorFitsSystemWindows(window, false)");
+    expect(activity).toContain("WindowInsetsCompat.Type.systemBars()");
+    expect(activity).toContain("BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE");
+    expect(theme).toContain('<item name="android:windowFullscreen">true</item>');
+    expect(theme).toContain('<item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>');
+    expect(app).toContain('className="settings-layer provider-settings-layer"');
+    expect(styles).toContain(".settings-layer.provider-settings-layer { align-items: stretch; justify-content: stretch; }");
+    expect(styles).toMatch(/\.settings-dialog\.provider-settings-dialog\s*\{[\s\S]*?height:\s*100dvh;[\s\S]*?max-height:\s*none;/);
+  });
+
   it("routes Release artifacts to the matching local host", async () => {
     const rootPackage = JSON.parse(await readFile(
       new URL("../../../package.json", import.meta.url),
