@@ -18,7 +18,7 @@ import {
   type LanSyncShareInfo,
 } from "./lanSync";
 
-const MAX_MIGRATION_BYTES = 64 * 1024 * 1024;
+const MAX_MIGRATION_BYTES = 128 * 1024 * 1024;
 
 export function DataMigrationSettings() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -58,7 +58,7 @@ export function DataMigrationSettings() {
     try {
       const bundle = await createMigrationBundle();
       const path = await downloadMigrationBundle(bundle);
-      setNotice(`迁移包已保存到 ${path}（${bundle.counts.conversations} 个对话，${bundle.counts.messages} 条消息）`);
+      setNotice(`迁移包已保存到 ${path}（${bundle.counts.conversations} 个对话，${bundle.counts.messages} 条消息，${bundle.counts.images} 张图片）`);
     } catch (cause) {
       setError(messageOf(cause));
     } finally {
@@ -71,7 +71,7 @@ export function DataMigrationSettings() {
     setError("");
     setNotice("");
     try {
-      if (file.size > MAX_MIGRATION_BYTES) throw new Error("迁移文件不能超过 64 MB");
+      if (file.size > MAX_MIGRATION_BYTES) throw new Error("迁移文件不能超过 128 MB");
       setPending(parseMigrationBundle(await file.text()));
     } catch (cause) {
       setPending(undefined);
@@ -156,12 +156,12 @@ export function DataMigrationSettings() {
         <span className="migration-hero-icon"><TransferIcon /></span>
         <div>
           <h3>一键迁移全部应用数据</h3>
-          <p>把当前设备的对话、消息、Skill、配置、外观、记忆与加密凭据打包，在另一台设备原样恢复。</p>
+          <p>把当前设备的对话、消息、聊天图片、Skill、配置、外观、记忆与加密凭据打包，在另一台设备原样恢复。</p>
         </div>
       </div>
 
       <div className="migration-content-list" aria-label="迁移内容">
-        <span><CheckIcon /><strong>聊天记录</strong><small>全部对话与完整消息</small></span>
+        <span><CheckIcon /><strong>聊天记录</strong><small>全部消息与原始聊天图片</small></span>
         <span><CheckIcon /><strong>Skill 与记忆</strong><small>版本、能力和本地学习数据</small></span>
         <span><CheckIcon /><strong>配置与外观</strong><small>模型、搜索、MCP 和界面偏好</small></span>
         <span><LockIcon /><strong>加密凭据</strong><small>Stronghold 快照与设备密钥</small></span>
@@ -256,7 +256,7 @@ export function DataMigrationSettings() {
         <div className="migration-confirm" role="status">
           <div>
             <strong>准备导入 {new Date(pending.exportedAt).toLocaleString()}</strong>
-            <small>{pending.counts.conversations} 个对话 · {pending.counts.messages} 条消息 · {pending.counts.skills} 个 Skill 版本 · {pending.counts.memories} 条记忆</small>
+            <small>{pending.counts.conversations} 个对话 · {pending.counts.messages} 条消息 · {pending.counts.images} 张图片 · {pending.counts.skills} 个 Skill 版本 · {pending.counts.memories} 条记忆</small>
           </div>
           <p>导入会覆盖此设备当前数据。应用会先自动导出一份当前备份，然后重启完成恢复。</p>
           <footer>

@@ -29,6 +29,7 @@ import {
   recoverInterruptedAssistantRuns,
 } from "./assistantSkills";
 import { recoverInterruptedEvalRuns } from "./evaluationRepository";
+import { migrateLegacyChatImages } from "./chatImageStore";
 
 export interface StartedRuntimeServices {
   platform: AppPlatform;
@@ -51,6 +52,9 @@ export function getRuntimeServices(): Promise<StartedRuntimeServices> {
 
 async function startRuntime(): Promise<StartedRuntimeServices> {
   const platform = await invoke<AppPlatform>("runtime_platform");
+  await migrateLegacyChatImages().catch((error: unknown) => {
+    console.warn("Failed to migrate legacy inline chat images", error);
+  });
   const fetchImpl = await getPlatformFetch(platform);
   const services = createTauriRuntimeServices({
     platform,

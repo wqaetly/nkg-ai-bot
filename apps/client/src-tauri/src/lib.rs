@@ -3,6 +3,7 @@ mod lan_sync;
 mod runtime_sidecar;
 mod runtime_tools;
 
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use lan_sync::{
     lan_sync_cancel_share, lan_sync_discover, lan_sync_receive, lan_sync_share_status,
     lan_sync_start_share, LanSyncState,
@@ -11,7 +12,12 @@ use rand::{rngs::OsRng, RngCore};
 #[cfg(all(desktop, feature = "desktop-power"))]
 use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSidecarState};
 use runtime_tools::runtime_tool_call;
-use std::{fs::OpenOptions, io::Write, path::{Path, PathBuf}};
+use serde::{Deserialize, Serialize};
+use std::{
+    fs::OpenOptions,
+    io::Write,
+    path::{Component, Path, PathBuf},
+};
 use tauri::Manager;
 use tauri_plugin_sql::{Migration, MigrationKind};
 
@@ -33,22 +39,178 @@ fn runtime_platform() -> &'static str {
 }
 
 const MIGRATION_PENDING_DIR: &str = "migration-pending";
+const CHAT_IMAGES_DIR: &str = "chat-images";
+const MAX_CHAT_IMAGE_BYTES: usize = 8 * 1024 * 1024;
+const MAX_CHAT_IMAGES_TOTAL_BYTES: usize = 20 * 1024 * 1024;
+const MAX_MIGRATION_BUNDLE_BYTES: usize = 128 * 1024 * 1024;
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ChatImageWrite {
+    id: String,
+    media_type: String,
+    data: String,
+    bytes: usize,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct StoredChatImage {
+    id: String,
+    path: String,
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct MigrationChatImage {
+    path: String,
+    data: String,
+}
 
 #[tauri::command]
-fn export_app_snapshot(app: tauri::AppHandle) -> Result<serde_json::Value, String> {
-    let data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
-    let local_data_dir = app.path().app_local_data_dir().map_err(|error| error.to_string())?;
+fn save_chat_images(
+    app: tauri::AppHandle,
+    images: Vec<ChatImageWrite>,
+) -> Result<Vec<StoredChatImage>, String> {
+    if images.is_empty() || images.len() > 4 {
+        return Err("每条消息必须包含 1 到 4 张图片".to_string());
+    }
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let root = data_dir.join(CHAT_IMAGES_DIR);
+    let mut decoded = Vec::with_capacity(images.len());
+    let mut total_bytes = 0_usize;
+    for image in images {
+        if image.id.is_empty()
+            || image.id.len() > 80
+            || !image
+                .id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err("聊天图片标识无效".to_string());
+        }
+        let extension = chat_image_extension(&image.media_type)
+            .ok_or_else(|| "聊天图片仅支持 PNG、JPEG 或 WebP".to_string())?;
+        let bytes = BASE64
+            .decode(&image.data)
+            .map_err(|_| "聊天图片数据损坏".to_string())?;
+        if bytes.is_empty() || bytes.len() > MAX_CHAT_IMAGE_BYTES || bytes.len() != image.bytes {
+            return Err("聊天图片大小无效".to_string());
+        }
+        if !has_chat_image_signature(extension, &bytes) {
+            return Err("聊天图片格式与内容不匹配".to_string());
+        }
+        total_bytes = total_bytes.saturating_add(bytes.len());
+        if total_bytes > MAX_CHAT_IMAGES_TOTAL_BYTES {
+            return Err("单条消息的图片总大小不能超过 20 MB".to_string());
+        }
+        decoded.push((image.id, extension, bytes));
+    }
+
+    std::fs::create_dir_all(&root).map_err(|error| error.to_string())?;
+    let mut stored = Vec::with_capacity(decoded.len());
+    let mut written = Vec::with_capacity(decoded.len());
+    for (id, extension, bytes) in decoded {
+        let relative = format!("{CHAT_IMAGES_DIR}/{id}.{extension}");
+        let target = resolve_chat_image_path(&data_dir, &relative)?;
+        if target.exists() {
+            let existing = std::fs::read(&target).map_err(|error| error.to_string())?;
+            if existing == bytes {
+                stored.push(StoredChatImage { id, path: relative });
+                continue;
+            }
+            return Err("聊天图片标识冲突，请重新选择图片".to_string());
+        }
+        let temporary = temporary_target(&target);
+        if temporary.exists() {
+            std::fs::remove_file(&temporary).map_err(|error| error.to_string())?;
+        }
+        if let Err(error) =
+            std::fs::write(&temporary, bytes).and_then(|_| std::fs::rename(&temporary, &target))
+        {
+            let _ = std::fs::remove_file(&temporary);
+            for path in written {
+                let _ = std::fs::remove_file(path);
+            }
+            return Err(error.to_string());
+        }
+        written.push(target);
+        stored.push(StoredChatImage { id, path: relative });
+    }
+    Ok(stored)
+}
+
+#[tauri::command]
+fn read_chat_image(app: tauri::AppHandle, path: String) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let target = resolve_chat_image_path(&data_dir, &path)?;
+    let bytes = std::fs::read(target).map_err(|_| "聊天图片文件不存在或无法读取".to_string())?;
+    if bytes.is_empty() || bytes.len() > MAX_CHAT_IMAGE_BYTES {
+        return Err("聊天图片文件大小无效".to_string());
+    }
+    let extension = Path::new(&path)
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| "聊天图片路径无效".to_string())?;
+    if !has_chat_image_signature(extension, &bytes) {
+        return Err("聊天图片文件内容损坏".to_string());
+    }
+    Ok(BASE64.encode(bytes))
+}
+
+#[tauri::command]
+fn delete_chat_images(app: tauri::AppHandle, paths: Vec<String>) -> Result<(), String> {
+    if paths.len() > 256 {
+        return Err("一次删除的聊天图片过多".to_string());
+    }
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    for path in paths {
+        let target = resolve_chat_image_path(&data_dir, &path)?;
+        if target.exists() {
+            std::fs::remove_file(target).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+fn export_app_snapshot(
+    app: tauri::AppHandle,
+    chat_image_paths: Vec<String>,
+) -> Result<serde_json::Value, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let local_data_dir = app
+        .path()
+        .app_local_data_dir()
+        .map_err(|error| error.to_string())?;
     Ok(serde_json::json!({
         "databaseHex": read_optional_hex(&data_dir.join("nkg-ai-bot.db"))?,
         "vaultHex": read_optional_hex(&data_dir.join("secrets-auto.hold"))?,
         "deviceKeyHex": read_optional_hex(&local_data_dir.join("vault-device.key"))?,
         "strongholdSaltHex": read_optional_hex(&local_data_dir.join("stronghold-salt"))?,
+        "chatImages": export_chat_images(&data_dir, chat_image_paths)?,
     }))
 }
 
 #[tauri::command]
-fn save_migration_bundle(app: tauri::AppHandle, contents: String, filename: String) -> Result<String, String> {
-    if contents.is_empty() || contents.len() > 128 * 1024 * 1024 {
+fn save_migration_bundle(
+    app: tauri::AppHandle,
+    contents: String,
+    filename: String,
+) -> Result<String, String> {
+    if contents.is_empty() || contents.len() > MAX_MIGRATION_BUNDLE_BYTES {
         return Err("迁移包大小无效".to_string());
     }
     if filename.len() > 180
@@ -72,6 +234,7 @@ fn stage_app_import(
     vault_hex: Option<String>,
     device_key_hex: Option<String>,
     stronghold_salt_hex: Option<String>,
+    chat_images: Vec<MigrationChatImage>,
 ) -> Result<(), String> {
     if database_hex.is_empty() {
         return Err("迁移包缺少应用数据库".to_string());
@@ -86,7 +249,8 @@ fn stage_app_import(
     write_optional_hex_file(&pending_dir.join("secrets-auto.hold"), vault_hex.as_deref())?;
     write_optional_hex_file(&pending_dir.join("vault-device.key"), device_key_hex.as_deref())?;
     write_optional_hex_file(&pending_dir.join("stronghold-salt"), stronghold_salt_hex.as_deref())?;
-    std::fs::write(pending_dir.join("ready"), b"nkg-migration-v1")
+    stage_chat_images(&pending_dir, chat_images)?;
+    std::fs::write(pending_dir.join("ready"), b"nkg-migration-v2")
         .map_err(|error| error.to_string())?;
     Ok(())
 }
@@ -185,6 +349,9 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             runtime_platform,
             secret_vault_device_password,
+            save_chat_images,
+            read_chat_image,
+            delete_chat_images,
             export_app_snapshot,
             save_migration_bundle,
             stage_app_import,
@@ -203,6 +370,9 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         runtime_platform,
         secret_vault_device_password,
+        save_chat_images,
+        read_chat_image,
+        delete_chat_images,
         export_app_snapshot,
         save_migration_bundle,
         stage_app_import,
@@ -219,6 +389,9 @@ pub fn run() {
     let builder = builder.invoke_handler(tauri::generate_handler![
         runtime_platform,
         secret_vault_device_password,
+        save_chat_images,
+        read_chat_image,
+        delete_chat_images,
         export_app_snapshot,
         save_migration_bundle,
         stage_app_import,
@@ -249,6 +422,7 @@ fn apply_pending_import(app: &tauri::AppHandle) -> Result<(), String> {
     replace_optional_from_pending(&pending_dir.join("secrets-auto.hold"), &data_dir.join("secrets-auto.hold"))?;
     replace_optional_from_pending(&pending_dir.join("vault-device.key"), &local_data_dir.join("vault-device.key"))?;
     replace_optional_from_pending(&pending_dir.join("stronghold-salt"), &local_data_dir.join("stronghold-salt"))?;
+    replace_chat_images_from_pending(&pending_dir, &data_dir)?;
     for sidecar in [data_dir.join("nkg-ai-bot.db-wal"), data_dir.join("nkg-ai-bot.db-shm")] {
         if sidecar.exists() {
             std::fs::remove_file(sidecar).map_err(|error| error.to_string())?;
@@ -286,6 +460,142 @@ fn temporary_target(target: &Path) -> PathBuf {
     let mut value = target.as_os_str().to_os_string();
     value.push(".migration-tmp");
     PathBuf::from(value)
+}
+
+fn chat_image_extension(media_type: &str) -> Option<&'static str> {
+    match media_type {
+        "image/png" => Some("png"),
+        "image/jpeg" => Some("jpg"),
+        "image/webp" => Some("webp"),
+        _ => None,
+    }
+}
+
+fn has_chat_image_signature(extension: &str, bytes: &[u8]) -> bool {
+    match extension {
+        "png" => bytes.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "jpg" => bytes.starts_with(&[0xff, 0xd8, 0xff]),
+        "webp" => bytes.len() >= 12 && &bytes[..4] == b"RIFF" && &bytes[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
+fn resolve_chat_image_path(root: &Path, value: &str) -> Result<PathBuf, String> {
+    let path = Path::new(value);
+    let components = path.components().collect::<Vec<_>>();
+    if components.len() != 2
+        || components[0] != Component::Normal(CHAT_IMAGES_DIR.as_ref())
+        || !matches!(components[1], Component::Normal(_))
+    {
+        return Err("聊天图片路径无效".to_string());
+    }
+    let filename = components[1].as_os_str().to_string_lossy();
+    let Some((id, extension)) = filename.rsplit_once('.') else {
+        return Err("聊天图片路径无效".to_string());
+    };
+    if id.is_empty()
+        || id.len() > 80
+        || !id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        || !matches!(extension, "png" | "jpg" | "webp")
+    {
+        return Err("聊天图片路径无效".to_string());
+    }
+    Ok(root.join(CHAT_IMAGES_DIR).join(filename.as_ref()))
+}
+
+fn export_chat_images(
+    data_dir: &Path,
+    paths: Vec<String>,
+) -> Result<Vec<MigrationChatImage>, String> {
+    let mut unique = std::collections::BTreeSet::new();
+    let mut images = Vec::with_capacity(paths.len());
+    for path in paths {
+        if !unique.insert(path.clone()) {
+            continue;
+        }
+        let target = resolve_chat_image_path(data_dir, &path)?;
+        let bytes = std::fs::read(&target).map_err(|_| format!("聊天图片文件缺失：{path}"))?;
+        if bytes.is_empty() || bytes.len() > MAX_CHAT_IMAGE_BYTES {
+            return Err(format!("聊天图片文件大小无效：{path}"));
+        }
+        let extension = target
+            .extension()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("聊天图片路径无效：{path}"))?;
+        if !has_chat_image_signature(extension, &bytes) {
+            return Err(format!("聊天图片文件内容损坏：{path}"));
+        }
+        images.push(MigrationChatImage {
+            path,
+            data: BASE64.encode(bytes),
+        });
+    }
+    Ok(images)
+}
+
+fn stage_chat_images(pending_dir: &Path, images: Vec<MigrationChatImage>) -> Result<(), String> {
+    let target_root = pending_dir.join(CHAT_IMAGES_DIR);
+    std::fs::create_dir_all(&target_root).map_err(|error| error.to_string())?;
+    let mut total = 0_usize;
+    let mut unique = std::collections::BTreeSet::new();
+    for image in images {
+        if !unique.insert(image.path.clone()) {
+            return Err("迁移包包含重复的聊天图片路径".to_string());
+        }
+        let target = resolve_chat_image_path(pending_dir, &image.path)?;
+        let bytes = BASE64
+            .decode(image.data)
+            .map_err(|_| format!("聊天图片数据损坏：{}", image.path))?;
+        if bytes.is_empty() || bytes.len() > MAX_CHAT_IMAGE_BYTES {
+            return Err(format!("聊天图片文件大小无效：{}", image.path));
+        }
+        let extension = target
+            .extension()
+            .and_then(|value| value.to_str())
+            .ok_or_else(|| format!("聊天图片路径无效：{}", image.path))?;
+        if !has_chat_image_signature(extension, &bytes) {
+            return Err(format!("聊天图片格式与内容不匹配：{}", image.path));
+        }
+        total = total.saturating_add(bytes.len());
+        if total > MAX_MIGRATION_BUNDLE_BYTES {
+            return Err("迁移包中的聊天图片总大小过大".to_string());
+        }
+        std::fs::write(target, bytes).map_err(|error| error.to_string())?;
+    }
+    Ok(())
+}
+
+fn replace_chat_images_from_pending(pending_dir: &Path, data_dir: &Path) -> Result<(), String> {
+    let source = pending_dir.join(CHAT_IMAGES_DIR);
+    let target = data_dir.join(CHAT_IMAGES_DIR);
+    let temporary = temporary_target(&target);
+    if temporary.exists() {
+        std::fs::remove_dir_all(&temporary).map_err(|error| error.to_string())?;
+    }
+    copy_directory(&source, &temporary)?;
+    if target.exists() {
+        std::fs::remove_dir_all(&target).map_err(|error| error.to_string())?;
+    }
+    std::fs::rename(&temporary, &target).map_err(|error| error.to_string())
+}
+
+fn copy_directory(source: &Path, target: &Path) -> Result<(), String> {
+    std::fs::create_dir_all(target).map_err(|error| error.to_string())?;
+    if !source.exists() {
+        return Ok(());
+    }
+    for entry in std::fs::read_dir(source).map_err(|error| error.to_string())? {
+        let entry = entry.map_err(|error| error.to_string())?;
+        let file_type = entry.file_type().map_err(|error| error.to_string())?;
+        if !file_type.is_file() {
+            return Err("迁移图片目录包含无效内容".to_string());
+        }
+        let destination = target.join(entry.file_name());
+        std::fs::copy(entry.path(), destination).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn unique_download_path(directory: &Path, filename: &str) -> PathBuf {
@@ -339,8 +649,12 @@ fn decode_hex(value: &str) -> Result<Vec<u8>, String> {
 
 #[cfg(test)]
 mod migration_tests {
-    use super::generate_device_secret;
+    use super::{
+        export_chat_images, generate_device_secret, resolve_chat_image_path, stage_chat_images,
+        MigrationChatImage,
+    };
     use sqlx::{sqlite::SqlitePoolOptions, Row};
+    use std::path::Path;
 
     #[tokio::test]
     async fn local_schema_and_message_trigger_apply_atomically() {
@@ -446,6 +760,52 @@ mod migration_tests {
                 .await
                 .expect("foreign key check");
         assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[test]
+    fn chat_image_paths_are_scoped_to_the_managed_directory() {
+        let root = Path::new("app-data");
+        assert_eq!(
+            resolve_chat_image_path(root, "chat-images/image-1.png").unwrap(),
+            root.join("chat-images").join("image-1.png")
+        );
+        for invalid in [
+            "../secrets-auto.hold",
+            "chat-images/../secret.png",
+            "other/image-1.png",
+            "chat-images/nested/image-1.png",
+            "chat-images/image-1.gif",
+        ] {
+            assert!(resolve_chat_image_path(root, invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn stages_chat_images_as_real_files_for_import() {
+        let root = std::env::temp_dir().join(format!(
+            "nkg-chat-image-stage-{}-{}",
+            std::process::id(),
+            super::generate_device_secret()
+        ));
+        std::fs::create_dir_all(&root).expect("create test migration directory");
+        stage_chat_images(
+            &root,
+            vec![MigrationChatImage {
+                path: "chat-images/image-1.png".to_string(),
+                data: "iVBORw0KGgo=".to_string(),
+            }],
+        )
+        .expect("stage image");
+        assert_eq!(
+            std::fs::read(root.join("chat-images").join("image-1.png")).unwrap(),
+            b"\x89PNG\r\n\x1a\n"
+        );
+        let exported = export_chat_images(&root, vec!["chat-images/image-1.png".to_string()])
+            .expect("export staged image");
+        assert_eq!(exported.len(), 1);
+        assert_eq!(exported[0].path, "chat-images/image-1.png");
+        assert_eq!(exported[0].data, "iVBORw0KGgo=");
+        std::fs::remove_dir_all(root).expect("remove test migration directory");
     }
 
     #[tokio::test]

@@ -9,6 +9,7 @@ import {
   type ChatImageAttachment,
   type ChatWebReference,
 } from "./chatContent";
+import { nativeChatImageStore, type ChatImageStore } from "./chatImageStore";
 import { listRelevantMemories, type MemoryItem } from "./learningRepository";
 import type { RemoteMemory } from "./memoryGateway";
 import {
@@ -148,6 +149,7 @@ export class LocalChatSession {
     private readonly store: ChatStore = sqliteChatStore,
     private readonly webSearch: WebSearchClient = providerSession,
     remoteMemory: RemoteMemoryClient | unknown = providerSession,
+    private readonly imageStore: ChatImageStore = nativeChatImageStore,
   ) {
     this.remoteMemory = isRemoteMemoryClient(remoteMemory) ? remoteMemory : providerSession;
   }
@@ -160,30 +162,42 @@ export class LocalChatSession {
     const content = text.trim();
     const images = options.images ?? [];
     if (!content && !images.length) throw new Error("消息或图片不能为空");
-    const storedContent = createChatMessageContent(content, images);
-    const [history, conversation] = await Promise.all([
-      this.store.listMessages(this.conversationId),
-      this.store.getConversation(this.conversationId),
-    ]);
-    const skill = await this.store.resolveAssistantSkill(
-      conversation?.assistantId,
-      conversation?.assistantVersion,
-    );
-    await this.store.upsertConversation({
-      id: this.conversationId,
-      title: firstTitle(history, storedContent),
-      ...(conversation?.roleId ? { roleId: conversation.roleId } : {}),
-      assistantId: skill.assistantId,
-      assistantVersion: skill.version,
-      ...(conversation?.providerId ? { providerId: conversation.providerId } : {}),
-      ...(conversation?.modelId ? { modelId: conversation.modelId } : {}),
-    });
-    const user = await this.store.appendMessage({
-      id: crypto.randomUUID(),
-      conversationId: this.conversationId,
-      role: "user",
-      content: storedContent,
-    });
+    const storedImages = await this.imageStore.persist(images);
+    const storedContent = createChatMessageContent(content, storedImages);
+    const newPaths = storedImages.flatMap((image, index) =>
+      !images[index]?.path && image.path ? [image.path] : []);
+    let history: LocalMessage[];
+    let conversation: LocalConversation | undefined;
+    let skill: AssistantSkillVersion;
+    let user: LocalMessage;
+    try {
+      [history, conversation] = await Promise.all([
+        this.store.listMessages(this.conversationId),
+        this.store.getConversation(this.conversationId),
+      ]);
+      skill = await this.store.resolveAssistantSkill(
+        conversation?.assistantId,
+        conversation?.assistantVersion,
+      );
+      await this.store.upsertConversation({
+        id: this.conversationId,
+        title: firstTitle(history, storedContent),
+        ...(conversation?.roleId ? { roleId: conversation.roleId } : {}),
+        assistantId: skill.assistantId,
+        assistantVersion: skill.version,
+        ...(conversation?.providerId ? { providerId: conversation.providerId } : {}),
+        ...(conversation?.modelId ? { modelId: conversation.modelId } : {}),
+      });
+      user = await this.store.appendMessage({
+        id: crypto.randomUUID(),
+        conversationId: this.conversationId,
+        role: "user",
+        content: storedContent,
+      });
+    } catch (error) {
+      await this.imageStore.delete(newPaths).catch(() => undefined);
+      throw error;
+    }
 
     return this.completeAssistantTurn({
       user,
@@ -267,13 +281,14 @@ export class LocalChatSession {
       searchResults,
     );
     const contextImages = collectContextImages(promptMessages);
+    const hydratedImages = await Promise.all(contextImages.map(async (image) => ({
+      data: await this.imageStore.readBase64(image),
+      mediaType: image.mediaType,
+    })));
     const runtimeInput = contextImages.length > 0
       ? {
         prompt,
-        images: contextImages.map((image) => ({
-          data: image.data,
-          mediaType: image.mediaType,
-        })),
+        images: hydratedImages,
       }
       : prompt;
     let answer = "";

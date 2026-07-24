@@ -7,7 +7,6 @@ import {
   useState,
 } from "react";
 import {
-  chatImageDataUrl,
   chatMessageImages,
   chatMessageReferences,
   chatMessageReasoning,
@@ -19,6 +18,10 @@ import {
   type ChatImageAttachment,
   type ChatWebReference,
 } from "./chatContent";
+import {
+  deleteStoredChatImages,
+  loadChatImageDataUrl,
+} from "./chatImageStore";
 import {
   LocalChatSession,
   type ChatActivity,
@@ -61,6 +64,7 @@ import {
   deleteConversation,
   getStoredFlow,
   listConversations,
+  listMessages,
   upsertConversation,
   type LocalConversation,
   type LocalMessage,
@@ -358,7 +362,9 @@ export function ChatPage({
 
   async function removeConversation(id: string) {
     stopGeneration();
+    const removedImages = (await listMessages(id)).flatMap((message) => chatMessageImages(message.content));
     await deleteConversation(id);
+    void deleteStoredChatImages(removedImages).catch(() => undefined);
     const remaining = conversations.filter((conversation) => conversation.id !== id);
     setDrafts((current) => {
       const next = { ...current };
@@ -773,7 +779,7 @@ export function ChatPage({
                     <div className={`message-image-grid count-${Math.min(images.length, 4)}`}>
                       {images.map((image) => (
                         <button aria-label={`预览图片 ${image.name}`} key={image.id} type="button" onClick={() => setPreviewImage(image)}>
-                          <img alt={image.name} src={chatImageDataUrl(image)} />
+                          <ChatImage image={image} />
                         </button>
                       ))}
                     </div>
@@ -862,7 +868,7 @@ export function ChatPage({
               <div className="composer-attachments" aria-label="待发送图片">
                 {pendingImages.map((image) => (
                   <div key={image.id}>
-                    <img alt={image.name} src={chatImageDataUrl(image)} />
+                    <ChatImage image={image} />
                     <button aria-label={`移除图片 ${image.name}`} disabled={busy} type="button" onClick={() => removeDraftImage(image.id)}><CloseIcon /></button>
                     <span>{image.name}</span>
                   </div>
@@ -964,7 +970,7 @@ export function ChatPage({
         <div className="settings-layer chat-image-preview-layer" role="presentation" onMouseDown={() => setPreviewImage(undefined)}>
           <section aria-label={`图片预览 ${previewImage.name}`} aria-modal="true" className="chat-image-preview" role="dialog" onMouseDown={(event) => event.stopPropagation()}>
             <button aria-label="关闭图片预览" type="button" onClick={() => setPreviewImage(undefined)}><CloseIcon /></button>
-            <img alt={previewImage.name} src={chatImageDataUrl(previewImage)} />
+            <ChatImage image={previewImage} />
             <span>{previewImage.name}</span>
           </section>
         </div>
@@ -1065,6 +1071,30 @@ function ChatActivityStatus({ activity }: { activity: ChatActivity }) {
       <span>{activity.label}</span>
     </div>
   );
+}
+
+function ChatImage({ image }: { image: ChatImageAttachment }) {
+  const [source, setSource] = useState(() => image.data ? `data:${image.mediaType};base64,${image.data}` : "");
+  const [failed, setFailed] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    setFailed(false);
+    void loadChatImageDataUrl(image)
+      .then((value) => {
+        if (active) setSource(value);
+      })
+      .catch(() => {
+        if (active) setFailed(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, [image.data, image.mediaType, image.name, image.path]);
+
+  return failed
+    ? <span className="chat-image-missing" role="img" aria-label={`图片 ${image.name} 无法读取`}>图片无法读取</span>
+    : <img alt={image.name} aria-busy={!source} src={source || undefined} />;
 }
 
 function Welcome({

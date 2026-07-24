@@ -16,8 +16,9 @@
 - `apps/client`：Tauri 2 + React 客户端、Rust sidecar 生命周期、本地 SQLite
   schema、Provider/API Key 设置页、Stronghold vault、移动原生 HTTP adapter 与
   Android 原生工程；启动/恢复时会把 SQLite Flow 目录同步到当前 Runtime，移动端
-  挂起会取消活动 run 并中止流式请求；内置日常聊天同样通过 Flow 执行，消息仅写入
-  本地 SQLite；数据迁移页支持同一 WiFi 或设备热点内自动发现，通过一次性配对码和
+  挂起会取消活动 run 并中止流式请求；内置日常聊天同样通过 Flow 执行，支持文字与
+  PNG/JPEG/WebP 图片输入，消息在 SQLite 中只保存图片相对路径，原图独立存放于应用数据目录；
+  数据迁移页会连同原图打包，并支持同一 WiFi 或设备热点内自动发现，通过一次性配对码和
   端到端加密直接同步完整本地数据；内置“电脑配置顾问”可在空对话的“助手技能”中选择，提供预算装机、
   兼容性检查、现有配置诊断和升级建议；启用 Flow 自带的联盟商品能力后，同一个电脑顾问
   Flow 会依次规划查询、解析计划、检索筛选、生成推广链接并输出带返利披露的建议；

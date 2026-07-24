@@ -7,8 +7,9 @@ export interface ChatImageAttachment {
   id: string;
   name: string;
   mediaType: (typeof CHAT_IMAGE_MEDIA_TYPES)[number];
-  data: string;
   bytes: number;
+  path?: string;
+  data?: string;
 }
 
 export interface MultimodalChatContent {
@@ -82,7 +83,7 @@ export function chatMessageSummary(content: unknown): string {
 }
 
 export function chatImageDataUrl(image: ChatImageAttachment): string {
-  return `data:${image.mediaType};base64,${image.data}`;
+  return image.data ? `data:${image.mediaType};base64,${image.data}` : "";
 }
 
 export async function filesToChatImages(
@@ -182,15 +183,21 @@ function isSafeWebUrl(value: string): boolean {
 function isChatImageAttachment(value: unknown): value is ChatImageAttachment {
   if (!value || typeof value !== "object") return false;
   const image = value as Partial<ChatImageAttachment>;
+  const hasStoredPath = typeof image.path === "string" && isChatImagePath(image.path);
+  const hasLegacyData = typeof image.data === "string" && image.data.length > 0;
   return typeof image.id === "string"
     && typeof image.name === "string"
-    && typeof image.data === "string"
     && typeof image.bytes === "number"
     && image.bytes > 0
+    && (hasStoredPath || hasLegacyData)
     && CHAT_IMAGE_MEDIA_TYPES.includes(image.mediaType as ChatImageAttachment["mediaType"]);
 }
 
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
+export function isChatImagePath(value: string): boolean {
+  return /^chat-images\/[A-Za-z0-9-]{1,80}\.(?:png|jpg|webp)$/.test(value);
+}
+
+export function arrayBufferToBase64(buffer: ArrayBuffer): string {
   const bytes = new Uint8Array(buffer);
   const chunks: string[] = [];
   const chunkSize = 0x8000;

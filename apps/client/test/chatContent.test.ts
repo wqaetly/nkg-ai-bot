@@ -47,7 +47,7 @@ describe("chat multimodal content", () => {
     }]);
   });
 
-  it("stores image metadata and base64 without losing the message text", async () => {
+  it("prepares image metadata and base64 without losing the message text", async () => {
     const file = new File([new Uint8Array([1, 2, 3])], "sample.png", { type: "image/png" });
     const [image] = await filesToChatImages([file]);
     const content = createChatMessageContent("请描述", [image!]);

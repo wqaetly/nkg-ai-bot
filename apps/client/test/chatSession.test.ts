@@ -7,6 +7,7 @@ import {
   type AssistantSkillVersion,
 } from "../src/assistantSkills";
 import type { ChatImageAttachment } from "../src/chatContent";
+import type { ChatImageStore } from "../src/chatImageStore";
 
 const defaultSkill: AssistantSkillVersion = {
   assistantId: "builtin_assistant",
@@ -77,6 +78,26 @@ function memoryStore(initial: LocalMessage[] = []): ChatStore & { messages: Loca
     },
   };
   return store;
+}
+
+function memoryImageStore(): ChatImageStore {
+  const data = new Map<string, string>();
+  return {
+    async persist(images) {
+      return images.map((image) => {
+        if (image.data) data.set(image.id, image.data);
+        const { data: _data, ...stored } = image;
+        const extension = image.mediaType === "image/jpeg"
+          ? "jpg"
+          : image.mediaType.split("/")[1];
+        return { ...stored, path: image.path ?? `chat-images/${image.id}.${extension}` };
+      });
+    },
+    async readBase64(image) {
+      return image.data ?? data.get(image.id) ?? "";
+    },
+    async delete() {},
+  };
 }
 
 describe("LocalChatSession", () => {
@@ -247,12 +268,25 @@ describe("LocalChatSession", () => {
       bytes: 5,
     };
 
-    await new LocalChatSession("c1", runtime, store).send("这是什么？", { images: [image] });
+    await new LocalChatSession(
+      "c1",
+      runtime,
+      store,
+      undefined,
+      undefined,
+      memoryImageStore(),
+    ).send("这是什么？", { images: [image] });
 
     expect(store.messages[0]?.content).toEqual({
       type: "multimodal",
       text: "这是什么？",
-      images: [image],
+      images: [{
+        id: "image-1",
+        name: "square.png",
+        mediaType: "image/png",
+        bytes: 5,
+        path: "chat-images/image-1.png",
+      }],
     });
     expect(runtime.stream).toHaveBeenCalledWith(
       "builtin_chat",
@@ -280,13 +314,23 @@ describe("LocalChatSession", () => {
       bytes: 5,
     };
 
-    await new LocalChatSession("c1", runtime, store, webSearch).send("", {
+    await new LocalChatSession(
+      "c1",
+      runtime,
+      store,
+      webSearch,
+      undefined,
+      memoryImageStore(),
+    ).send("", {
       images: [image],
       webSearch: true,
     });
 
     expect(webSearch.searchWeb).not.toHaveBeenCalled();
-    expect(store.messages[0]?.content).toMatchObject({ text: "", images: [image] });
+    expect(store.messages[0]?.content).toMatchObject({
+      text: "",
+      images: [{ path: "chat-images/image-1.webp" }],
+    });
   });
 
   it("executes the immutable Assistant Skill bound to the conversation", async () => {
