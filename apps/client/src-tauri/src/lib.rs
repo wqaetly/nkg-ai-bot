@@ -317,6 +317,12 @@ pub fn run() {
             sql: include_str!("../migrations/0009_conversation_groups.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "add_context_compression",
+            sql: include_str!("../migrations/0010_context_compression.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()
@@ -699,6 +705,10 @@ mod migration_tests {
             .execute(&pool)
             .await
             .expect("apply legacy conversation groups migration");
+        sqlx::raw_sql(include_str!("../migrations/0010_context_compression.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply context compression migration");
 
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
             .fetch_all(&pool)
@@ -717,6 +727,7 @@ mod migration_tests {
                 "assistant_skill_usage",
                 "assistant_versions",
                 "assistants",
+                "conversation_compressions",
                 "conversation_groups",
                 "conversations",
                 "eval_case_results",
@@ -760,6 +771,73 @@ mod migration_tests {
                 .await
                 .expect("foreign key check");
         assert_eq!(foreign_key_violations, 0);
+    }
+
+    #[tokio::test]
+    async fn context_compression_schema_tracks_model_windows_and_summary_lifecycle() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("open in-memory sqlite");
+        for migration in [
+            include_str!("../migrations/0001_initial.sql"),
+            include_str!("../migrations/0008_provider_models.sql"),
+            include_str!("../migrations/0010_context_compression.sql"),
+        ] {
+            sqlx::raw_sql(migration)
+                .execute(&pool)
+                .await
+                .expect("apply migration");
+        }
+
+        sqlx::query(
+            "INSERT INTO provider_profiles
+             (id, name, base_url, default_model, enabled_models_json, model_context_windows_json, api_key_ref, created_at, updated_at)
+             VALUES ('p1', 'OpenAI', 'https://example.test/v1', 'model-a', '[\"model-a\"]', '{\"model-a\":128000}', 'key', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert provider context window");
+        let context_windows: String = sqlx::query_scalar(
+            "SELECT model_context_windows_json FROM provider_profiles WHERE id='p1'",
+        )
+        .fetch_one(&pool)
+        .await
+        .expect("read provider context windows");
+        assert_eq!(context_windows, "{\"model-a\":128000}");
+
+        sqlx::query(
+            "INSERT INTO conversations (id, title, created_at, updated_at) VALUES ('c1', '', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert conversation");
+        sqlx::query(
+            "INSERT INTO conversation_compressions
+             (id, conversation_id, through_sequence, summary, source_token_count, summary_token_count, model_id, status, created_at, updated_at)
+             VALUES ('compression-1', 'c1', 4, 'summary', 5000, 500, 'model-a', 'completed', 2, 2)",
+        )
+        .execute(&pool)
+        .await
+        .expect("insert completed compression");
+
+        assert!(sqlx::query(
+            "INSERT INTO conversation_compressions
+             (id, conversation_id, through_sequence, summary, source_token_count, status, created_at, updated_at)
+             VALUES ('invalid-status', 'c1', 4, '', 0, 'unknown', 2, 2)",
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+        assert!(sqlx::query(
+            "INSERT INTO conversation_compressions
+             (id, conversation_id, through_sequence, summary, source_token_count, status, created_at, updated_at)
+             VALUES ('missing-conversation', 'missing', 4, '', 0, 'pending', 2, 2)",
+        )
+        .execute(&pool)
+        .await
+        .is_err());
     }
 
     #[test]

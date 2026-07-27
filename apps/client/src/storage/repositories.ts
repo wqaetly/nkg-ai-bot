@@ -48,11 +48,38 @@ export interface LocalMessage {
   createdAt: number;
 }
 
+export type ConversationCompressionStatus = "pending" | "completed" | "failed" | "stale";
+
+export interface ConversationCompression extends Timestamps {
+  id: string;
+  conversationId: string;
+  throughSequence: number;
+  summary: string;
+  sourceTokenCount: number;
+  summaryTokenCount: number;
+  modelId?: string;
+  status: ConversationCompressionStatus;
+  error?: string;
+}
+
 type RoleRow = { id: string; name: string; system_prompt: string; avatar_uri: string | null; created_at: number; updated_at: number };
 type FlowRow = { id: string; version: string; name: string; graph_json: string; created_at: number; updated_at: number };
 type AssistantRow = { id: string; name: string; description: string; flow_id: string; flow_version: string; created_at: number; updated_at: number };
 type ConversationRow = { id: string; title: string; role_id: string | null; assistant_id: string | null; assistant_version: string | null; provider_id: string | null; model_id: string | null; created_at: number; updated_at: number };
 type MessageRow = { id: string; conversation_id: string; sequence: number; role: LocalMessageRole; content_json: string; created_at: number };
+type ConversationCompressionRow = {
+  id: string;
+  conversation_id: string;
+  through_sequence: number;
+  summary: string;
+  source_token_count: number;
+  summary_token_count: number;
+  model_id: string | null;
+  status: ConversationCompressionStatus;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+};
 
 export async function listRoles(client?: DatabaseClient): Promise<LocalRole[]> {
   const database = client ?? await getDatabase();
@@ -246,6 +273,107 @@ export async function updateMessageContent(
   return { id: row.id, conversationId: row.conversation_id, sequence: row.sequence, role: row.role, content: JSON.parse(row.content_json) as unknown, createdAt: row.created_at };
 }
 
+export async function getLatestConversationCompression(
+  conversationId: string,
+  maxThroughSequence = Number.MAX_SAFE_INTEGER,
+  client?: DatabaseClient,
+): Promise<ConversationCompression | undefined> {
+  requireText(conversationId, "Conversation id");
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<ConversationCompressionRow[]>(
+    `SELECT * FROM conversation_compressions
+      WHERE conversation_id=$1 AND status='completed' AND through_sequence <= $2
+      ORDER BY through_sequence DESC, updated_at DESC
+      LIMIT 1`,
+    [conversationId, maxThroughSequence],
+  );
+  return row ? mapConversationCompression(row) : undefined;
+}
+
+export async function startConversationCompression(
+  input: Pick<
+    ConversationCompression,
+    "id" | "conversationId" | "throughSequence" | "sourceTokenCount" | "modelId"
+  >,
+  client?: DatabaseClient,
+): Promise<void> {
+  requireText(input.id, "Compression id");
+  requireText(input.conversationId, "Conversation id");
+  if (!Number.isInteger(input.throughSequence) || input.throughSequence < 0) {
+    throw new Error("Compression sequence must be a non-negative integer");
+  }
+  if (!Number.isInteger(input.sourceTokenCount) || input.sourceTokenCount < 0) {
+    throw new Error("Compression token count must be a non-negative integer");
+  }
+  const database = client ?? await getDatabase();
+  const now = Date.now();
+  await database.execute(
+    `INSERT INTO conversation_compressions
+       (id, conversation_id, through_sequence, summary, source_token_count,
+        summary_token_count, model_id, status, error, created_at, updated_at)
+     VALUES ($1, $2, $3, '', $4, 0, $5, 'pending', NULL, $6, $6)`,
+    [
+      input.id,
+      input.conversationId,
+      input.throughSequence,
+      input.sourceTokenCount,
+      input.modelId ?? null,
+      now,
+    ],
+  );
+}
+
+export async function completeConversationCompression(
+  id: string,
+  summary: string,
+  summaryTokenCount: number,
+  client?: DatabaseClient,
+): Promise<void> {
+  requireText(id, "Compression id");
+  requireText(summary, "Compression summary");
+  if (!Number.isInteger(summaryTokenCount) || summaryTokenCount <= 0) {
+    throw new Error("Compression summary token count must be a positive integer");
+  }
+  const database = client ?? await getDatabase();
+  const result = await database.execute(
+    `UPDATE conversation_compressions
+        SET summary=$2, summary_token_count=$3, status='completed', error=NULL, updated_at=$4
+      WHERE id=$1 AND status='pending'`,
+    [id, summary.trim(), summaryTokenCount, Date.now()],
+  );
+  if (result.rowsAffected !== 1) throw new Error("Pending compression was not found");
+}
+
+export async function failConversationCompression(
+  id: string,
+  error: string,
+  client?: DatabaseClient,
+): Promise<void> {
+  requireText(id, "Compression id");
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `UPDATE conversation_compressions
+        SET status='failed', error=$2, updated_at=$3
+      WHERE id=$1 AND status='pending'`,
+    [id, error.trim().slice(0, 1_000) || "Context compression failed", Date.now()],
+  );
+}
+
+export async function invalidateConversationCompressionsFrom(
+  conversationId: string,
+  sequence: number,
+  client?: DatabaseClient,
+): Promise<void> {
+  requireText(conversationId, "Conversation id");
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `UPDATE conversation_compressions
+        SET status='stale', updated_at=$3
+      WHERE conversation_id=$1 AND status='completed' AND through_sequence >= $2`,
+    [conversationId, sequence, Date.now()],
+  );
+}
+
 function requireText(value: string, label: string): void {
   if (!value.trim()) throw new Error(`${label} is required`);
 }
@@ -259,6 +387,22 @@ function mapConversation(row: ConversationRow): LocalConversation {
     ...(row.assistant_version ? { assistantVersion: row.assistant_version } : {}),
     ...(row.provider_id ? { providerId: row.provider_id } : {}),
     ...(row.model_id ? { modelId: row.model_id } : {}),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapConversationCompression(row: ConversationCompressionRow): ConversationCompression {
+  return {
+    id: row.id,
+    conversationId: row.conversation_id,
+    throughSequence: row.through_sequence,
+    summary: row.summary,
+    sourceTokenCount: row.source_token_count,
+    summaryTokenCount: row.summary_token_count,
+    ...(row.model_id ? { modelId: row.model_id } : {}),
+    status: row.status,
+    ...(row.error ? { error: row.error } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

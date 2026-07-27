@@ -67,12 +67,15 @@ describe("ProviderSession", () => {
       baseUrl: "https://example.test/v1",
       defaultModel: "model-1",
       enabledModels: ["model-1", "model-2"],
+      modelContextWindows: { "model-1": 128_000, "model-2": 200_000 },
       apiKey: "sk-secret",
     });
 
     expect(saved.selectedProviderId).toBe("p1");
     expect(store.profiles.get("p1")?.apiKeyRef).toBe("provider:p1:api-key");
     expect(JSON.stringify(store.profiles.get("p1"))).not.toContain("sk-secret");
+    expect(session.getModelContextWindow("p1", "model-2")).toBe(200_000);
+    expect(session.getModelContextWindow("p1", "unknown")).toBe(128_000);
     await expect(session.createRunOptions()).resolves.toMatchObject({
       envOverrides: {
         variables: { LLM_BASE_URL: "https://example.test/v1", LLM_DEFAULT_MODEL: "model-1" },

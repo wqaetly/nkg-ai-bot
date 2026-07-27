@@ -7,6 +7,7 @@ import {
   useState,
 } from "react";
 import {
+  chatMessageFailed,
   chatMessageImages,
   chatMessageReferences,
   chatMessageReasoning,
@@ -768,11 +769,12 @@ export function ChatPage({
 
             {visible.map((message) => {
               const text = chatMessageText(message.content);
+              const failed = chatMessageFailed(message.content);
               const reasoning = chatMessageReasoning(message.content);
               const references = chatMessageReferences(message.content);
               const images = chatMessageImages(message.content);
               return (
-              <article className={`message ${message.role}`} key={message.id}>
+              <article className={`message ${message.role}${failed ? " failed" : ""}`} key={message.id}>
                 <div className="message-body">
                   {message.role === "assistant" ? <strong className="message-author">NKG</strong> : null}
                   {images.length ? (
@@ -797,15 +799,16 @@ export function ChatPage({
                         runtimeEvents={flowEventsByMessage[message.id]}
                       />
                     : null}
+                  {failed ? <div className="message-failure-label"><AlertIcon />Flow 执行失败</div> : null}
                   {text ? message.role === "assistant"
                     ? <MarkdownContent className="message-content" content={text} />
                     : <div className="message-content">{text}</div>
                   : null}
                   <div className="message-actions">
-                    {message.role === "assistant" ? <button disabled={busy || !unlocked} type="button" onClick={() => void regenerateMessage(message)}><RegenerateIcon />重新生成</button> : null}
+                    {message.role === "assistant" ? <button disabled={busy || !unlocked} type="button" onClick={() => void regenerateMessage(message)}><RegenerateIcon />{failed ? "重试" : "重新生成"}</button> : null}
                     <button type="button" onClick={() => void copyMessage(message)}>{copiedId === message.id ? <CheckIcon /> : <CopyIcon />}{copiedId === message.id ? "已复制" : "复制"}</button>
-                    <button type="button" onClick={() => void rememberMessage(message)}><MemoryIcon />记住</button>
-                    {message.role === "assistant" ? (
+                    {!failed ? <button type="button" onClick={() => void rememberMessage(message)}><MemoryIcon />记住</button> : null}
+                    {message.role === "assistant" && !failed ? (
                       <>
                         <button aria-label="这条回复有帮助" className={feedback[message.id] === "positive" ? "active" : ""} type="button" onClick={() => void rateMessage(message, "positive")}><ThumbUpIcon /></button>
                         <button aria-label="这条回复需要改进" className={feedback[message.id] === "negative" ? "active negative" : ""} type="button" onClick={() => { void rateMessage(message, "negative"); setCorrectionMessageId(message.id); setCorrectionDraft(""); }}><ThumbDownIcon /></button>

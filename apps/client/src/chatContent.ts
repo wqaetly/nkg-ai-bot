@@ -23,6 +23,7 @@ export interface AssistantChatContent {
   text: string;
   reasoning: string;
   references?: ChatWebReference[];
+  failed?: true;
 }
 
 export interface ChatWebReference {
@@ -58,9 +59,22 @@ export function createAssistantMessageContent(
   };
 }
 
+export function createAssistantFailureContent(message: string): AssistantChatContent {
+  return {
+    type: "assistant",
+    text: message.trim() || "Flow 执行失败",
+    reasoning: "",
+    failed: true,
+  };
+}
+
 export function chatMessageText(content: unknown): string {
   if (typeof content === "string") return content;
   return readMultimodalChatContent(content)?.text ?? readAssistantChatContent(content)?.text ?? "";
+}
+
+export function chatMessageFailed(content: unknown): boolean {
+  return readAssistantChatContent(content)?.failed === true;
 }
 
 export function chatMessageReasoning(content: unknown): string {
@@ -131,7 +145,13 @@ function readMultimodalChatContent(content: unknown): MultimodalChatContent | un
 
 function readAssistantChatContent(content: unknown): AssistantChatContent | undefined {
   if (!content || typeof content !== "object") return undefined;
-  const candidate = content as { type?: unknown; text?: unknown; reasoning?: unknown; references?: unknown };
+  const candidate = content as {
+    type?: unknown;
+    text?: unknown;
+    reasoning?: unknown;
+    references?: unknown;
+    failed?: unknown;
+  };
   if (candidate.type !== "assistant"
     || typeof candidate.text !== "string"
     || typeof candidate.reasoning !== "string") {
@@ -145,6 +165,7 @@ function readAssistantChatContent(content: unknown): AssistantChatContent | unde
     text: candidate.text,
     reasoning: candidate.reasoning,
     ...(references.length ? { references } : {}),
+    ...(candidate.failed === true ? { failed: true } : {}),
   };
 }
 

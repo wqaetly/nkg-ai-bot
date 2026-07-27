@@ -6,6 +6,9 @@ const SELECTED_PROVIDER_KEY = "selected_provider_id";
 const WEB_SEARCH_CONFIG_KEY = "web_search_config";
 const MEMORY_SERVICE_CONFIG_KEY = "memory_service_config";
 const AFFILIATE_COMMERCE_CONFIG_KEY = "affiliate_commerce_config";
+export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
+export const MIN_MODEL_CONTEXT_WINDOW = 4_096;
+export const MAX_MODEL_CONTEXT_WINDOW = 2_000_000;
 let databasePromise: Promise<Database> | undefined;
 
 export interface DatabaseClient {
@@ -27,6 +30,7 @@ export interface ProviderProfile {
   baseUrl: string;
   defaultModel: string;
   enabledModels: string[];
+  modelContextWindows?: Record<string, number>;
   apiKeyRef: string;
   createdAt: number;
   updatedAt: number;
@@ -38,6 +42,7 @@ export interface ProviderProfileInput {
   baseUrl: string;
   defaultModel: string;
   enabledModels: string[];
+  modelContextWindows?: Record<string, number>;
   apiKeyRef: string;
 }
 
@@ -64,6 +69,7 @@ interface ProviderProfileRow {
   base_url: string;
   default_model: string;
   enabled_models_json: string;
+  model_context_windows_json: string;
   api_key_ref: string;
   created_at: number;
   updated_at: number;
@@ -78,7 +84,8 @@ export async function listProviderProfiles(
 ): Promise<ProviderProfile[]> {
   const database = client ?? await getDatabase();
   const rows = await database.select<ProviderProfileRow[]>(
-    `SELECT id, name, base_url, default_model, enabled_models_json, api_key_ref, created_at, updated_at
+    `SELECT id, name, base_url, default_model, enabled_models_json, model_context_windows_json,
+            api_key_ref, created_at, updated_at
        FROM provider_profiles
       ORDER BY updated_at DESC`,
   );
@@ -91,7 +98,8 @@ export async function getProviderProfile(
 ): Promise<ProviderProfile | undefined> {
   const database = client ?? await getDatabase();
   const [row] = await database.select<ProviderProfileRow[]>(
-    `SELECT id, name, base_url, default_model, enabled_models_json, api_key_ref, created_at, updated_at
+    `SELECT id, name, base_url, default_model, enabled_models_json, model_context_windows_json,
+            api_key_ref, created_at, updated_at
        FROM provider_profiles WHERE id = $1`,
     [id],
   );
@@ -107,13 +115,15 @@ export async function upsertProviderProfile(
   const now = Date.now();
   await database.execute(
     `INSERT INTO provider_profiles
-       (id, name, base_url, default_model, enabled_models_json, api_key_ref, created_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $7)
+       (id, name, base_url, default_model, enabled_models_json, model_context_windows_json,
+        api_key_ref, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
      ON CONFLICT(id) DO UPDATE SET
        name = excluded.name,
        base_url = excluded.base_url,
        default_model = excluded.default_model,
        enabled_models_json = excluded.enabled_models_json,
+       model_context_windows_json = excluded.model_context_windows_json,
        api_key_ref = excluded.api_key_ref,
        updated_at = excluded.updated_at`,
     [
@@ -122,6 +132,7 @@ export async function upsertProviderProfile(
       profile.baseUrl,
       profile.defaultModel,
       JSON.stringify(profile.enabledModels),
+      JSON.stringify(profile.modelContextWindows),
       profile.apiKeyRef,
       now,
     ],
@@ -275,7 +286,9 @@ export async function setAffiliateCommerceConfig(
   return config;
 }
 
-export function normalizeProviderProfile(input: ProviderProfileInput): ProviderProfileInput {
+export function normalizeProviderProfile(
+  input: ProviderProfileInput,
+): ProviderProfileInput & { modelContextWindows: Record<string, number> } {
   const id = input.id.trim();
   const name = input.name.trim();
   const defaultModel = input.defaultModel.trim();
@@ -287,6 +300,10 @@ export function normalizeProviderProfile(input: ProviderProfileInput): ProviderP
   if (!enabledModels.includes(defaultModel)) {
     throw new Error("Default model must be included in enabled models");
   }
+  const modelContextWindows = normalizeModelContextWindows(
+    input.modelContextWindows,
+    enabledModels,
+  );
   const url = new URL(input.baseUrl.trim());
   if (url.protocol !== "https:" && url.protocol !== "http:") {
     throw new Error("Provider API URL must use HTTP or HTTPS");
@@ -303,6 +320,7 @@ export function normalizeProviderProfile(input: ProviderProfileInput): ProviderP
     baseUrl: url.toString().replace(/\/$/, ""),
     defaultModel,
     enabledModels,
+    modelContextWindows,
     apiKeyRef,
   };
 }
@@ -395,6 +413,7 @@ function mapProviderProfile(row: ProviderProfileRow): ProviderProfile {
     baseUrl: row.base_url,
     defaultModel: row.default_model,
     enabledModels: parseModels(row.enabled_models_json, row.default_model),
+    modelContextWindows: parseModelContextWindows(row.model_context_windows_json),
     apiKeyRef: row.api_key_ref,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
@@ -416,4 +435,50 @@ function parseModels(json: string, fallback: string): string[] {
     // Fall through to the legacy default model.
   }
   return [fallback];
+}
+
+export function resolveModelContextWindow(
+  profile: Pick<ProviderProfile, "modelContextWindows"> | undefined,
+  modelId: string | undefined,
+): number {
+  const configured = modelId ? profile?.modelContextWindows?.[modelId] : undefined;
+  return normalizeContextWindow(configured) ?? DEFAULT_MODEL_CONTEXT_WINDOW;
+}
+
+function normalizeModelContextWindows(
+  input: Record<string, number> | undefined,
+  enabledModels: string[],
+): Record<string, number> {
+  return Object.fromEntries(
+    enabledModels
+      .map((model) => [
+        model,
+        normalizeContextWindow(input?.[model]) ?? DEFAULT_MODEL_CONTEXT_WINDOW,
+      ] as const)
+      .sort(([left], [right]) => left.localeCompare(right)),
+  );
+}
+
+function parseModelContextWindows(json: string): Record<string, number> {
+  try {
+    const value = JSON.parse(json) as unknown;
+    if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+    return Object.fromEntries(
+      Object.entries(value)
+        .map(([model, tokens]) => [model.trim(), normalizeContextWindow(tokens)] as const)
+        .filter((entry): entry is readonly [string, number] =>
+          Boolean(entry[0]) && entry[1] !== undefined)
+        .sort(([left], [right]) => left.localeCompare(right)),
+    );
+  } catch {
+    return {};
+  }
+}
+
+function normalizeContextWindow(value: unknown): number | undefined {
+  if (typeof value !== "number" || !Number.isFinite(value)) return undefined;
+  const tokens = Math.floor(value);
+  return tokens >= MIN_MODEL_CONTEXT_WINDOW && tokens <= MAX_MODEL_CONTEXT_WINDOW
+    ? tokens
+    : undefined;
 }

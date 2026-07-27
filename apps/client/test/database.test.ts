@@ -45,7 +45,31 @@ describe("provider profile normalization", () => {
       defaultModel: " qwen3 ", enabledModels: [" qwen3 ", "qwen3", "qwen3:8b"], apiKeyRef: " provider:local:api-key ",
     })).toEqual({
       id: "local", name: "Ollama", baseUrl: "http://192.168.1.8:11434/v1",
-      defaultModel: "qwen3", enabledModels: ["qwen3", "qwen3:8b"], apiKeyRef: "provider:local:api-key",
+      defaultModel: "qwen3", enabledModels: ["qwen3", "qwen3:8b"],
+      modelContextWindows: { qwen3: 128_000, "qwen3:8b": 128_000 },
+      apiKeyRef: "provider:local:api-key",
+    });
+  });
+
+  it("keeps valid per-model context windows and drops unknown or invalid entries", () => {
+    const profile = normalizeProviderProfile({
+      id: "p",
+      name: "P",
+      baseUrl: "https://example.test/v1",
+      defaultModel: "model-a",
+      enabledModels: ["model-a", "model-b"],
+      modelContextWindows: {
+        "model-a": 128_000,
+        "model-b": 200_000.9,
+        disabled: 64_000,
+        invalid: 100,
+      },
+      apiKeyRef: "key",
+    });
+
+    expect(profile.modelContextWindows).toEqual({
+      "model-a": 128_000,
+      "model-b": 200_000,
     });
   });
 

@@ -317,6 +317,10 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .message.user .message-body { display: flex; flex-direction: column; align-items: flex-end; }
 .message-author { display: block; margin: 1px 0 7px; color: #5d5a66; font-size: 13px; }
 .message-content { color: #29282d; font-size: 15px; line-height: 1.75; overflow-wrap: anywhere; white-space: pre-wrap; }
+.message.assistant.failed .message-body { padding: 12px 14px; border: 1px solid #f0d5d1; border-radius: 12px; background: #fff7f5; }
+.message-failure-label { display: flex; align-items: center; gap: 6px; margin-bottom: 6px; color: #9b4e45; font-size: 12px; font-weight: 650; }
+.message-failure-label svg { width: 14px; height: 14px; }
+.message.assistant.failed .message-content { color: #7f4943; font-size: 13px; }
 .message.user .message-content { padding: 10px 14px; border-radius: 15px 15px 4px 15px; background: #f0eef9; line-height: 1.6; }
 .markdown-content { min-width: 0; white-space: normal; }
 .markdown-content > :first-child { margin-top: 0; }
@@ -558,6 +562,12 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 .model-option:hover { background: #f0eef8; }
 .model-option input { width: 14px; height: 14px; margin: 0; accent-color: var(--accent); }
 .model-option span { min-width: 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.model-context-settings { margin-top: 14px; }
+.model-context-list { display: grid; gap: 7px; margin-top: 8px; }
+.model-context-option { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 118px auto; align-items: center; gap: 8px; color: #55515d; font-size: 12px; }
+.model-context-option span { min-width: 0; overflow: hidden; font-family: ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.model-context-option input { min-width: 0; height: 34px; padding: 0 8px; }
+.model-context-option small { color: var(--muted); }
 .model-empty { margin: 9px 0 0; padding: 12px; border: 1px dashed var(--border-strong); border-radius: 9px; color: #9996a0; background: #fafafa; font-size: 11px; text-align: center; }
 .secret-input { display: flex; align-items: center; border: 1px solid var(--border-strong); border-radius: 10px; }
 .secret-input input { border: 0; box-shadow: none !important; }
@@ -1141,6 +1151,9 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 :root[data-theme="dark"] .search-reference-host { color: #82b8a6; }
 :root[data-theme="dark"] .search-reference-snippet { color: #938e9b; }
 :root[data-theme="dark"] .message-actions button:hover { color: #c5bcf8; background: rgba(111, 91, 231, .14); }
+:root[data-theme="dark"] .message.assistant.failed .message-body { border-color: rgba(190,87,77,.35); background: rgba(155,55,48,.1); }
+:root[data-theme="dark"] .message-failure-label,
+:root[data-theme="dark"] .message.assistant.failed .message-content { color: #df938c; }
 :root[data-theme="dark"] .composer-region { background: linear-gradient(180deg, rgba(22,22,24,0), var(--surface) 22px); }
 :root[data-theme="dark"] .composer { border-color: var(--border-strong); background: var(--surface-elevated); box-shadow: 0 8px 28px rgba(0, 0, 0, .28); }
 :root[data-theme="dark"] .vault-unlock input,

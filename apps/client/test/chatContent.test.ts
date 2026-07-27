@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
   chatImageDataUrl,
+  chatMessageFailed,
   chatMessageImages,
   chatMessageReferences,
   chatMessageReasoning,
   chatMessageSummary,
   chatMessageText,
+  createAssistantFailureContent,
   createAssistantMessageContent,
   createChatMessageContent,
   filesToChatImages,
@@ -29,6 +31,20 @@ describe("chat multimodal content", () => {
     expect(chatMessageText(content)).toBe("**答案**");
     expect(chatMessageReasoning(content)).toBe("先分析，再回答。");
     expect(chatMessageSummary(content)).toBe("**答案**");
+  });
+
+  it("marks Flow failures as structured assistant content", () => {
+    const content = createAssistantFailureContent(" provider unavailable ");
+
+    expect(content).toEqual({
+      type: "assistant",
+      text: "provider unavailable",
+      reasoning: "",
+      failed: true,
+    });
+    expect(chatMessageText(content)).toBe("provider unavailable");
+    expect(chatMessageFailed(content)).toBe(true);
+    expect(chatMessageFailed("ordinary answer")).toBe(false);
   });
 
   it("stores safe, unique web references with the assistant answer", () => {

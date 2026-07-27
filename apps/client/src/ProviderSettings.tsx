@@ -13,12 +13,18 @@ import {
 } from "./providerSession";
 import { DEFAULT_MEMOS_URL } from "./memoryGateway";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
+import {
+  DEFAULT_MODEL_CONTEXT_WINDOW,
+  MAX_MODEL_CONTEXT_WINDOW,
+  MIN_MODEL_CONTEXT_WINDOW,
+} from "./storage/database";
 
 const EMPTY_DRAFT: ProviderDraft = {
   name: "OpenAI",
   baseUrl: "https://api.openai.com/v1",
   defaultModel: "",
   enabledModels: [],
+  modelContextWindows: {},
   apiKey: "",
 };
 
@@ -116,10 +122,11 @@ export function ProviderSettings({
       baseUrl: selected.baseUrl,
       defaultModel: selected.defaultModel,
       enabledModels: selected.enabledModels,
+      modelContextWindows: { ...(selected.modelContextWindows ?? {}) },
       apiKey: "",
     });
     setDiscoveredModels(selected.enabledModels);
-  }, [selected?.id, selected?.baseUrl, selected?.defaultModel, selected?.enabledModels]);
+  }, [selected?.id, selected?.updatedAt]);
 
   useEffect(() => {
     setSearchDraft({
@@ -255,8 +262,21 @@ export function ProviderSettings({
       const defaultModel = enabledModels.includes(current.defaultModel)
         ? current.defaultModel
         : enabledModels[0] ?? "";
-      return { ...current, enabledModels, defaultModel };
+      const modelContextWindows = { ...(current.modelContextWindows ?? {}) };
+      if (!enabled) delete modelContextWindows[model];
+      return { ...current, enabledModels, defaultModel, modelContextWindows };
     });
+  }
+
+  function setModelContextWindow(model: string, tokens: number) {
+    if (!Number.isFinite(tokens)) return;
+    setDraft((current) => ({
+      ...current,
+      modelContextWindows: {
+        ...(current.modelContextWindows ?? {}),
+        [model]: tokens,
+      },
+    }));
   }
 
   async function save(event: FormEvent) {
@@ -401,6 +421,37 @@ export function ProviderSettings({
             {draft.enabledModels.length === 0 ? <option value="">请先选择至少一个模型</option> : null}
             {draft.enabledModels.map((model) => <option key={model} value={model}>{model}</option>)}
           </select>
+
+          {draft.enabledModels.length > 0 ? (
+            <div className="model-context-settings">
+              <div className="model-field-heading">
+                <div>
+                  <strong>上下文窗口</strong>
+                  <small>用于在达到窗口约 50% 时自动压缩旧对话</small>
+                </div>
+              </div>
+              <div className="model-context-list">
+                {draft.enabledModels.map((model) => (
+                  <label className="model-context-option" key={model}>
+                    <span title={model}>{model}</span>
+                    <input
+                      aria-label={`${model} 上下文窗口 token`}
+                      max={MAX_MODEL_CONTEXT_WINDOW}
+                      min={MIN_MODEL_CONTEXT_WINDOW}
+                      step={1024}
+                      type="number"
+                      value={draft.modelContextWindows?.[model] ?? DEFAULT_MODEL_CONTEXT_WINDOW}
+                      onChange={(event) => setModelContextWindow(
+                        model,
+                        event.currentTarget.valueAsNumber,
+                      )}
+                    />
+                    <small>tokens</small>
+                  </label>
+                ))}
+              </div>
+            </div>
+          ) : null}
 
           {insecureDraft ? (
             <label className="security-warning">

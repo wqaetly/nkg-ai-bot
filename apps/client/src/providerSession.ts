@@ -29,6 +29,7 @@ import {
   getWebSearchConfig,
   getSelectedProviderId,
   listProviderProfiles,
+  resolveModelContextWindow,
   setAffiliateCommerceConfig,
   setMemoryServiceConfig,
   setWebSearchConfig,
@@ -47,6 +48,7 @@ export interface ProviderDraft {
   baseUrl: string;
   defaultModel: string;
   enabledModels: string[];
+  modelContextWindows?: Record<string, number>;
   /** Empty on edit means keep the existing key. */
   apiKey: string;
   /** Must be explicitly true for each save that uses a plaintext HTTP URL. */
@@ -161,8 +163,21 @@ export class ProviderSession {
   get snapshot(): ProviderSessionSnapshot {
     return {
       ...this.snapshotValue,
-      profiles: [...this.snapshotValue.profiles],
+      profiles: this.snapshotValue.profiles.map((profile) => ({
+        ...profile,
+        ...(profile.modelContextWindows
+          ? { modelContextWindows: { ...profile.modelContextWindows } }
+          : {}),
+      })),
     };
+  }
+
+  getModelContextWindow(providerId?: string, modelId?: string): number {
+    const profile = this.snapshotValue.profiles.find((candidate) => candidate.id === providerId)
+      ?? this.snapshotValue.profiles.find(
+        (candidate) => candidate.id === this.snapshotValue.selectedProviderId,
+      );
+    return resolveModelContextWindow(profile, modelId ?? profile?.defaultModel);
   }
 
   subscribe(listener: () => void): () => void {
@@ -241,6 +256,7 @@ export class ProviderSession {
         baseUrl: draft.baseUrl,
         defaultModel: draft.defaultModel,
         enabledModels: draft.enabledModels,
+        modelContextWindows: draft.modelContextWindows,
         apiKeyRef,
       });
     } catch (error) {

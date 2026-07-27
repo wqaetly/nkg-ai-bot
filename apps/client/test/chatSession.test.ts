@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from "vitest";
 import type { NodeEvent } from "@nkg-ai-bot/runtime-router";
 import { buildChatPrompt, LocalChatSession, type ChatStore } from "../src/chatSession";
-import type { LocalMessage } from "../src/storage/repositories";
+import type {
+  ConversationCompression,
+  LocalMessage,
+} from "../src/storage/repositories";
 import {
   COMPUTER_CONFIG_ASSISTANT_ID,
   type AssistantSkillVersion,
@@ -48,9 +51,13 @@ function event(kind: string, payload: unknown, extra: Partial<NodeEvent> = {}): 
   };
 }
 
-function memoryStore(initial: LocalMessage[] = []): ChatStore & { messages: LocalMessage[] } {
+function memoryStore(initial: LocalMessage[] = []): ChatStore & {
+  compressions: ConversationCompression[];
+  messages: LocalMessage[];
+} {
   const store = {
     messages: [...initial],
+    compressions: [] as ConversationCompression[],
     async listMessages() { return [...store.messages]; },
     async listRelevantMemories() { return []; },
     async getConversation() {
@@ -60,6 +67,43 @@ function memoryStore(initial: LocalMessage[] = []): ChatStore & { messages: Loca
     async upsertConversation() {},
     async startAssistantRun() {},
     async finishAssistantRun() {},
+    async getLatestCompression(_conversationId: string, maxThroughSequence = Number.MAX_SAFE_INTEGER) {
+      return [...store.compressions]
+        .filter((item) => item.status === "completed" && item.throughSequence <= maxThroughSequence)
+        .sort((left, right) => right.throughSequence - left.throughSequence)[0];
+    },
+    async startCompression(input: {
+      id: string;
+      conversationId: string;
+      throughSequence: number;
+      sourceTokenCount: number;
+      modelId?: string;
+    }) {
+      store.compressions.push({
+        ...input,
+        summary: "",
+        summaryTokenCount: 0,
+        status: "pending",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    },
+    async completeCompression(id: string, summary: string, summaryTokenCount: number) {
+      const item = store.compressions.find((candidate) => candidate.id === id);
+      if (!item) throw new Error("compression missing");
+      Object.assign(item, { summary, summaryTokenCount, status: "completed", updatedAt: Date.now() });
+    },
+    async failCompression(id: string, error: string) {
+      const item = store.compressions.find((candidate) => candidate.id === id);
+      if (item) Object.assign(item, { error, status: "failed", updatedAt: Date.now() });
+    },
+    async invalidateCompressionsFrom(_conversationId: string, sequence: number) {
+      for (const item of store.compressions) {
+        if (item.status === "completed" && item.throughSequence >= sequence) {
+          item.status = "stale";
+        }
+      }
+    },
     async appendMessage(input: { id: string; conversationId: string; role: LocalMessage["role"]; content: unknown }) {
       const saved: LocalMessage = {
         ...input,
@@ -113,6 +157,17 @@ describe("LocalChatSession", () => {
         yield event("run_finished", { output: "新回答" });
       }),
     };
+    store.compressions.push({
+      id: "old-summary",
+      conversationId: "c1",
+      throughSequence: 3,
+      summary: "包含旧回答的摘要",
+      sourceTokenCount: 100,
+      summaryTokenCount: 10,
+      status: "completed",
+      createdAt: 1,
+      updatedAt: 1,
+    });
 
     const result = await new LocalChatSession("c1", runtime, store).regenerate("m1");
 
@@ -127,6 +182,152 @@ describe("LocalChatSession", () => {
     expect(prompt).toContain("用户：原问题");
     expect(prompt).not.toContain("旧回答");
     expect(prompt).not.toContain("后续问题");
+    expect(store.compressions[0]?.status).toBe("stale");
+  });
+
+  it("compresses old messages, persists the rolling summary, and sends only summary plus tail", async () => {
+    const oldestMarker = `最旧需求-A-${"旧".repeat(700)}`;
+    const oldAnswerMarker = `最旧回答-B-${"答".repeat(700)}`;
+    const store = memoryStore([
+      message(0, "user", oldestMarker),
+      message(1, "assistant", oldAnswerMarker),
+    ]);
+    const runtime = {
+      stream: vi.fn(async function* (_flowId: string, input: unknown) {
+        if (String(input).includes("你是对话上下文压缩器")) {
+          yield event(
+            "stream_delta",
+            { text: "### 关键信息\n- 用户有一项较早需求" },
+            { nodeId: "chat_model" },
+          );
+          yield event("run_finished", { output: "" });
+          return;
+        }
+        yield event("run_finished", { output: "主回答" });
+      }),
+    };
+
+    const result = await new LocalChatSession(
+      "c1",
+      runtime,
+      store,
+      undefined,
+      undefined,
+      undefined,
+      { getModelContextWindow: () => 4_096 },
+    ).send("当前问题");
+
+    expect(result.assistant.content).toBe("主回答");
+    expect(runtime.stream).toHaveBeenCalledTimes(2);
+    const compressionPrompt = String(runtime.stream.mock.calls[0]?.[1]);
+    const mainPrompt = String(runtime.stream.mock.calls[1]?.[1]);
+    expect(compressionPrompt).toContain("最旧需求-A");
+    expect(compressionPrompt).toContain("最旧回答-B");
+    expect(mainPrompt).toContain("<compressed_history_summary>");
+    expect(mainPrompt).toContain("用户有一项较早需求");
+    expect(mainPrompt).toContain("用户：当前问题");
+    expect(mainPrompt).not.toContain(oldestMarker);
+    expect(mainPrompt).not.toContain(oldAnswerMarker);
+    expect(store.compressions).toEqual([
+      expect.objectContaining({
+        throughSequence: 1,
+        status: "completed",
+        summary: "### 关键信息\n- 用户有一项较早需求",
+      }),
+    ]);
+  });
+
+  it("updates an existing rolling summary when newly accumulated history crosses the budget", async () => {
+    const store = memoryStore([
+      message(0, "user", "已经压缩的旧问题"),
+      message(1, "assistant", "已经压缩的旧回答"),
+      message(2, "user", `新增长问题-${"问".repeat(700)}`),
+      message(3, "assistant", `新增长回答-${"答".repeat(700)}`),
+    ]);
+    store.compressions.push({
+      id: "summary-1",
+      conversationId: "c1",
+      throughSequence: 1,
+      summary: "既有摘要：用户选择 SQLite",
+      sourceTokenCount: 1_500,
+      summaryTokenCount: 20,
+      status: "completed",
+      createdAt: 1,
+      updatedAt: 1,
+    });
+    const runtime = {
+      stream: vi.fn(async function* (_flowId: string, input: unknown) {
+        if (String(input).includes("你是对话上下文压缩器")) {
+          yield event("run_finished", { output: "更新摘要：SQLite；新增约束已记录" });
+          return;
+        }
+        yield event("run_finished", { output: "继续回答" });
+      }),
+    };
+
+    await new LocalChatSession(
+      "c1",
+      runtime,
+      store,
+      undefined,
+      undefined,
+      undefined,
+      { getModelContextWindow: () => 4_096 },
+    ).send("继续");
+
+    const compressionPrompt = String(runtime.stream.mock.calls[0]?.[1]);
+    const mainPrompt = String(runtime.stream.mock.calls[1]?.[1]);
+    expect(compressionPrompt).toContain("既有摘要：用户选择 SQLite");
+    expect(compressionPrompt).toContain("新增长问题");
+    expect(mainPrompt).toContain("更新摘要：SQLite；新增约束已记录");
+    expect(mainPrompt).not.toContain("新增长问题");
+    expect(store.compressions.at(-1)).toEqual(expect.objectContaining({
+      throughSequence: 3,
+      status: "completed",
+    }));
+  });
+
+  it("records a failed compression and deterministically drops the oldest tail before answering", async () => {
+    const oldestMarker = `应被裁剪-${"旧".repeat(700)}`;
+    const recentMarker = `应当保留-${"近".repeat(700)}`;
+    const store = memoryStore([
+      message(0, "user", oldestMarker),
+      message(1, "assistant", recentMarker),
+    ]);
+    const runtime = {
+      stream: vi.fn(async function* (_flowId: string, input: unknown) {
+        if (String(input).includes("你是对话上下文压缩器")) {
+          yield event("run_failed", { error: { message: "summary provider failed" } });
+          return;
+        }
+        yield event("run_finished", { output: "降级后回答" });
+      }),
+    };
+    const activities: string[] = [];
+
+    await new LocalChatSession(
+      "c1",
+      runtime,
+      store,
+      undefined,
+      undefined,
+      undefined,
+      { getModelContextWindow: () => 4_096 },
+    ).send("当前问题", {
+      onActivity: (activity) => activities.push(activity.label),
+    });
+
+    const mainPrompt = String(runtime.stream.mock.calls[1]?.[1]);
+    expect(mainPrompt).not.toContain(oldestMarker);
+    expect(mainPrompt).toContain(recentMarker);
+    expect(mainPrompt).toContain("当前问题");
+    expect(store.compressions).toEqual([
+      expect.objectContaining({
+        status: "failed",
+        error: "summary provider failed",
+      }),
+    ]);
+    expect(activities).toContain("已裁剪超出窗口的较早内容");
   });
 
   it("streams the built-in Flow, publishes deltas, and persists both messages", async () => {
@@ -234,7 +435,7 @@ describe("LocalChatSession", () => {
     ]);
   });
 
-  it("does not persist a partial assistant response when the Flow fails", async () => {
+  it("persists a Flow failure as a retryable assistant message without saving partial output", async () => {
     const store = memoryStore();
     store.finishAssistantRun = vi.fn(store.finishAssistantRun);
     const runtime = {
@@ -244,13 +445,70 @@ describe("LocalChatSession", () => {
       },
     };
 
-    await expect(new LocalChatSession("c1", runtime, store).send("测试"))
-      .rejects.toThrow("provider unavailable");
-    expect(store.messages.map((item) => item.role)).toEqual(["user"]);
+    const result = await new LocalChatSession("c1", runtime, store).send("测试");
+
+    expect(result.failed).toBe(true);
+    expect(result.assistant.content).toEqual({
+      type: "assistant",
+      text: "provider unavailable",
+      reasoning: "",
+      failed: true,
+    });
+    expect(store.messages.map((item) => item.role)).toEqual(["user", "assistant"]);
+    expect(JSON.stringify(store.messages)).not.toContain("半");
     expect(store.finishAssistantRun).toHaveBeenCalledWith(
       expect.any(String),
-      expect.objectContaining({ status: "failed", runtimeRunId: "run-1" }),
+      expect.objectContaining({
+        status: "failed",
+        runtimeRunId: "run-1",
+        assistantMessageId: result.assistant.id,
+      }),
     );
+  });
+
+  it("retries a failed assistant message in place and replaces it with the successful answer", async () => {
+    const store = memoryStore();
+    let attempt = 0;
+    const runtime = {
+      async *stream() {
+        attempt += 1;
+        if (attempt === 1) {
+          yield event("run_failed", { error: { message: "temporary failure" } });
+          return;
+        }
+        yield event("run_finished", { output: "重试成功" });
+      },
+    };
+    const session = new LocalChatSession("c1", runtime, store);
+
+    const failed = await session.send("请执行");
+    const retried = await session.regenerate(failed.assistant.id);
+
+    expect(failed.failed).toBe(true);
+    expect(retried.failed).toBeUndefined();
+    expect(retried.assistant.id).toBe(failed.assistant.id);
+    expect(retried.assistant.content).toBe("重试成功");
+    expect(store.messages.map((item) => [item.role, item.content])).toEqual([
+      ["user", "请执行"],
+      ["assistant", "重试成功"],
+    ]);
+  });
+
+  it("does not send a persisted Flow error back to the model as conversation context", () => {
+    const prompt = buildChatPrompt([
+      message(0, "user", "第一次请求"),
+      message(1, "assistant", {
+        type: "assistant",
+        text: "provider unavailable",
+        reasoning: "",
+        failed: true,
+      }),
+      message(2, "user", "换个问题"),
+    ]);
+
+    expect(prompt).toContain("用户：第一次请求");
+    expect(prompt).toContain("用户：换个问题");
+    expect(prompt).not.toContain("provider unavailable");
   });
 
   it("persists chat images and sends multimodal input through the Flow", async () => {
