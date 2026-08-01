@@ -13,6 +13,7 @@
     "sql:default",
     "sql:allow-execute",
     "stronghold:default",
+    "storekit:default",
     {
       "identifier": "http:default",
       "allow": [

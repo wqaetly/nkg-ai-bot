@@ -24,6 +24,7 @@ const ChatPage = lazy(() => import("./ChatPage").then((module) => ({
 
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsInitialSection, setSettingsInitialSection] = useState<"appearance" | "credits">("appearance");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
   const [appearance, setAppearance] = useState<AppearancePreferences>(() => loadAppearancePreferences());
   const [logicalViewport, setLogicalViewport] = useState(() => calculateLogicalViewportSize(
@@ -153,6 +154,11 @@ function App() {
     requestAppPanel(panel);
   }
 
+  function openSettings(section: "appearance" | "credits" = "appearance") {
+    setSettingsInitialSection(section);
+    setSettingsOpen(true);
+  }
+
   return (
     <main
       className={`app-shell ${desktopTitleBar ? "desktop-shell" : "mobile-shell"}${appearance.backgroundImage ? " has-custom-background" : ""}`}
@@ -174,7 +180,8 @@ function App() {
       />
       <Suspense fallback={<AppLoading />}>
         <ChatPage
-          openProviders={() => setSettingsOpen(true)}
+          openCredits={() => openSettings("credits")}
+          openProviders={() => openSettings()}
         />
       </Suspense>
 
@@ -189,6 +196,7 @@ function App() {
           >
             <ProviderSettings
               appearance={appearance}
+              initialSection={settingsInitialSection}
               themeMode={themeMode}
               onAppearanceChange={updateAppearance}
               onClose={() => setSettingsOpen(false)}

@@ -86,8 +86,10 @@ const COMPUTER_CONFIG_SUGGESTIONS = [
 const SIDEBAR_COLLAPSED_STORAGE_KEY = "nkg.layout.sidebarCollapsed";
 
 export function ChatPage({
+  openCredits,
   openProviders,
 }: {
+  openCredits: () => void;
   openProviders: () => void;
 }) {
   const [conversations, setConversations] = useState<LocalConversation[]>([]);
@@ -146,6 +148,10 @@ export function ChatPage({
     (profile) => profile.id === providerSnapshot.selectedProviderId,
   );
   const unlocked = providerSnapshot.unlocked && Boolean(selectedProvider);
+  const hostedBalance = selectedProvider?.source === "nkg-hosted"
+    ? providerSnapshot.hostedAi?.account?.balance
+    : undefined;
+  const hostedConnectionState = providerSnapshot.hostedAi?.state;
   const webSearchAvailable = providerSnapshot.webSearch?.enabled === true;
   const affiliateCommerceActive = activeConversation?.assistantId === COMPUTER_CONFIG_ASSISTANT_ID
     && providerSnapshot.commerce?.enabled === true;
@@ -753,6 +759,17 @@ export function ChatPage({
               </span>
             </div>
           </div>
+          {hostedBalance ? (
+            <button
+              className="hosted-points-badge"
+              title={`购买点数 ${formatPoints(hostedBalance.purchasedPoints)} · 赠送点数 ${formatPoints(hostedBalance.grantedPoints)}`}
+              type="button"
+              onClick={openCredits}
+            >
+              <span>AI 点数</span>
+              <strong>{formatPoints(hostedBalance.availablePoints)}</strong>
+            </button>
+          ) : null}
         </header>
 
         <div ref={messageScrollRef} className={`message-scroll ${visible.length === 0 && !busy ? "empty" : ""}`} aria-live="polite">
@@ -862,7 +879,18 @@ export function ChatPage({
           {learningNotice ? <div className="learning-notice" role="status"><MemoryIcon /><span>{learningNotice}</span><button aria-label="关闭提示" type="button" onClick={() => setLearningNotice("")}><CloseIcon /></button></div> : null}
           {!unlocked ? (
             <button className="provider-banner" type="button" onClick={openProviders}>
-              <span><KeyIcon /></span><span><strong>连接 OpenAI 后开始对话</strong><small>配置 API URL 与 API Key</small></span><ChevronIcon />
+              <span><KeyIcon /></span><span>
+                <strong>{hostedConnectionState === "connecting"
+                  ? "正在连接 NKG AI"
+                  : hostedConnectionState === "unavailable"
+                    ? "NKG AI 暂时不可用"
+                    : "连接自己的模型后开始对话"}</strong>
+                <small>{hostedConnectionState === "connecting"
+                  ? "首次使用会创建本机 AI 点数账户"
+                  : hostedConnectionState === "unavailable"
+                    ? "可稍后重试或连接自己的模型"
+                    : "支持兼容 OpenAI API 的模型服务"}</small>
+              </span><ChevronIcon />
             </button>
           ) : null}
           {error ? <div className="chat-error" role="alert"><AlertIcon /><span>{error}</span><button aria-label="关闭错误提示" type="button" onClick={() => setError("")}><CloseIcon /></button></div> : null}
@@ -889,7 +917,9 @@ export function ChatPage({
             <textarea
               aria-label="消息"
               disabled={!runtime || !unlocked}
-              placeholder={unlocked ? (pendingImages.length ? "描述图片中的问题（可选）" : "给 NKG 发送消息") : "请先配置 OpenAI"}
+              placeholder={unlocked
+                ? (pendingImages.length ? "描述图片中的问题（可选）" : "给 NKG 发送消息")
+                : hostedConnectionState === "connecting" ? "正在连接 NKG AI…" : "请先连接模型服务"}
               ref={textareaRef}
               rows={1}
               value={draft}
@@ -1148,6 +1178,10 @@ async function createStoredConversation(
 
 function selectedProfile(snapshot: ProviderSessionSnapshot) {
   return snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId);
+}
+
+function formatPoints(points: number): string {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(points);
 }
 
 function activeSkillName(

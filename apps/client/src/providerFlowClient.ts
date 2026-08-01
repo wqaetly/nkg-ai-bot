@@ -45,15 +45,21 @@ export class ProviderFlowRuntimeClient {
   ): Promise<FlowInvokeResult> {
     await this.prepareExecution(options.signal);
     const execution = this.executions.begin(options.signal);
+    let runOptions: FlowInvokeOptions | undefined;
     try {
+      runOptions = await this.providers.createRunOptions(
+        { ...options, signal: execution.signal },
+        { flowId },
+      );
       return await this.runtime.invoke(
         flowId,
         input,
-        await this.providers.createRunOptions({ ...options, signal: execution.signal }, { flowId }),
+        runOptions,
       );
     } catch (cause: unknown) {
       throw normalizeExecutionError(cause, execution.signal);
     } finally {
+      if (runOptions) await this.completeRunOptions(runOptions);
       execution.finish();
     }
   }
@@ -66,16 +72,22 @@ export class ProviderFlowRuntimeClient {
   ): Promise<FlowInvokeResult> {
     await this.prepareExecution(options.signal);
     const execution = this.executions.begin(options.signal);
+    let runOptions: FlowInvokeOptions | undefined;
     try {
+      runOptions = await this.providers.createRunOptions(
+        { ...options, signal: execution.signal },
+        { flowId },
+      );
       return await this.runtime.invokeNode(
         flowId,
         nodeId,
         input,
-        await this.providers.createRunOptions({ ...options, signal: execution.signal }, { flowId }),
+        runOptions,
       );
     } catch (cause: unknown) {
       throw normalizeExecutionError(cause, execution.signal);
     } finally {
+      if (runOptions) await this.completeRunOptions(runOptions);
       execution.finish();
     }
   }
@@ -87,8 +99,9 @@ export class ProviderFlowRuntimeClient {
   ): AsyncIterable<NodeEvent> {
     await this.prepareExecution(options.signal);
     const execution = this.executions.begin(options.signal);
+    let runOptions: FlowInvokeOptions | undefined;
     try {
-      const runOptions = await this.providers.createRunOptions({
+      runOptions = await this.providers.createRunOptions({
         ...options,
         signal: execution.signal,
         onRunStarted: (runId) => {
@@ -104,6 +117,7 @@ export class ProviderFlowRuntimeClient {
     } catch (cause: unknown) {
       throw normalizeExecutionError(cause, execution.signal);
     } finally {
+      if (runOptions) await this.completeRunOptions(runOptions);
       execution.finish();
     }
   }
@@ -116,8 +130,9 @@ export class ProviderFlowRuntimeClient {
   ): AsyncIterable<NodeEvent> {
     await this.prepareExecution(options.signal);
     const execution = this.executions.begin(options.signal);
+    let runOptions: FlowInvokeOptions | undefined;
     try {
-      const runOptions = await this.providers.createRunOptions({
+      runOptions = await this.providers.createRunOptions({
         ...options,
         signal: execution.signal,
         onRunStarted: (runId) => {
@@ -133,6 +148,7 @@ export class ProviderFlowRuntimeClient {
     } catch (cause: unknown) {
       throw normalizeExecutionError(cause, execution.signal);
     } finally {
+      if (runOptions) await this.completeRunOptions(runOptions);
       execution.finish();
     }
   }
@@ -154,6 +170,16 @@ export class ProviderFlowRuntimeClient {
 
   suspendActiveExecutions(): Promise<RuntimeSuspensionResult> {
     return this.executions.suspend();
+  }
+
+  private async completeRunOptions(options: FlowInvokeOptions): Promise<void> {
+    const complete = (this.providers as ProviderSession & {
+      completeRunOptions?: (value: FlowInvokeOptions) => Promise<void>;
+    }).completeRunOptions;
+    if (typeof complete !== "function") return;
+    await complete.call(this.providers, options).catch((cause: unknown) => {
+      console.warn("Unable to complete NKG AI run authorization", cause);
+    });
   }
 }
 

@@ -41,6 +41,17 @@ import {
   type WebSearchConfig,
 } from "./storage/database";
 import { SecretVault, type ApiKeyVault } from "./storage/secretVault";
+import {
+  DEFAULT_HOSTED_AI_SERVICE_URL,
+  HOSTED_AI_PROVIDER_ID,
+  HOSTED_AI_SESSION_TOKEN_REF,
+  type HostedAiPlatform,
+} from "./hostedAi";
+import { HostedAiSession, type HostedAiSessionSnapshot } from "./hostedAiSession";
+import {
+  HostedAiPurchaseController,
+  type HostedAiPurchasesSnapshot,
+} from "./hostedAiPurchases";
 
 export interface ProviderDraft {
   id?: string;
@@ -62,6 +73,15 @@ export interface ProviderSessionSnapshot {
   webSearch?: WebSearchConfig;
   memory?: MemoryServiceConfig;
   commerce?: AffiliateCommerceConfig;
+  hostedAi?: HostedAiSessionSnapshot;
+  hostedPurchases?: HostedAiPurchasesSnapshot;
+}
+
+export interface HostedAiProviderConfig {
+  session: HostedAiSession;
+  platform: HostedAiPlatform;
+  appVersion: string;
+  purchases?: HostedAiPurchaseController;
 }
 
 export interface CommerceDraft {
@@ -152,13 +172,20 @@ export class ProviderSession {
   private snapshotValue: ProviderSessionSnapshot = { unlocked: false, profiles: [] };
   private readonly subscribers = new Set<() => void>();
   private initialization: Promise<ProviderSessionSnapshot> | undefined;
+  private hostedAiConfig: HostedAiProviderConfig | undefined;
+  private readonly hostedRunAuthorizations = new WeakMap<FlowInvokeOptions, string>();
+  private unsubscribeHostedAi: (() => void) | undefined;
+  private unsubscribeHostedPurchases: (() => void) | undefined;
 
   constructor(
     private readonly dataStore: ProviderDataStore = sqliteProviderStore,
     private readonly openVault: () => Promise<ApiKeyVault> = SecretVault.openAutomatically,
     private readonly fetchImpl: typeof globalThis.fetch = (...args) => import("@tauri-apps/plugin-http")
       .then(({ fetch }) => fetch(...args)),
-  ) {}
+    hostedAiConfig?: HostedAiProviderConfig,
+  ) {
+    if (hostedAiConfig) this.setHostedAiConfig(hostedAiConfig);
+  }
 
   get snapshot(): ProviderSessionSnapshot {
     return {
@@ -185,6 +212,38 @@ export class ProviderSession {
     return () => this.subscribers.delete(listener);
   }
 
+  configureHostedAi(config: HostedAiProviderConfig): void {
+    this.setHostedAiConfig(config);
+    if (this.vault) void this.initializeHostedAi(this.vault);
+  }
+
+  async refreshHostedAi(): Promise<ProviderSessionSnapshot> {
+    const vault = this.requireVault();
+    if (!this.hostedAiConfig) throw new Error("当前构建未启用 NKG AI 服务");
+    await this.initializeHostedAi(vault);
+    return this.snapshot;
+  }
+
+  async purchaseHostedPoints(packId: string): Promise<ProviderSessionSnapshot> {
+    const purchases = this.hostedAiConfig?.purchases;
+    if (!purchases) throw new Error("AI 点数购买仅在 iOS App Store 版本中可用");
+    await purchases.purchase(packId);
+    return this.refresh();
+  }
+
+  async getHostedRecoveryToken(): Promise<string> {
+    if (!this.hostedAiConfig) throw new Error("当前构建未启用 NKG AI 服务");
+    return this.hostedAiConfig.session.getOrCreateRecoveryToken();
+  }
+
+  async recoverHostedAccount(recoveryToken: string): Promise<ProviderSessionSnapshot> {
+    const config = this.hostedAiConfig;
+    if (!config) throw new Error("当前构建未启用 NKG AI 服务");
+    await config.session.recoverAccount(recoveryToken.trim());
+    await config.purchases?.initialize();
+    return this.refresh();
+  }
+
   initialize(): Promise<ProviderSessionSnapshot> {
     if (this.vault) return this.refresh();
     this.initialization ??= this.openAndRefresh().finally(() => { this.initialization = undefined; });
@@ -194,7 +253,11 @@ export class ProviderSession {
   private async openAndRefresh(): Promise<ProviderSessionSnapshot> {
     const vault = await this.openVault();
     this.vault = vault;
-    try { return await this.refresh(); }
+    try {
+      await this.refresh();
+      if (this.hostedAiConfig) await this.initializeHostedAi(vault);
+      return this.snapshot;
+    }
     catch (error) {
       this.vault = undefined;
       await vault.lock().catch(() => undefined);
@@ -206,6 +269,8 @@ export class ProviderSession {
     const vault = this.vault;
     this.vault = undefined;
     this.snapshotValue = { unlocked: false, profiles: [] };
+    this.hostedAiConfig?.purchases?.lock();
+    this.hostedAiConfig?.session.lock();
     this.notify();
     await vault?.lock();
   }
@@ -219,19 +284,27 @@ export class ProviderSession {
       this.dataStore.getMemoryConfig?.(),
       this.dataStore.getCommerceConfig?.(),
     ]);
-    const selectedProviderId = profiles.some((profile) => profile.id === storedSelection)
+    const hostedAi = this.hostedAiConfig?.session.snapshot;
+    const hostedPurchases = this.hostedAiConfig?.purchases?.snapshot;
+    const hostedProfile = hostedAi?.state === "ready" && hostedAi.account
+      ? createHostedProviderProfile(hostedAi.account)
+      : undefined;
+    const availableProfiles = hostedProfile ? [hostedProfile, ...profiles] : profiles;
+    const selectedProviderId = availableProfiles.some((profile) => profile.id === storedSelection)
       ? storedSelection
-      : profiles[0]?.id;
+      : hostedProfile?.id ?? profiles[0]?.id;
     if (selectedProviderId !== storedSelection) {
       await this.dataStore.setSelectedId(selectedProviderId);
     }
     this.snapshotValue = {
       unlocked: true,
-      profiles,
+      profiles: availableProfiles,
       ...(selectedProviderId ? { selectedProviderId } : {}),
       ...(webSearch ? { webSearch } : {}),
       ...(memory ? { memory } : {}),
       ...(commerce ? { commerce } : {}),
+      ...(hostedAi ? { hostedAi } : {}),
+      ...(hostedPurchases ? { hostedPurchases } : {}),
     };
     this.notify();
     return this.snapshot;
@@ -288,6 +361,7 @@ export class ProviderSession {
     const vault = this.requireVault();
     const profile = this.snapshotValue.profiles.find((candidate) => candidate.id === id);
     if (!profile) return this.snapshot;
+    if (profile.source === "nkg-hosted") throw new Error("NKG AI 是内置模型服务，不能删除");
     const previousKey = await vault.getApiKey(profile.apiKeyRef);
     if (previousKey) await vault.removeApiKey(profile.apiKeyRef);
     try {
@@ -313,11 +387,32 @@ export class ProviderSession {
       ? requestedModel.trim()
       : selected.defaultModel;
     if (!selected.enabledModels.includes(model)) {
-      throw new Error(`模型“${model}”未在 OpenAI 设置中启用`);
+      throw new Error(`模型“${model}”未在当前模型服务中启用`);
+    }
+    if (selected.source === "nkg-hosted") {
+      const hostedAi = this.hostedAiConfig?.session;
+      if (!hostedAi) throw new Error("NKG AI 服务尚未连接");
+      const result = await hostedAi.createRunOptions({
+        requestId: crypto.randomUUID(),
+        flowId: context.flowId ?? "unknown-flow",
+        modelId: model,
+      }, options);
+      const runOptions = context.flowId !== COMPUTER_CONFIG_FLOW_ID
+        ? result.options
+        : await withAffiliateFlowEnvironment(this.snapshotValue.commerce, vault, result.options);
+      this.hostedRunAuthorizations.set(runOptions, result.authorization.authorizationId);
+      return runOptions;
     }
     const providerOptions = await withProviderEnvironment(selected, vault, options, model);
     if (context.flowId !== COMPUTER_CONFIG_FLOW_ID) return providerOptions;
     return withAffiliateFlowEnvironment(this.snapshotValue.commerce, vault, providerOptions);
+  }
+
+  async completeRunOptions(options: FlowInvokeOptions): Promise<void> {
+    const authorizationId = this.hostedRunAuthorizations.get(options);
+    if (!authorizationId) return;
+    this.hostedRunAuthorizations.delete(options);
+    await this.hostedAiConfig?.session.completeRun(authorizationId);
   }
 
   async discoverModels(draft: ProviderDraft, signal?: AbortSignal): Promise<string[]> {
@@ -503,7 +598,28 @@ export class ProviderSession {
     const profile = this.snapshotValue.profiles.find((candidate) => candidate.id === providerId);
     if (!profile) throw new Error("请先选择一个模型服务");
     if (!profile.enabledModels.includes(request.model)) {
-      throw new Error(`模型“${request.model}”未在 OpenAI 设置中启用`);
+      throw new Error(`模型“${request.model}”未在当前模型服务中启用`);
+    }
+    if (profile.source === "nkg-hosted") {
+      const hostedAi = this.hostedAiConfig?.session;
+      if (!hostedAi) throw new Error("NKG AI 服务尚未连接");
+      const { options, authorization } = await hostedAi.createRunOptions({
+        requestId: crypto.randomUUID(),
+        flowId: "builtin.image-generation",
+        modelId: request.model,
+      });
+      const baseUrl = options.envOverrides?.variables?.LLM_BASE_URL;
+      const apiKey = options.envOverrides?.secrets?.LLM_API_KEY;
+      if (typeof baseUrl !== "string" || typeof apiKey !== "string") {
+        throw new Error("NKG AI 生图授权无效");
+      }
+      try {
+        return await requestImageGeneration(baseUrl, apiKey, request, this.fetchImpl);
+      } finally {
+        await hostedAi.completeRun(authorization.authorizationId).catch((cause: unknown) => {
+          console.warn("Unable to complete NKG AI image run", cause);
+        });
+      }
     }
     const apiKey = await vault.getApiKey(profile.apiKeyRef);
     if (!apiKey) throw new Error(`模型服务“${profile.name}”的 API Key 不可用`);
@@ -571,9 +687,58 @@ export class ProviderSession {
     return this.vault;
   }
 
+  private setHostedAiConfig(config: HostedAiProviderConfig): void {
+    this.unsubscribeHostedAi?.();
+    this.unsubscribeHostedPurchases?.();
+    this.hostedAiConfig = config;
+    this.unsubscribeHostedAi = config.session.subscribe(() => {
+      if (!this.vault) return;
+      void this.refresh().catch((cause: unknown) => {
+        console.warn("Unable to refresh NKG AI provider state", cause);
+      });
+    });
+    this.unsubscribeHostedPurchases = config.purchases?.subscribe(() => {
+      if (!this.vault) return;
+      void this.refresh().catch((cause: unknown) => {
+        console.warn("Unable to refresh Apple point purchase state", cause);
+      });
+    });
+  }
+
+  private async initializeHostedAi(vault: ApiKeyVault): Promise<void> {
+    const config = this.hostedAiConfig;
+    if (!config) return;
+    await config.session.initialize(vault, {
+      platform: config.platform,
+      appVersion: config.appVersion,
+    });
+    if (config.session.snapshot.state === "ready") await config.purchases?.initialize();
+    await this.refresh();
+  }
+
   private notify(): void {
     for (const subscriber of this.subscribers) subscriber();
   }
+}
+
+function createHostedProviderProfile(
+  account: NonNullable<HostedAiSessionSnapshot["account"]>,
+): ProviderProfile {
+  const defaultModel = account.models[0]!.id;
+  return {
+    id: HOSTED_AI_PROVIDER_ID,
+    name: "NKG AI",
+    baseUrl: `${DEFAULT_HOSTED_AI_SERVICE_URL}/v1`,
+    defaultModel,
+    enabledModels: account.models.map((model) => model.id),
+    modelContextWindows: Object.fromEntries(
+      account.models.map((model) => [model.id, model.contextWindow]),
+    ),
+    apiKeyRef: HOSTED_AI_SESSION_TOKEN_REF,
+    source: "nkg-hosted",
+    createdAt: 0,
+    updatedAt: Date.parse(account.balance.updatedAt),
+  };
 }
 
 async function readCommerceCredentials(

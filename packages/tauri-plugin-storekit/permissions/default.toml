@@ -1,0 +1,8 @@
+[default]
+description = "Allows the NKG app to load StoreKit products and process consumable purchases."
+permissions = [
+  "allow-products",
+  "allow-purchase",
+  "allow-unfinished",
+  "allow-finish",
+]

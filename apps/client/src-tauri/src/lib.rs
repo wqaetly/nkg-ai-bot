@@ -328,6 +328,7 @@ pub fn run() {
     let builder = tauri::Builder::default()
         .manage(LanSyncState::default())
         .plugin(tauri_plugin_http::init())
+        .plugin(tauri_plugin_storekit::init())
         .plugin(
             tauri_plugin_sql::Builder::default()
                 .add_migrations("sqlite:nkg-ai-bot.db", migrations)

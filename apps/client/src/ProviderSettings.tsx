@@ -13,6 +13,7 @@ import {
 } from "./providerSession";
 import { DEFAULT_MEMOS_URL } from "./memoryGateway";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
+import { HOSTED_AI_PROVIDER_ID } from "./hostedAi";
 import {
   DEFAULT_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_CONTEXT_WINDOW,
@@ -41,7 +42,7 @@ const EMPTY_MEMORY_DRAFT: MemoryServiceDraft = {
   enabled: false,
 };
 
-type SettingsSection = "appearance" | "tools" | "models" | "search" | "memory" | "data";
+type SettingsSection = "appearance" | "credits" | "tools" | "models" | "search" | "memory" | "data";
 
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSection;
@@ -49,6 +50,7 @@ const SETTINGS_SECTIONS: Array<{
   description: string;
 }> = [
   { id: "appearance", label: "外观", description: "主题、缩放与背景" },
+  { id: "credits", label: "AI 点数", description: "余额与模型消耗" },
   { id: "tools", label: "工具与能力", description: "记忆、能力与生图" },
   { id: "models", label: "模型服务", description: "API 与可用模型" },
   { id: "search", label: "联网搜索", description: "SearXNG 服务" },
@@ -58,6 +60,7 @@ const SETTINGS_SECTIONS: Array<{
 
 export function ProviderSettings({
   appearance,
+  initialSection = "appearance",
   themeMode,
   onAppearanceChange,
   onClose,
@@ -65,13 +68,14 @@ export function ProviderSettings({
   onThemeModeChange,
 }: {
   appearance: AppearancePreferences;
+  initialSection?: "appearance" | "credits";
   themeMode: ThemeMode;
   onAppearanceChange: (next: AppearancePreferences) => boolean;
   onClose: () => void;
   onOpenTool: (panel: AppPanel) => void;
   onThemeModeChange: (mode: ThemeMode) => void;
 }) {
-  const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
+  const [activeSection, setActiveSection] = useState<SettingsSection>(initialSection);
   const [snapshot, setSnapshot] = useState<ProviderSessionSnapshot>(providerSession.snapshot);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
@@ -94,8 +98,12 @@ export function ProviderSettings({
   const insecureDraft = isPlainHttpProviderUrl(draft.baseUrl);
   const insecureSearchDraft = isPlainHttpProviderUrl(searchDraft.baseUrl);
   const insecureMemoryDraft = isPlainHttpProviderUrl(memoryDraft.baseUrl);
-  const selected = snapshot.profiles.find((profile) => profile.id === snapshot.selectedProviderId)
-    ?? snapshot.profiles[0];
+  const selected = snapshot.profiles.find((profile) => (
+    profile.id === snapshot.selectedProviderId && profile.source !== "nkg-hosted"
+  )) ?? snapshot.profiles.find((profile) => profile.source !== "nkg-hosted");
+  const visibleSettingsSections = snapshot.hostedAi
+    ? SETTINGS_SECTIONS
+    : SETTINGS_SECTIONS.filter((section) => section.id !== "credits");
   const availableModels = useMemo(
     () => [...new Set([...discoveredModels, ...draft.enabledModels])]
       .filter((model) => model.toLocaleLowerCase().includes(modelQuery.trim().toLocaleLowerCase()))
@@ -281,13 +289,17 @@ export function ProviderSettings({
 
   async function save(event: FormEvent) {
     event.preventDefault();
+    const providerId = draft.id ?? "openai";
     const saved = await perform(
-      () => providerSession.save({
-        ...draft,
-        id: draft.id ?? "openai",
-        name: "OpenAI",
-        ...(insecureDraft ? { allowInsecureHttp: insecureHttpConfirmed } : {}),
-      }),
+      async () => {
+        await providerSession.save({
+          ...draft,
+          id: providerId,
+          name: "OpenAI",
+          ...(insecureDraft ? { allowInsecureHttp: insecureHttpConfirmed } : {}),
+        });
+        return providerSession.select(providerId);
+      },
       "连接和模型配置已保存在本机",
     );
     if (saved) {
@@ -307,7 +319,7 @@ export function ProviderSettings({
           <div><strong>设置</strong><small>偏好与服务</small></div>
         </div>
         <nav aria-label="设置分类" className="settings-nav" role="tablist">
-          {SETTINGS_SECTIONS.map((section) => (
+          {visibleSettingsSections.map((section) => (
             <button
               aria-controls="settings-active-panel"
               aria-selected={activeSection === section.id}
@@ -341,6 +353,19 @@ export function ProviderSettings({
 
       {activeSection === "appearance" ? (
         <AppearanceSettings value={appearance} themeMode={themeMode} onChange={onAppearanceChange} onThemeModeChange={onThemeModeChange} />
+      ) : activeSection === "credits" ? (
+        <HostedAiPointsPanel
+          snapshot={snapshot}
+          busy={busy}
+          onRefresh={() => void perform(() => providerSession.refreshHostedAi())}
+          onSelect={() => void perform(
+            () => providerSession.select(HOSTED_AI_PROVIDER_ID),
+            "已切换到 NKG AI",
+          )}
+          onPurchase={(packId) => void perform(() => providerSession.purchaseHostedPoints(packId))}
+          onGetRecoveryCode={() => providerSession.getHostedRecoveryToken()}
+          onRecover={(code) => providerSession.recoverHostedAccount(code)}
+        />
       ) : activeSection === "tools" ? (
         <SettingsToolHub onOpen={onOpenTool} />
       ) : activeSection === "data" ? (
@@ -616,11 +641,156 @@ export function ProviderSettings({
 function CloseIcon() { return <svg viewBox="0 0 24 24"><path d="m6 6 12 12M18 6 6 18" /></svg>; }
 function SettingsNavIcon({ section }: { section: SettingsSection }) {
   if (section === "appearance") return <svg viewBox="0 0 24 24"><path d="M4 16.5 16.5 4a2.1 2.1 0 0 1 3 3L7 19.5 3.5 20l.5-3.5Z" /><path d="m14.5 6 3.5 3.5M5 15l4 4" /></svg>;
+  if (section === "credits") return <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="8" /><path d="M9 9.5h4a2 2 0 0 1 0 4H9m3-7v11" /></svg>;
   if (section === "tools") return <svg viewBox="0 0 24 24"><path d="m12 3 2.1 4.9L19 10l-4.9 2.1L12 17l-2.1-4.9L5 10l4.9-2.1L12 3Z" /><path d="M5 17v4M3 19h4" /></svg>;
   if (section === "models") return <svg viewBox="0 0 24 24"><rect height="14" rx="2" width="18" x="3" y="5" /><path d="M7 9h10M7 13h6" /></svg>;
   if (section === "search") return <svg viewBox="0 0 24 24"><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></svg>;
   if (section === "memory") return <svg viewBox="0 0 24 24"><path d="M7 4h10v16H7zM10 8h4M10 12h4" /></svg>;
   return <svg viewBox="0 0 24 24"><path d="M5 8h13m0 0-3-3m3 3-3 3M19 16H6m0 0 3-3m-3 3 3 3" /></svg>;
+}
+
+function HostedAiPointsPanel({
+  snapshot,
+  busy,
+  onRefresh,
+  onSelect,
+  onPurchase,
+  onGetRecoveryCode,
+  onRecover,
+}: {
+  snapshot: ProviderSessionSnapshot;
+  busy: boolean;
+  onRefresh: () => void;
+  onSelect: () => void;
+  onPurchase: (packId: string) => void;
+  onGetRecoveryCode: () => Promise<string>;
+  onRecover: (code: string) => Promise<ProviderSessionSnapshot>;
+}) {
+  const [recoveryCode, setRecoveryCode] = useState<string>();
+  const [recoveryInput, setRecoveryInput] = useState("");
+  const [recoveryBusy, setRecoveryBusy] = useState(false);
+  const [recoveryMessage, setRecoveryMessage] = useState<string>();
+  const hostedAi = snapshot.hostedAi;
+  const account = hostedAi?.account;
+  const selected = snapshot.selectedProviderId === HOSTED_AI_PROVIDER_ID;
+  const purchases = snapshot.hostedPurchases;
+  if (!account) {
+    return (
+      <section className="hosted-points-panel hosted-points-unavailable">
+        <span className="hosted-points-hero-mark">AI</span>
+        <h3>{hostedAi?.state === "connecting" ? "正在连接 NKG AI" : "NKG AI 暂时不可用"}</h3>
+        <p>{hostedAi?.error ?? "请检查网络后重试。自定义模型与所有工作流仍可免费使用。"}</p>
+        <button className="primary-button" disabled={busy || hostedAi?.state === "connecting"} type="button" onClick={onRefresh}>重新连接</button>
+      </section>
+    );
+  }
+  return (
+    <section className="hosted-points-panel">
+      <div className="hosted-points-hero">
+        <span className="hosted-points-hero-mark">AI</span>
+        <div><small>当前可用</small><strong>{formatPointCount(account.balance.availablePoints)}</strong><span>AI 点数</span></div>
+        <button className={selected ? "ghost-button" : "primary-button"} disabled={busy || selected} type="button" onClick={onSelect}>{selected ? "正在使用" : "设为当前服务"}</button>
+      </div>
+      <div className="hosted-points-breakdown">
+        <div><span>购买点数</span><strong>{formatPointCount(account.balance.purchasedPoints)}</strong><small>永久有效</small></div>
+        <div><span>赠送点数</span><strong>{formatPointCount(account.balance.grantedPoints)}</strong><small>以活动规则为准</small></div>
+      </div>
+      <div className="hosted-account-recovery">
+        <header><strong>永久点数账户</strong><small>重装或换设备时，用恢复码找回已购点数</small></header>
+        {recoveryCode ? (
+          <div className="hosted-recovery-code">
+            <code>{recoveryCode}</code>
+            <button type="button" onClick={() => void navigator.clipboard.writeText(recoveryCode)
+              .then(() => setRecoveryMessage("恢复码已复制"))
+              .catch(() => setRecoveryMessage("复制失败，请长按恢复码手动复制"))}>复制</button>
+          </div>
+        ) : (
+          <button
+            className="ghost-button"
+            disabled={recoveryBusy}
+            type="button"
+            onClick={() => void (async () => {
+              setRecoveryBusy(true);
+              setRecoveryMessage(undefined);
+              try { setRecoveryCode(await onGetRecoveryCode()); }
+              catch (cause) { setRecoveryMessage(cause instanceof Error ? cause.message : "无法生成恢复码"); }
+              finally { setRecoveryBusy(false); }
+            })()}
+          >{recoveryBusy ? "正在读取…" : "显示我的账户恢复码"}</button>
+        )}
+        <p>恢复码等同账户密码，请离线妥善保存，不要发送给他人。NKG 服务端只保存其哈希。</p>
+        <div className="hosted-recovery-entry">
+          <input
+            aria-label="账户恢复码"
+            autoCapitalize="none"
+            autoCorrect="off"
+            placeholder="nkg_recover_…"
+            spellCheck={false}
+            type="password"
+            value={recoveryInput}
+            onChange={(event) => setRecoveryInput(event.currentTarget.value)}
+          />
+          <button
+            className="ghost-button"
+            disabled={recoveryBusy || !recoveryInput.trim()}
+            type="button"
+            onClick={() => void (async () => {
+              setRecoveryBusy(true);
+              setRecoveryMessage(undefined);
+              try {
+                const code = recoveryInput.trim();
+                await onRecover(code);
+                setRecoveryInput("");
+                setRecoveryCode(code);
+                setRecoveryMessage("点数账户已恢复");
+              } catch (cause) {
+                setRecoveryMessage(cause instanceof Error ? cause.message : "账户恢复失败");
+              } finally { setRecoveryBusy(false); }
+            })()}
+          >恢复账户</button>
+        </div>
+        {recoveryMessage ? <p className="hosted-recovery-message" role="status">{recoveryMessage}</p> : null}
+      </div>
+      {purchases?.products.length ? (
+        <div className="hosted-point-store">
+          <header><strong>购买 AI 点数</strong><small>由 App Store 安全支付，购买点数永久有效</small></header>
+          <div>
+            {purchases.products.map((product) => (
+              <button
+                className={product.featured ? "featured" : ""}
+                disabled={busy || purchases.state === "purchasing"}
+                key={product.id}
+                type="button"
+                onClick={() => onPurchase(product.id)}
+              >
+                <span><strong>{formatPointCount(product.points)} 点</strong><small>{product.displayName}</small></span>
+                <b>{purchases.purchasingPackId === product.id ? "处理中…" : product.displayPrice}</b>
+              </button>
+            ))}
+          </div>
+          {purchases.message ? <p className="form-message success" role="status">{purchases.message}</p> : null}
+          {purchases.error ? <p className="form-message error" role="alert">{purchases.error}</p> : null}
+        </div>
+      ) : account.pointPacks.length ? (
+        <p className="hosted-store-status">{purchases?.state === "loading" ? "正在从 App Store 获取点数商品…" : purchases?.error ?? "App Store 点数商品暂时不可用"}</p>
+      ) : null}
+      <div className="hosted-model-rates">
+        <header><strong>模型消耗标准</strong><small>按每次模型调用向上取整，不足 1 点按 1 点</small></header>
+        {account.models.map((model) => (
+          <div key={model.id}>
+            <span><strong>{model.name}</strong><small>{model.id}</small></span>
+            <span><small>输入 / 百万 token</small><strong>{formatPointCount(model.inputPointsPerMillionTokens)} 点</strong></span>
+            <span><small>输出 / 百万 token</small><strong>{formatPointCount(model.outputPointsPerMillionTokens)} 点</strong></span>
+          </div>
+        ))}
+      </div>
+      <p className="hosted-points-note">自定义工作流、能力与连接自己的模型均不消耗 AI 点数。只有使用 NKG 托管模型服务时才会扣点。</p>
+    </section>
+  );
+}
+
+function formatPointCount(points: number): string {
+  return new Intl.NumberFormat("zh-CN", { maximumFractionDigits: 0 }).format(points);
 }
 
 function SettingsToolHub({ onOpen }: { onOpen: (panel: AppPanel) => void }) {

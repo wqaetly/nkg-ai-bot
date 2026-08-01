@@ -6,6 +6,7 @@ const SELECTED_PROVIDER_KEY = "selected_provider_id";
 const WEB_SEARCH_CONFIG_KEY = "web_search_config";
 const MEMORY_SERVICE_CONFIG_KEY = "memory_service_config";
 const AFFILIATE_COMMERCE_CONFIG_KEY = "affiliate_commerce_config";
+const HOSTED_AI_INSTALLATION_ID_KEY = "hosted_ai_installation_id";
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
 export const MIN_MODEL_CONTEXT_WINDOW = 4_096;
 export const MAX_MODEL_CONTEXT_WINDOW = 2_000_000;
@@ -32,6 +33,7 @@ export interface ProviderProfile {
   enabledModels: string[];
   modelContextWindows?: Record<string, number>;
   apiKeyRef: string;
+  source?: "byok" | "nkg-hosted";
   createdAt: number;
   updatedAt: number;
 }
@@ -184,6 +186,39 @@ export async function setSelectedProviderId(
        value_json = excluded.value_json,
        updated_at = excluded.updated_at`,
     [SELECTED_PROVIDER_KEY, JSON.stringify(id), now],
+  );
+}
+
+export async function getHostedAiInstallationId(
+  client?: DatabaseClient,
+): Promise<string | undefined> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<SettingRow[]>(
+    "SELECT value_json FROM app_settings WHERE key = $1",
+    [HOSTED_AI_INSTALLATION_ID_KEY],
+  );
+  if (!row) return undefined;
+  try {
+    const value = JSON.parse(row.value_json) as unknown;
+    return typeof value === "string" && isUuid(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function setHostedAiInstallationId(
+  installationId: string,
+  client?: DatabaseClient,
+): Promise<void> {
+  if (!isUuid(installationId)) throw new Error("Hosted AI installation id must be a UUID");
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `INSERT INTO app_settings (key, value_json, updated_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = excluded.value_json,
+       updated_at = excluded.updated_at`,
+    [HOSTED_AI_INSTALLATION_ID_KEY, JSON.stringify(installationId), Date.now()],
   );
 }
 
@@ -406,6 +441,10 @@ function requireDigits(value: string, label: string): string {
   return normalized;
 }
 
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
 function mapProviderProfile(row: ProviderProfileRow): ProviderProfile {
   return {
     id: row.id,
@@ -415,6 +454,7 @@ function mapProviderProfile(row: ProviderProfileRow): ProviderProfile {
     enabledModels: parseModels(row.enabled_models_json, row.default_model),
     modelContextWindows: parseModelContextWindows(row.model_context_windows_json),
     apiKeyRef: row.api_key_ref,
+    source: "byok",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -12,6 +12,8 @@ import type {
   WebSearchConfig,
 } from "../src/storage/database";
 import type { ApiKeyVault } from "../src/storage/secretVault";
+import { HostedAiClient } from "../src/hostedAi";
+import { HostedAiSession } from "../src/hostedAiSession";
 
 class MemoryVault implements ApiKeyVault {
   readonly values = new Map<string, string>();
@@ -56,6 +58,96 @@ class MemoryStore implements ProviderDataStore {
 }
 
 describe("ProviderSession", () => {
+  it("merges NKG AI as the default provider and authorizes each hosted run", async () => {
+    const vault = new MemoryVault();
+    const store = new MemoryStore();
+    const hostedStore = {
+      installationId: "b130c491-0f3a-4491-a30a-7a281026a42b",
+      async getInstallationId() { return this.installationId; },
+      async setInstallationId(installationId: string) { this.installationId = installationId; },
+    };
+    const balance = {
+      availablePoints: 300,
+      purchasedPoints: 0,
+      grantedPoints: 300,
+      updatedAt: "2026-08-01T00:00:00.000Z",
+    };
+    const models = [{
+      id: "nkg-fast",
+      name: "NKG Fast",
+      contextWindow: 128_000,
+      inputPointsPerMillionTokens: 100,
+      outputPointsPerMillionTokens: 500,
+      capabilities: ["text"],
+    }];
+    const request = vi.fn(async (url: URL) => {
+      if (url.pathname.endsWith("/sessions/anonymous")) {
+        return new Response(JSON.stringify({ data: {
+          accountId: "account-1",
+          appAccountToken: "4dc0c81e-8604-4c10-8e3c-21d363e1702b",
+          sessionToken: "hosted-session-token",
+          sessionExpiresAt: "2026-09-01T00:00:00.000Z",
+          balance,
+          models,
+          pointPacks: [],
+        } }), { status: 200, headers: { "Content-Type": "application/json" } });
+      }
+      if (url.pathname.endsWith("/images/generations")) {
+        return new Response(JSON.stringify({ data: [{ b64_json: "aW1hZ2U=" }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      return new Response(JSON.stringify({ data: {
+        authorizationId: "auth-1",
+        apiBaseUrl: "https://api.example.test/v1",
+        apiKey: "run-scoped-token",
+        expiresAt: "2026-08-01T00:05:00.000Z",
+        balance: { ...balance, availablePoints: 280 },
+      } }), { status: 200, headers: { "Content-Type": "application/json" } });
+    });
+    const hosted = new HostedAiSession(
+      new HostedAiClient("https://account.example.test", request),
+      hostedStore,
+    );
+    const session = new ProviderSession(
+      store,
+      async () => vault,
+      request,
+      { session: hosted, platform: "ios", appVersion: "0.1.0" },
+    );
+
+    const snapshot = await session.initialize();
+
+    expect(snapshot.selectedProviderId).toBe("nkg-hosted");
+    expect(snapshot.profiles[0]).toMatchObject({
+      id: "nkg-hosted",
+      source: "nkg-hosted",
+      defaultModel: "nkg-fast",
+    });
+    await expect(session.createRunOptions({}, { flowId: "builtin.chat" })).resolves.toMatchObject({
+      envOverrides: {
+        variables: {
+          LLM_BASE_URL: "https://api.example.test/v1",
+          LLM_DEFAULT_MODEL: "nkg-fast",
+        },
+        secrets: { LLM_API_KEY: "run-scoped-token" },
+      },
+    });
+    expect(session.snapshot.hostedAi?.account?.balance.availablePoints).toBe(280);
+
+    await expect(session.generateImage({
+      model: "nkg-fast",
+      prompt: "一只紫色机器人",
+      size: "1024x1024",
+      quality: "medium",
+    })).resolves.toMatchObject({
+      src: "data:image/png;base64,aW1hZ2U=",
+      model: "nkg-fast",
+    });
+    expect(request.mock.calls.some(([url]) => (url as URL).pathname.endsWith("/images/generations"))).toBe(true);
+  });
+
   it("persists metadata separately and injects the selected vault key", async () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
@@ -85,7 +177,7 @@ describe("ProviderSession", () => {
     await expect(session.createRunOptions({ envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-2" } } }))
       .resolves.toMatchObject({ envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-2" } } });
     await expect(session.createRunOptions({ envOverrides: { variables: { LLM_DEFAULT_MODEL: "hidden-model" } } }))
-      .rejects.toThrow("未在 OpenAI 设置中启用");
+      .rejects.toThrow("未在当前模型服务中启用");
   });
 
   it("restores the previous key when metadata persistence fails", async () => {
@@ -323,6 +415,6 @@ describe("ProviderSession", () => {
       prompt: "a test image",
       size: "1024x1024",
       quality: "low",
-    })).rejects.toThrow("未在 OpenAI 设置中启用");
+    })).rejects.toThrow("未在当前模型服务中启用");
   });
 });

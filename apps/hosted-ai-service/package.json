@@ -1,0 +1,25 @@
+{
+  "name": "@nkg-ai-bot/hosted-ai-service",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.9.0",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@apple/app-store-server-library": "^3.1.0",
+    "pg": "^8.16.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "@types/pg": "^8.15.5",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.8"
+  },
+  "engines": {
+    "node": ">=20.11.0"
+  }
+}

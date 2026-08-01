@@ -12,6 +12,7 @@ describe("ProviderFlowRuntimeClient", () => {
         ...options,
         envOverrides: { secrets: { LLM_API_KEY: "transient" } },
       })),
+      completeRunOptions: vi.fn(async () => undefined),
     };
     const client = new ProviderFlowRuntimeClient(runtime as never, providers as never);
 
@@ -29,6 +30,7 @@ describe("ProviderFlowRuntimeClient", () => {
       envOverrides: { secrets: { LLM_API_KEY: "transient" } },
       signal: expect.any(AbortSignal),
     }));
+    expect(providers.completeRunOptions).toHaveBeenCalledWith(runtime.invoke.mock.calls[0]?.[2]);
   });
 
   it("tracks streamed run ids so suspension cancels the runtime run", async () => {

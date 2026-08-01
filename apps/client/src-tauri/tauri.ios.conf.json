@@ -3,6 +3,9 @@
     "beforeBuildCommand": "npm run build:frontend"
   },
   "bundle": {
-    "externalBin": []
+    "externalBin": [],
+    "iOS": {
+      "minimumSystemVersion": "15.0"
+    }
   }
 }

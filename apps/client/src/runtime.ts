@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
 import {
@@ -10,6 +11,13 @@ import {
   type TauriRuntimeServices,
 } from "@nkg-ai-bot/tauri-runtime-adapter";
 import { getPlatformFetch } from "./nativeFetch";
+import {
+  DEFAULT_HOSTED_AI_SERVICE_URL,
+  HostedAiClient,
+} from "./hostedAi";
+import { HostedAiSession } from "./hostedAiSession";
+import { HostedAiPurchaseController } from "./hostedAiPurchases";
+import { StoreKitClient } from "./storeKit";
 import { ProviderFlowRuntimeClient } from "./providerFlowClient";
 import { providerSession } from "./providerSession";
 import { syncRuntimeCatalog, type RuntimeCatalogSyncResult } from "./runtimeCatalog";
@@ -56,6 +64,20 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
     console.warn("Failed to migrate legacy inline chat images", error);
   });
   const fetchImpl = await getPlatformFetch(platform);
+  if (import.meta.env.VITE_NKG_HOSTED_AI_ENABLED === "true") {
+    const hostedSession = new HostedAiSession(new HostedAiClient(
+      import.meta.env.VITE_NKG_HOSTED_AI_SERVICE_URL || DEFAULT_HOSTED_AI_SERVICE_URL,
+      fetchImpl,
+    ));
+    providerSession.configureHostedAi({
+      session: hostedSession,
+      platform,
+      appVersion: await getVersion(),
+      ...(platform === "ios"
+        ? { purchases: new HostedAiPurchaseController(new StoreKitClient(), hostedSession) }
+        : {}),
+    });
+  }
   const services = createTauriRuntimeServices({
     platform,
     fetch: fetchImpl,
