@@ -15,7 +15,7 @@ import {
 } from "./appearance";
 import { requestAppPanel, type AppPanel } from "./appPanel";
 import { AppTitleBar } from "./AppTitleBar";
-import { ProviderSettings } from "./ProviderSettings";
+import { ProviderSettings, type SettingsSection } from "./ProviderSettings";
 import "./App.css";
 
 const ChatPage = lazy(() => import("./ChatPage").then((module) => ({
@@ -24,7 +24,7 @@ const ChatPage = lazy(() => import("./ChatPage").then((module) => ({
 
 function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsInitialSection, setSettingsInitialSection] = useState<"appearance" | "credits">("appearance");
+  const [settingsInitialSection, setSettingsInitialSection] = useState<SettingsSection>("appearance");
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => loadThemeMode());
   const [appearance, setAppearance] = useState<AppearancePreferences>(() => loadAppearancePreferences());
   const [logicalViewport, setLogicalViewport] = useState(() => calculateLogicalViewportSize(
@@ -154,7 +154,7 @@ function App() {
     requestAppPanel(panel);
   }
 
-  function openSettings(section: "appearance" | "credits" = "appearance") {
+  function openSettings(section: SettingsSection = "appearance") {
     setSettingsInitialSection(section);
     setSettingsOpen(true);
   }

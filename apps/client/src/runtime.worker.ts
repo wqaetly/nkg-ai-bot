@@ -10,7 +10,13 @@ import {
   createBrokeredAgentToolHost,
   createBrokeredFetch,
 } from "@nkg-ai-bot/tauri-runtime-adapter";
-import { createAffiliateCommerceNode } from "@nkg-ai-bot/commerce-flow";
+import {
+  createAffiliateCommerceNode,
+  createComputerPromotionResolverNode,
+  createPublicMarketSearchNode,
+} from "@nkg-ai-bot/commerce-flow";
+import { createComputerAdvisorNodes } from "@nkg-ai-bot/commerce-flow/computer-advisor";
+import { createComputerAdvisorV4Nodes } from "@nkg-ai-bot/commerce-flow/computer-advisor-v4";
 
 const endpoint = globalThis as unknown as RuntimeWorkerEndpoint;
 const fetchImpl = createBrokeredFetch(endpoint);
@@ -19,7 +25,13 @@ attachRuntimeWorker({
   endpoint,
   toolHost: createBrokeredAgentToolHost(endpoint),
   fetch: fetchImpl,
-  nodes: [createAffiliateCommerceNode(fetchImpl)],
+  nodes: [
+    createAffiliateCommerceNode(fetchImpl),
+    createComputerPromotionResolverNode(fetchImpl),
+    createPublicMarketSearchNode(fetchImpl),
+    ...createComputerAdvisorNodes(),
+    ...createComputerAdvisorV4Nodes(),
+  ],
   capabilities: createRuntimeCapabilityManifest({
     platform: "portable",
     available: [...PORTABLE_CORE_CAPABILITIES, "filesystem.read"],

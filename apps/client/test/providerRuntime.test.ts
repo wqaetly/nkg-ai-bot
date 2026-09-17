@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { withProviderEnvironment } from "../src/providerRuntime";
+import {
+  PROVIDER_ENV_KEYS,
+  defaultStructuredReasoningEffort,
+  defaultStructuredThinkingMode,
+  withProviderEnvironment,
+} from "../src/providerRuntime";
 import type { ProviderProfile } from "../src/storage/database";
 
 const profile: ProviderProfile = {
@@ -49,5 +54,26 @@ describe("provider Runtime environment", () => {
       profile,
       { getApiKey: async () => undefined },
     )).rejects.toThrow("has no API Key");
+  });
+
+  it("uses model-compatible structured planner controls", async () => {
+    expect(defaultStructuredReasoningEffort("gemini-3.1-pro-preview")).toBe("low");
+    expect(defaultStructuredReasoningEffort("deepseek-v4-flash")).toBeUndefined();
+    expect(defaultStructuredReasoningEffort("qwen3")).toBeUndefined();
+    expect(defaultStructuredThinkingMode("deepseek-v4-flash")).toBe("disabled");
+    expect(defaultStructuredThinkingMode("deepseek-v4-pro")).toBe("disabled");
+    expect(defaultStructuredThinkingMode("gemini-3.1-pro-preview")).toBeUndefined();
+
+    const options = await withProviderEnvironment(
+      { ...profile, defaultModel: "deepseek-v4-flash", enabledModels: ["deepseek-v4-flash"] },
+      { getApiKey: async () => "local-secret" },
+    );
+
+    expect(options.envOverrides?.variables).toMatchObject({
+      [PROVIDER_ENV_KEYS.structuredThinkingMode]: "disabled",
+    });
+    expect(options.envOverrides?.variables).not.toHaveProperty(
+      PROVIDER_ENV_KEYS.structuredReasoningEffort,
+    );
   });
 });

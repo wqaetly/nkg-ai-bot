@@ -19,6 +19,7 @@ flowchart LR
   C -->|"App Store Server API 校验"| P["Apple"]
   C -->|"短期、运行级模型授权"| G["New API Gateway"]
   G --> M["上游模型"]
+  C -->|"服务端持有搜索 Key"| S["SearXNG"]
   C --> L["不可变点数账本"]
   G -->|"最终 token 用量"| C
 ```
@@ -55,6 +56,13 @@ VITE_NKG_HOSTED_AI_SERVICE_URL=https://api.lfzxb.top
 ### `GET /api/app/v1/account`
 
 使用 NKG 会话令牌读取最新余额和模型目录。客户端可以展示响应，但不得把本地缓存当作可消费余额。
+
+### `POST /api/app/v1/search`
+
+使用同一个匿名 NKG 会话提交 `query` 与 `maxResults`。服务端验证会话后调用配置的
+SearXNG，并执行每 IP/每会话限流、超时、响应大小限制、URL scheme 过滤、去重与字段裁剪。
+`SEARXNG_API_KEY` 只存在 Hosted AI 服务端，既不返回客户端，也不写入日志。此接口不消耗
+AI 点数；默认搜索容量与滥用治理仍属于项目方的服务端运维责任。
 
 ### 点数账户恢复
 

@@ -1,6 +1,6 @@
 import { join } from "node:path";
 
-export const DEFAULT_RELEASE_MAX_APK_MIB = 40;
+export const DEFAULT_RELEASE_MAX_APK_MIB = 64;
 
 export function parseAndroidBuildOptions(args) {
   const debug = args.includes("--debug");

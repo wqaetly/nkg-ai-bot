@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   normalizeAffiliateCommerceConfig,
+  normalizeLocalMemoryConfig,
   normalizeMemoryServiceConfig,
   normalizeProviderProfile,
   normalizeWebSearchConfig,
@@ -35,6 +36,53 @@ describe("memory service configuration normalization", () => {
       apiKeyRef: "memory:memos:api-key",
       enabled: true,
     })).toThrow();
+  });
+});
+
+describe("local memory configuration normalization", () => {
+  it("enables per-turn automatic archiving for existing configurations", () => {
+    expect(normalizeLocalMemoryConfig({
+      provider: "local",
+      enabled: true,
+      semanticSearch: false,
+      embeddingMode: "local",
+      embeddingProviderId: "",
+      embeddingModel: "",
+    } as Parameters<typeof normalizeLocalMemoryConfig>[0])).toMatchObject({
+      autoArchive: true,
+    });
+  });
+
+  it("enables the bundled local Chinese embedding model without requiring a service", () => {
+    expect(normalizeLocalMemoryConfig({
+      provider: "local",
+      enabled: true,
+      autoArchive: true,
+      semanticSearch: true,
+      embeddingMode: "local",
+      embeddingProviderId: "",
+      embeddingModel: "",
+    })).toEqual({
+      provider: "local",
+      enabled: true,
+      autoArchive: true,
+      semanticSearch: true,
+      embeddingMode: "local",
+      embeddingProviderId: "",
+      embeddingModel: "Xenova/bge-small-zh-v1.5",
+    });
+  });
+
+  it("requires an explicit provider and model only for cloud semantic retrieval", () => {
+    expect(() => normalizeLocalMemoryConfig({
+      provider: "local",
+      enabled: true,
+      autoArchive: true,
+      semanticSearch: true,
+      embeddingMode: "cloud",
+      embeddingProviderId: "",
+      embeddingModel: "",
+    })).toThrow("Embedding Provider");
   });
 });
 
@@ -90,11 +138,13 @@ describe("web search configuration normalization", () => {
       provider: "searxng",
       baseUrl: "https://search.example.test/",
       apiKeyRef: " search:searxng:api-key ",
+      authMode: "x-api-key",
       enabled: true,
     })).toEqual({
       provider: "searxng",
       baseUrl: "https://search.example.test",
       apiKeyRef: "search:searxng:api-key",
+      authMode: "x-api-key",
       enabled: true,
     });
   });
@@ -108,6 +158,7 @@ describe("web search configuration normalization", () => {
       provider: "searxng",
       baseUrl,
       apiKeyRef: "search:searxng:api-key",
+      authMode: "none",
       enabled: true,
     })).toThrow();
   });
@@ -157,5 +208,34 @@ describe("affiliate commerce configuration normalization", () => {
         positionId: "67890",
       },
     })).toThrow("必须为数字");
+  });
+
+  it("stores only PDD OAuth secret references and normalized expirations", () => {
+    const config = normalizeAffiliateCommerceConfig({
+      enabled: true,
+      selectedProvider: "pdd",
+      pdd: {
+        clientIdRef: " commerce:pdd:client-id ",
+        clientSecretRef: " commerce:pdd:client-secret ",
+        accessTokenRef: " commerce:pdd:access-token ",
+        refreshTokenRef: " commerce:pdd:refresh-token ",
+        accessTokenExpiresAt: "2026-08-11T00:00:00+08:00",
+        pid: " 100_200 ",
+      },
+    });
+
+    expect(config).toEqual({
+      enabled: true,
+      selectedProvider: "pdd",
+      pdd: {
+        clientIdRef: "commerce:pdd:client-id",
+        clientSecretRef: "commerce:pdd:client-secret",
+        accessTokenRef: "commerce:pdd:access-token",
+        refreshTokenRef: "commerce:pdd:refresh-token",
+        accessTokenExpiresAt: "2026-08-10T16:00:00.000Z",
+        pid: "100_200",
+      },
+    });
+    expect(JSON.stringify(config)).not.toContain("access-token-value");
   });
 });

@@ -1,6 +1,11 @@
 import type { FlowInvokeOptions } from "@nkg-ai-bot/runtime-router";
+import { invoke } from "@tauri-apps/api/core";
 import {
   AFFILIATE_ENV_KEYS,
+  PUBLIC_MARKET_SEARCH_ENV_KEYS,
+  createPddAccessToken,
+  generatePddAuthorizationUrl,
+  refreshPddAccessToken,
   searchAffiliateProducts,
   type AffiliateCommerceConfig,
   type AffiliateCredentials,
@@ -23,14 +28,30 @@ import {
   type RemoteMemory,
 } from "./memoryGateway";
 import {
+  backfillLocalMemoryEmbeddings,
+  memoryEmbeddingModelKey,
+  requestTextEmbeddings,
+  searchLocalMemoriesSemantically,
+} from "./localMemorySearch";
+import {
+  LOCAL_EMBEDDING_MODEL_ID,
+  LOCAL_EMBEDDING_MODEL_KEY,
+  LocalEmbeddingWorkerClient,
+  type LocalTextEmbedder,
+} from "./localEmbedding";
+import { listRelevantMemories, type MemoryItem } from "./learningRepository";
+import {
+  DEFAULT_LOCAL_MEMORY_CONFIG,
   deleteProviderProfile,
   getAffiliateCommerceConfig,
+  getLocalMemoryConfig,
   getMemoryServiceConfig,
   getWebSearchConfig,
   getSelectedProviderId,
   listProviderProfiles,
   resolveModelContextWindow,
   setAffiliateCommerceConfig,
+  setLocalMemoryConfig,
   setMemoryServiceConfig,
   setWebSearchConfig,
   setSelectedProviderId,
@@ -38,6 +59,7 @@ import {
   type ProviderProfile,
   type ProviderProfileInput,
   type MemoryServiceConfig,
+  type LocalMemoryConfig,
   type WebSearchConfig,
 } from "./storage/database";
 import { SecretVault, type ApiKeyVault } from "./storage/secretVault";
@@ -71,6 +93,7 @@ export interface ProviderSessionSnapshot {
   profiles: ProviderProfile[];
   selectedProviderId?: string;
   webSearch?: WebSearchConfig;
+  localMemory?: LocalMemoryConfig;
   memory?: MemoryServiceConfig;
   commerce?: AffiliateCommerceConfig;
   hostedAi?: HostedAiSessionSnapshot;
@@ -81,6 +104,7 @@ export interface HostedAiProviderConfig {
   session: HostedAiSession;
   platform: HostedAiPlatform;
   appVersion: string;
+  serviceUrl?: string;
   purchases?: HostedAiPurchaseController;
 }
 
@@ -91,6 +115,13 @@ export interface CommerceDraft {
   key: string;
   /** Empty on edit means keep the existing secret. */
   secret: string;
+  /** PDD OAuth Access Token. Empty on edit keeps the encrypted value. */
+  accessToken?: string;
+  /** Optional PDD refresh token used for unattended renewal. */
+  refreshToken?: string;
+  /** Authoritative expiry returned by Pinduoduo. Never infer it from import time. */
+  accessTokenExpiresAt?: string;
+  refreshTokenExpiresAt?: string;
   pid: string;
   siteId?: string;
   positionId?: string;
@@ -100,6 +131,7 @@ export interface WebSearchDraft {
   baseUrl: string;
   /** Empty on edit means keep the existing key. */
   apiKey: string;
+  authMode: "none" | "x-api-key" | "nkg-session";
   enabled: boolean;
   /** Must be explicitly true for each save that uses a plaintext HTTP URL. */
   allowInsecureHttp?: boolean;
@@ -113,6 +145,25 @@ export interface MemoryServiceDraft {
   enabled: boolean;
   /** Must be explicitly true for each save that uses a plaintext HTTP URL. */
   allowInsecureHttp?: boolean;
+}
+
+export interface PddCommerceBootstrap {
+  clientId?: string;
+  clientSecret?: string;
+  accessToken?: string;
+  /** One-time authorization code exchanged locally and never persisted. */
+  authorizationCode?: string;
+  pid?: string;
+  refreshToken?: string;
+}
+
+export interface LocalMemoryDraft {
+  enabled: boolean;
+  autoArchive: boolean;
+  semanticSearch: boolean;
+  embeddingMode: "local" | "cloud";
+  embeddingProviderId: string;
+  embeddingModel: string;
 }
 
 export interface WebSearchResult {
@@ -141,6 +192,8 @@ export interface ProviderDataStore {
   setWebSearchConfig?(config: WebSearchConfig): Promise<WebSearchConfig>;
   getMemoryConfig?(): Promise<MemoryServiceConfig | undefined>;
   setMemoryConfig?(config: MemoryServiceConfig): Promise<MemoryServiceConfig>;
+  getLocalMemoryConfig?(): Promise<LocalMemoryConfig | undefined>;
+  setLocalMemoryConfig?(config: LocalMemoryConfig): Promise<LocalMemoryConfig>;
   getCommerceConfig?(): Promise<AffiliateCommerceConfig | undefined>;
   setCommerceConfig?(config: AffiliateCommerceConfig): Promise<AffiliateCommerceConfig>;
 }
@@ -155,17 +208,23 @@ const sqliteProviderStore: ProviderDataStore = {
   setWebSearchConfig: (config) => setWebSearchConfig(config),
   getMemoryConfig: () => getMemoryServiceConfig(),
   setMemoryConfig: (config) => setMemoryServiceConfig(config),
+  getLocalMemoryConfig: () => getLocalMemoryConfig(),
+  setLocalMemoryConfig: (config) => setLocalMemoryConfig(config),
   getCommerceConfig: () => getAffiliateCommerceConfig(),
   setCommerceConfig: (config) => setAffiliateCommerceConfig(config),
 };
 
 export const DEFAULT_SEARXNG_URL = "https://search.lfzxb.top";
+export const DEFAULT_SEARXNG_API_KEY = (import.meta.env.VITE_DEFAULT_SEARXNG_API_KEY ?? "").trim();
 const WEB_SEARCH_API_KEY_REF = "search:searxng:api-key";
 const MEMORY_API_KEY_REF = "memory:memos:api-key";
 const JD_APP_KEY_REF = "commerce:jd:app-key";
 const JD_SECRET_KEY_REF = "commerce:jd:secret-key";
 const PDD_CLIENT_ID_REF = "commerce:pdd:client-id";
 const PDD_CLIENT_SECRET_REF = "commerce:pdd:client-secret";
+const PDD_ACCESS_TOKEN_REF = "commerce:pdd:access-token";
+const PDD_REFRESH_TOKEN_REF = "commerce:pdd:refresh-token";
+const PDD_TOKEN_REFRESH_SKEW_MS = 5 * 60 * 1000;
 
 export class ProviderSession {
   private vault: ApiKeyVault | undefined;
@@ -174,6 +233,8 @@ export class ProviderSession {
   private initialization: Promise<ProviderSessionSnapshot> | undefined;
   private hostedAiConfig: HostedAiProviderConfig | undefined;
   private readonly hostedRunAuthorizations = new WeakMap<FlowInvokeOptions, string>();
+  private readonly localEmbeddingBackfills = new Map<string, Promise<void>>();
+  private localEmbedder: LocalTextEmbedder | undefined;
   private unsubscribeHostedAi: (() => void) | undefined;
   private unsubscribeHostedPurchases: (() => void) | undefined;
 
@@ -183,6 +244,8 @@ export class ProviderSession {
     private readonly fetchImpl: typeof globalThis.fetch = (...args) => import("@tauri-apps/plugin-http")
       .then(({ fetch }) => fetch(...args)),
     hostedAiConfig?: HostedAiProviderConfig,
+    private readonly createLocalEmbedder: () => LocalTextEmbedder = () => new LocalEmbeddingWorkerClient(),
+    private readonly takePddCommerceBootstrap: () => Promise<PddCommerceBootstrap | undefined> = async () => undefined,
   ) {
     if (hostedAiConfig) this.setHostedAiConfig(hostedAiConfig);
   }
@@ -254,6 +317,8 @@ export class ProviderSession {
     const vault = await this.openVault();
     this.vault = vault;
     try {
+      await this.provisionPddCommerceBootstrap();
+      await this.provisionDefaultWebSearch(vault);
       await this.refresh();
       if (this.hostedAiConfig) await this.initializeHostedAi(vault);
       return this.snapshot;
@@ -271,16 +336,20 @@ export class ProviderSession {
     this.snapshotValue = { unlocked: false, profiles: [] };
     this.hostedAiConfig?.purchases?.lock();
     this.hostedAiConfig?.session.lock();
+    this.localEmbedder?.dispose?.();
+    this.localEmbedder = undefined;
+    this.localEmbeddingBackfills.clear();
     this.notify();
     await vault?.lock();
   }
 
   async refresh(): Promise<ProviderSessionSnapshot> {
     this.requireVault();
-    const [profiles, storedSelection, webSearch, memory, commerce] = await Promise.all([
+    const [profiles, storedSelection, webSearch, localMemory, memory, commerce] = await Promise.all([
       this.dataStore.list(),
       this.dataStore.getSelectedId(),
       this.dataStore.getWebSearchConfig?.(),
+      this.dataStore.getLocalMemoryConfig?.(),
       this.dataStore.getMemoryConfig?.(),
       this.dataStore.getCommerceConfig?.(),
     ]);
@@ -301,6 +370,7 @@ export class ProviderSession {
       profiles: availableProfiles,
       ...(selectedProviderId ? { selectedProviderId } : {}),
       ...(webSearch ? { webSearch } : {}),
+      localMemory: localMemory ?? { ...DEFAULT_LOCAL_MEMORY_CONFIG },
       ...(memory ? { memory } : {}),
       ...(commerce ? { commerce } : {}),
       ...(hostedAi ? { hostedAi } : {}),
@@ -399,13 +469,13 @@ export class ProviderSession {
       }, options);
       const runOptions = context.flowId !== COMPUTER_CONFIG_FLOW_ID
         ? result.options
-        : await withAffiliateFlowEnvironment(this.snapshotValue.commerce, vault, result.options);
+        : await this.prepareCommerceRunOptions(vault, result.options);
       this.hostedRunAuthorizations.set(runOptions, result.authorization.authorizationId);
       return runOptions;
     }
     const providerOptions = await withProviderEnvironment(selected, vault, options, model);
     if (context.flowId !== COMPUTER_CONFIG_FLOW_ID) return providerOptions;
-    return withAffiliateFlowEnvironment(this.snapshotValue.commerce, vault, providerOptions);
+    return this.prepareCommerceRunOptions(vault, providerOptions);
   }
 
   async completeRunOptions(options: FlowInvokeOptions): Promise<void> {
@@ -427,27 +497,115 @@ export class ProviderSession {
     return fetchCompatibleModels(draft.baseUrl, apiKey, this.fetchImpl, signal);
   }
 
+  private async provisionPddCommerceBootstrap(): Promise<void> {
+    const bootstrap = await this.takePddCommerceBootstrap();
+    if (!bootstrap) return;
+    const vault = this.requireVault();
+    let clientId = bootstrap.clientId?.trim();
+    let clientSecret = bootstrap.clientSecret?.trim();
+    let pid = bootstrap.pid?.trim();
+    if (bootstrap.authorizationCode && (!clientId || !clientSecret || !pid)) {
+      const existing = await this.dataStore.getCommerceConfig?.();
+      if (!existing?.pdd) {
+        throw new Error("拼多多授权码导入需要已有的本机安全配置");
+      }
+      this.snapshotValue = { ...this.snapshotValue, commerce: existing };
+      const stored = await Promise.all([
+        vault.getApiKey(existing.pdd.clientIdRef),
+        vault.getApiKey(existing.pdd.clientSecretRef),
+      ]);
+      clientId ||= stored[0];
+      clientSecret ||= stored[1];
+      pid ||= existing.pdd.pid;
+    }
+    if (!clientId || !clientSecret || !pid) {
+      throw new Error("拼多多安全初始化缺少 Client ID、Client Secret 或 PID");
+    }
+    const created = bootstrap.authorizationCode
+      ? await createPddAccessToken(
+          clientId,
+          clientSecret,
+          bootstrap.authorizationCode,
+          this.fetchImpl,
+        )
+      : undefined;
+    const accessToken = created?.accessToken ?? bootstrap.accessToken;
+    if (!accessToken) throw new Error("拼多多安全初始化缺少 Access Token 或授权码");
+    await this.saveCommerce({
+      provider: "pdd",
+      enabled: true,
+      key: clientId,
+      secret: clientSecret,
+      accessToken,
+      refreshToken: created?.refreshToken ?? bootstrap.refreshToken ?? "",
+      ...(created?.accessTokenExpiresAt
+        ? { accessTokenExpiresAt: created.accessTokenExpiresAt }
+        : {}),
+      ...(created?.refreshTokenExpiresAt
+        ? { refreshTokenExpiresAt: created.refreshTokenExpiresAt }
+        : {}),
+      pid,
+    });
+  }
+
+  async pingModel(modelId: string, signal?: AbortSignal): Promise<number> {
+    const model = modelId.trim();
+    if (!model) throw new Error("请选择要检测的模型");
+    let options: FlowInvokeOptions | undefined;
+    try {
+      options = await this.createRunOptions({
+        envOverrides: { variables: { LLM_DEFAULT_MODEL: model } },
+      }, { flowId: "builtin.model-ping" });
+      const baseUrl = options.envOverrides?.variables?.LLM_BASE_URL;
+      const apiKey = options.envOverrides?.secrets?.LLM_API_KEY;
+      if (typeof baseUrl !== "string" || typeof apiKey !== "string") {
+        throw new Error("模型服务授权无效，请重新连接后再试");
+      }
+      return await pingCompatibleModel(baseUrl, apiKey, model, this.fetchImpl, signal);
+    } finally {
+      if (options) {
+        await this.completeRunOptions(options).catch((cause: unknown) => {
+          console.warn("Unable to complete model ping run", cause);
+        });
+      }
+    }
+  }
+
   async saveWebSearch(draft: WebSearchDraft): Promise<ProviderSessionSnapshot> {
     const vault = this.requireVault();
     if (!this.dataStore.setWebSearchConfig) throw new Error("联网搜索配置存储不可用");
     if (isPlainHttpProviderUrl(draft.baseUrl) && draft.allowInsecureHttp !== true) {
       throw new Error(`保存明文 HTTP 搜索服务前必须确认风险。${INSECURE_PROVIDER_WARNING}`);
     }
+    if (draft.authMode === "nkg-session") {
+      if (!this.hostedAiConfig) throw new Error("当前构建未启用 NKG 默认搜索");
+      if (normalizeComparableUrl(draft.baseUrl) !== normalizeComparableUrl(DEFAULT_SEARXNG_URL)) {
+        throw new Error("NKG 默认搜索必须使用内置服务地址");
+      }
+    }
     const apiKeyRef = this.snapshotValue.webSearch?.apiKeyRef ?? WEB_SEARCH_API_KEY_REF;
-    const previousKey = await vault.getApiKey(apiKeyRef);
+    const endpointChanged = Boolean(this.snapshotValue.webSearch
+      && normalizeComparableUrl(this.snapshotValue.webSearch.baseUrl) !== normalizeComparableUrl(draft.baseUrl));
+    const storedKey = await vault.getApiKey(apiKeyRef);
+    const previousKey = endpointChanged ? undefined : storedKey;
     const nextKey = draft.apiKey.trim();
-    if (!nextKey && !previousKey) throw new Error("请填写 SearXNG API Key");
+    if (draft.authMode === "x-api-key" && !nextKey && !previousKey) {
+      throw new Error(endpointChanged ? "更换 SearXNG 服务后请填写该服务的 API Key" : "请填写 SearXNG API Key");
+    }
+    const vaultChanged = Boolean(nextKey) || (endpointChanged && draft.authMode === "none" && Boolean(storedKey));
     if (nextKey) await vault.setApiKey(apiKeyRef, nextKey);
+    else if (endpointChanged && draft.authMode === "none" && storedKey) await vault.removeApiKey(apiKeyRef);
     try {
       await this.dataStore.setWebSearchConfig({
         provider: "searxng",
         baseUrl: draft.baseUrl,
         apiKeyRef,
+        authMode: draft.authMode,
         enabled: draft.enabled,
       });
     } catch (error) {
-      if (nextKey) {
-        if (previousKey) await vault.setApiKey(apiKeyRef, previousKey);
+      if (vaultChanged) {
+        if (storedKey) await vault.setApiKey(apiKeyRef, storedKey);
         else await vault.removeApiKey(apiKeyRef);
       }
       throw error;
@@ -460,13 +618,21 @@ export class ProviderSession {
     signal?: AbortSignal,
   ): Promise<WebSearchResult[]> {
     const vault = this.requireVault();
+    if (draft.authMode === "nkg-session") {
+      const hostedAi = this.hostedAiConfig?.session;
+      if (!hostedAi) throw new Error("当前构建未启用 NKG 默认搜索");
+      return hostedAi.searchWeb("SearXNG connectivity test", 3, signal);
+    }
     if (isPlainHttpProviderUrl(draft.baseUrl) && draft.allowInsecureHttp !== true) {
       throw new Error(`通过明文 HTTP 测试搜索前必须确认风险。${INSECURE_PROVIDER_WARNING}`);
     }
     const current = this.snapshotValue.webSearch;
+    const endpointChanged = Boolean(current
+      && normalizeComparableUrl(current.baseUrl) !== normalizeComparableUrl(draft.baseUrl));
     const apiKey = draft.apiKey.trim()
-      || (current ? await vault.getApiKey(current.apiKeyRef) : undefined);
-    if (!apiKey) throw new Error("请先填写 SearXNG API Key");
+      || (!endpointChanged && current ? await vault.getApiKey(current.apiKeyRef) : undefined)
+      || "";
+    if (draft.authMode === "x-api-key" && !apiKey) throw new Error("请先填写 SearXNG API Key");
     return fetchSearxngResults(
       draft.baseUrl,
       apiKey,
@@ -474,6 +640,140 @@ export class ProviderSession {
       this.fetchImpl,
       { signal, maxResults: 3 },
     );
+  }
+
+  async saveLocalMemory(draft: LocalMemoryDraft): Promise<ProviderSessionSnapshot> {
+    this.requireVault();
+    if (!this.dataStore.setLocalMemoryConfig) throw new Error("本地记忆配置存储不可用");
+    if (draft.semanticSearch && draft.embeddingMode === "cloud") {
+      this.requireEmbeddingProvider(draft.embeddingProviderId);
+    }
+    await this.dataStore.setLocalMemoryConfig({
+      provider: "local",
+      enabled: draft.enabled,
+      autoArchive: draft.autoArchive,
+      semanticSearch: draft.semanticSearch,
+      embeddingMode: draft.embeddingMode,
+      embeddingProviderId: draft.embeddingMode === "cloud" ? draft.embeddingProviderId : "",
+      embeddingModel: draft.embeddingMode === "local"
+        ? LOCAL_EMBEDDING_MODEL_ID
+        : draft.embeddingModel,
+    });
+    return this.refresh();
+  }
+
+  async testLocalMemorySemanticSearch(
+    draft: LocalMemoryDraft,
+    signal?: AbortSignal,
+  ): Promise<number> {
+    if (draft.embeddingMode === "local") {
+      const [vector] = await this.getLocalEmbedder().embed(
+        ["本地记忆语义检索连接测试"],
+        ["query"],
+        signal,
+      );
+      return vector?.length ?? 0;
+    }
+    const vault = this.requireVault();
+    const profile = this.requireEmbeddingProvider(draft.embeddingProviderId);
+    const apiKey = await vault.getApiKey(profile.apiKeyRef);
+    if (!apiKey) throw new Error(`模型服务“${profile.name}”的 API Key 不可用`);
+    const [vector] = await requestTextEmbeddings(
+      profile.baseUrl,
+      apiKey,
+      draft.embeddingModel,
+      ["本地记忆语义检索连接测试"],
+      this.fetchImpl,
+      signal,
+    );
+    return vector!.length;
+  }
+
+  async searchLocalMemory(
+    query: string,
+    namespace: string,
+    options: { signal?: AbortSignal; limit?: number } = {},
+  ): Promise<MemoryItem[]> {
+    const config = this.snapshotValue.localMemory ?? DEFAULT_LOCAL_MEMORY_CONFIG;
+    if (!config.enabled) return [];
+    const fallback = () => listRelevantMemories(query, options.limit ?? 8, namespace);
+    if (!config.semanticSearch) return fallback();
+    if (config.embeddingMode === "local") {
+      const embedder = this.getLocalEmbedder();
+      try {
+        const results = await searchLocalMemoriesSemantically({
+          query,
+          namespace,
+          limit: options.limit,
+          modelKey: LOCAL_EMBEDDING_MODEL_KEY,
+          embedTexts: (texts, roles, signal) => embedder.embed(texts, roles, signal),
+          maxBackfill: 8,
+          signal: options.signal,
+        });
+        this.scheduleLocalEmbeddingBackfill(namespace, embedder);
+        return results;
+      } catch (cause: unknown) {
+        if (cause instanceof Error && cause.name === "AbortError") throw cause;
+        console.warn("本地 BGE 语义检索失败，已回退到词项检索", cause);
+        return fallback();
+      }
+    }
+    const profile = this.snapshotValue.profiles.find(
+      (candidate) => candidate.id === config.embeddingProviderId && candidate.source !== "nkg-hosted",
+    );
+    if (!profile) return fallback();
+    try {
+      const apiKey = await this.requireVault().getApiKey(profile.apiKeyRef);
+      if (!apiKey) return fallback();
+      return await searchLocalMemoriesSemantically({
+        query,
+        namespace,
+        limit: options.limit,
+        modelKey: memoryEmbeddingModelKey(profile, config.embeddingModel),
+        embedTexts: (texts, _roles, signal) => requestTextEmbeddings(
+          profile.baseUrl,
+          apiKey,
+          config.embeddingModel,
+          texts,
+          this.fetchImpl,
+          signal,
+        ),
+        signal: options.signal,
+      });
+    } catch (cause: unknown) {
+      if (cause instanceof Error && cause.name === "AbortError") throw cause;
+      console.warn("本地记忆语义检索失败，已回退到词项检索", cause);
+      return fallback();
+    }
+  }
+
+  isLocalMemoryEnabled(): boolean {
+    return (this.snapshotValue.localMemory ?? DEFAULT_LOCAL_MEMORY_CONFIG).enabled;
+  }
+
+  private getLocalEmbedder(): LocalTextEmbedder {
+    this.localEmbedder ??= this.createLocalEmbedder();
+    return this.localEmbedder;
+  }
+
+  private scheduleLocalEmbeddingBackfill(
+    namespace: string,
+    embedder: LocalTextEmbedder,
+  ): void {
+    if (this.localEmbeddingBackfills.has(namespace)) return;
+    const task = backfillLocalMemoryEmbeddings({
+      namespace,
+      modelKey: LOCAL_EMBEDDING_MODEL_KEY,
+      embedTexts: (texts, roles, signal) => embedder.embed(texts, roles, signal),
+      batchSize: 8,
+    }).then(() => undefined).catch((cause: unknown) => {
+      console.warn("本地记忆后台向量索引未完成，将在后续检索时继续", cause);
+    }).finally(() => {
+      if (this.localEmbeddingBackfills.get(namespace) === task) {
+        this.localEmbeddingBackfills.delete(namespace);
+      }
+    });
+    this.localEmbeddingBackfills.set(namespace, task);
   }
 
   async saveMemoryService(draft: MemoryServiceDraft): Promise<ProviderSessionSnapshot> {
@@ -550,19 +850,30 @@ export class ProviderSession {
     return this.snapshotValue.memory?.enabled === true;
   }
 
+  private requireEmbeddingProvider(providerId: string): ProviderProfile {
+    const normalized = providerId.trim();
+    const profile = this.snapshotValue.profiles.find((candidate) => candidate.id === normalized);
+    if (!profile) throw new Error("请选择一个已配置的 Embedding Provider");
+    if (profile.source === "nkg-hosted") {
+      throw new Error("NKG AI 暂未开放 Embeddings，请选择自定义 OpenAI 兼容 Provider");
+    }
+    return profile;
+  }
+
   async saveCommerce(draft: CommerceDraft): Promise<ProviderSessionSnapshot> {
     const vault = this.requireVault();
     if (!this.dataStore.setCommerceConfig) throw new Error("电商返利配置存储不可用");
     const resolved = await this.resolveCommerceDraft(draft, vault);
-    const previousKey = await vault.getApiKey(resolved.keyRef);
-    const previousSecret = await vault.getApiKey(resolved.secretRef);
-    if (draft.key.trim()) await vault.setApiKey(resolved.keyRef, draft.key);
-    if (draft.secret.trim()) await vault.setApiKey(resolved.secretRef, draft.secret);
+    const writes = resolved.secretWrites.filter((item) => item.value.trim());
+    const previous = new Map<string, string | undefined>();
+    for (const item of writes) {
+      previous.set(item.reference, await vault.getApiKey(item.reference));
+      await vault.setApiKey(item.reference, item.value);
+    }
     try {
       await this.dataStore.setCommerceConfig(resolved.config);
     } catch (error) {
-      await restoreVaultValue(vault, resolved.keyRef, previousKey);
-      await restoreVaultValue(vault, resolved.secretRef, previousSecret);
+      for (const [reference, value] of previous) await restoreVaultValue(vault, reference, value);
       throw error;
     }
     return this.refresh();
@@ -580,6 +891,20 @@ export class ProviderSession {
     );
   }
 
+  async createPddAuthorizationUrl(draft: CommerceDraft, signal?: AbortSignal): Promise<string> {
+    const vault = this.requireVault();
+    const resolved = await this.resolveCommerceDraft({ ...draft, provider: "pdd" }, vault);
+    if (resolved.credentials.provider !== "pdd" || !resolved.config.pdd) {
+      throw new Error("拼多多联盟配置不完整");
+    }
+    return generatePddAuthorizationUrl(
+      resolved.config.pdd,
+      resolved.credentials,
+      this.fetchImpl,
+      { signal },
+    );
+  }
+
   async searchWeb(
     query: string,
     options: WebSearchQueryOptions = {},
@@ -587,9 +912,42 @@ export class ProviderSession {
     const vault = this.requireVault();
     const config = this.snapshotValue.webSearch;
     if (!config?.enabled) throw new Error("联网搜索尚未启用");
-    const apiKey = await vault.getApiKey(config.apiKeyRef);
-    if (!apiKey) throw new Error("联网搜索 API Key 不可用，请在设置中重新保存");
-    return fetchSearxngResults(config.baseUrl, apiKey, query, this.fetchImpl, options);
+    if (config.authMode === "nkg-session") {
+      const hostedAi = this.hostedAiConfig?.session;
+      if (!hostedAi) throw new Error("NKG 默认搜索当前不可用，请配置自己的 SearXNG");
+      return hostedAi.searchWeb(query, Math.max(1, Math.min(10, options.maxResults ?? 6)), options.signal);
+    }
+    const apiKey = config.authMode === "x-api-key"
+      ? await vault.getApiKey(config.apiKeyRef)
+      : "";
+    if (config.authMode === "x-api-key" && !apiKey) {
+      throw new Error("联网搜索 API Key 不可用，请在设置中重新保存");
+    }
+    return fetchSearxngResults(config.baseUrl, apiKey ?? "", query, this.fetchImpl, options);
+  }
+
+  private async provisionDefaultWebSearch(vault: ApiKeyVault): Promise<void> {
+    if (!this.dataStore.getWebSearchConfig
+      || !this.dataStore.setWebSearchConfig
+      || await this.dataStore.getWebSearchConfig()) return;
+    const useHostedSession = Boolean(this.hostedAiConfig);
+    if (!useHostedSession && !DEFAULT_SEARXNG_API_KEY) return;
+    const previousKey = await vault.getApiKey(WEB_SEARCH_API_KEY_REF);
+    if (!useHostedSession) {
+      await vault.setApiKey(WEB_SEARCH_API_KEY_REF, DEFAULT_SEARXNG_API_KEY);
+    }
+    try {
+      await this.dataStore.setWebSearchConfig({
+        provider: "searxng",
+        baseUrl: DEFAULT_SEARXNG_URL,
+        apiKeyRef: WEB_SEARCH_API_KEY_REF,
+        authMode: useHostedSession ? "nkg-session" : "x-api-key",
+        enabled: true,
+      });
+    } catch (cause) {
+      if (!useHostedSession) await restoreVaultValue(vault, WEB_SEARCH_API_KEY_REF, previousKey);
+      throw cause;
+    }
   }
 
   async generateImage(request: ProviderImageGenerationRequest): Promise<ImageGenerationResult> {
@@ -632,8 +990,7 @@ export class ProviderSession {
   ): Promise<{
     config: AffiliateCommerceConfig;
     credentials: AffiliateCredentials;
-    keyRef: string;
-    secretRef: string;
+    secretWrites: Array<{ reference: string; value: string }>;
   }> {
     const current = this.snapshotValue.commerce;
     if (draft.provider === "jd") {
@@ -643,8 +1000,10 @@ export class ProviderSession {
       const secretKey = draft.secret.trim() || await vault.getApiKey(secretRef);
       if (!appKey || !secretKey) throw new Error("请填写京东联盟 App Key 与 Secret Key");
       return {
-        keyRef,
-        secretRef,
+        secretWrites: [
+          { reference: keyRef, value: draft.key.trim() },
+          { reference: secretRef, value: draft.secret.trim() },
+        ],
         credentials: { provider: "jd", appKey, secretKey },
         config: {
           enabled: draft.enabled,
@@ -662,13 +1021,28 @@ export class ProviderSession {
     }
     const keyRef = current?.pdd?.clientIdRef ?? PDD_CLIENT_ID_REF;
     const secretRef = current?.pdd?.clientSecretRef ?? PDD_CLIENT_SECRET_REF;
+    const accessTokenRef = current?.pdd?.accessTokenRef ?? PDD_ACCESS_TOKEN_REF;
+    const refreshTokenRef = current?.pdd?.refreshTokenRef ?? PDD_REFRESH_TOKEN_REF;
     const clientId = draft.key.trim() || await vault.getApiKey(keyRef);
     const clientSecret = draft.secret.trim() || await vault.getApiKey(secretRef);
+    const nextAccessToken = draft.accessToken?.trim() ?? "";
+    const nextRefreshToken = draft.refreshToken?.trim() ?? "";
+    const accessToken = nextAccessToken || await vault.getApiKey(accessTokenRef);
+    const refreshToken = nextRefreshToken || await vault.getApiKey(refreshTokenRef);
     if (!clientId || !clientSecret) throw new Error("请填写拼多多联盟 Client ID 与 Client Secret");
+    if (!accessToken) throw new Error("请填写拼多多 OAuth Access Token");
+    const accessTokenExpiresAt = draft.accessTokenExpiresAt
+      ?? (nextAccessToken ? undefined : current?.pdd?.accessTokenExpiresAt);
+    const refreshTokenExpiresAt = draft.refreshTokenExpiresAt
+      ?? (nextRefreshToken ? undefined : current?.pdd?.refreshTokenExpiresAt);
     return {
-      keyRef,
-      secretRef,
-      credentials: { provider: "pdd", clientId, clientSecret },
+      secretWrites: [
+        { reference: keyRef, value: draft.key.trim() },
+        { reference: secretRef, value: draft.secret.trim() },
+        { reference: accessTokenRef, value: nextAccessToken },
+        { reference: refreshTokenRef, value: nextRefreshToken },
+      ],
+      credentials: { provider: "pdd", clientId, clientSecret, accessToken },
       config: {
         enabled: draft.enabled,
         selectedProvider: "pdd",
@@ -676,7 +1050,122 @@ export class ProviderSession {
         pdd: {
           clientIdRef: keyRef,
           clientSecretRef: secretRef,
+          accessTokenRef,
+          ...(refreshToken ? { refreshTokenRef } : {}),
+          ...(accessTokenExpiresAt ? { accessTokenExpiresAt } : {}),
+          ...(refreshTokenExpiresAt ? { refreshTokenExpiresAt } : {}),
           pid: draft.pid,
+        },
+      },
+    };
+  }
+
+  private async prepareCommerceRunOptions(
+    vault: ApiKeyVault,
+    options: FlowInvokeOptions,
+  ): Promise<FlowInvokeOptions> {
+    let config = this.snapshotValue.commerce;
+    if (!config) {
+      throw new Error("拼多多联盟凭据尚未完成安全初始化，请重新启动应用后再试");
+    }
+    if (config?.enabled && config.selectedProvider === "pdd" && config.pdd?.accessTokenExpiresAt) {
+      const expiresAt = Date.parse(config.pdd.accessTokenExpiresAt);
+      if (Number.isFinite(expiresAt) && expiresAt <= Date.now() + PDD_TOKEN_REFRESH_SKEW_MS) {
+        if (!config.pdd.refreshTokenRef) {
+          throw new Error("拼多多 OAuth Access Token 已过期，请重新授权并保存新的 Token");
+        }
+        const [clientId, clientSecret, refreshToken] = await Promise.all([
+          vault.getApiKey(config.pdd.clientIdRef),
+          vault.getApiKey(config.pdd.clientSecretRef),
+          vault.getApiKey(config.pdd.refreshTokenRef),
+        ]);
+        if (!clientId || !clientSecret || !refreshToken) {
+          throw new Error("拼多多 OAuth 刷新凭据不可用，请重新授权");
+        }
+        const refreshed = await refreshPddAccessToken(
+          clientId,
+          clientSecret,
+          refreshToken,
+          this.fetchImpl,
+        );
+        await vault.setApiKey(config.pdd.accessTokenRef, refreshed.accessToken);
+        if (refreshed.refreshToken) {
+          await vault.setApiKey(config.pdd.refreshTokenRef, refreshed.refreshToken);
+        }
+        config = {
+          ...config,
+          pdd: {
+            ...config.pdd,
+            accessTokenExpiresAt: refreshed.accessTokenExpiresAt,
+            ...(refreshed.refreshTokenExpiresAt
+              ? { refreshTokenExpiresAt: refreshed.refreshTokenExpiresAt }
+              : {}),
+          },
+        };
+        if (!this.dataStore.setCommerceConfig) throw new Error("电商返利配置存储不可用");
+        await this.dataStore.setCommerceConfig(config);
+        this.snapshotValue = { ...this.snapshotValue, commerce: config };
+        this.notify();
+      }
+    }
+    const commerceOptions = await withAffiliateFlowEnvironment(config, vault, options);
+    return this.prepareMarketSearchRunOptions(vault, commerceOptions);
+  }
+
+  private async prepareMarketSearchRunOptions(
+    vault: ApiKeyVault,
+    options: FlowInvokeOptions,
+  ): Promise<FlowInvokeOptions> {
+    const search = this.snapshotValue.webSearch;
+    if (!search?.enabled) {
+      return {
+        ...options,
+        envOverrides: {
+          variables: {
+            ...options.envOverrides?.variables,
+            [PUBLIC_MARKET_SEARCH_ENV_KEYS.enabled]: false,
+          },
+          secrets: { ...options.envOverrides?.secrets },
+        },
+      };
+    }
+    if (search.authMode === "nkg-session") {
+      const hosted = this.hostedAiConfig;
+      if (!hosted) throw new Error("NKG 默认搜索当前不可用");
+      return {
+        ...options,
+        envOverrides: {
+          variables: {
+            ...options.envOverrides?.variables,
+            [PUBLIC_MARKET_SEARCH_ENV_KEYS.enabled]: true,
+            [PUBLIC_MARKET_SEARCH_ENV_KEYS.mode]: "nkg-session",
+            [PUBLIC_MARKET_SEARCH_ENV_KEYS.baseUrl]: hosted.serviceUrl ?? DEFAULT_HOSTED_AI_SERVICE_URL,
+          },
+          secrets: {
+            ...options.envOverrides?.secrets,
+            [PUBLIC_MARKET_SEARCH_ENV_KEYS.sessionToken]: hosted.session.getSearchSessionToken(),
+          },
+        },
+      };
+    }
+    const apiKey = search.authMode === "x-api-key"
+      ? await vault.getApiKey(search.apiKeyRef)
+      : "";
+    if (search.authMode === "x-api-key" && !apiKey) {
+      throw new Error("联网搜索 API Key 不可用，请在设置中重新保存");
+    }
+    return {
+      ...options,
+      envOverrides: {
+        variables: {
+          ...options.envOverrides?.variables,
+          [PUBLIC_MARKET_SEARCH_ENV_KEYS.enabled]: true,
+          [PUBLIC_MARKET_SEARCH_ENV_KEYS.mode]: "searxng",
+          [PUBLIC_MARKET_SEARCH_ENV_KEYS.baseUrl]: search.baseUrl,
+        },
+        secrets: {
+          ...options.envOverrides?.secrets,
+          [PUBLIC_MARKET_SEARCH_ENV_KEYS.apiKey]: apiKey ?? "",
         },
       },
     };
@@ -755,12 +1244,15 @@ async function readCommerceCredentials(
     return { provider: "jd", appKey, secretKey };
   }
   if (!config.pdd) throw new Error("拼多多联盟配置不完整");
-  const [clientId, clientSecret] = await Promise.all([
+  const [clientId, clientSecret, accessToken] = await Promise.all([
     vault.getApiKey(config.pdd.clientIdRef),
     vault.getApiKey(config.pdd.clientSecretRef),
+    vault.getApiKey(config.pdd.accessTokenRef),
   ]);
-  if (!clientId || !clientSecret) throw new Error("拼多多联盟凭据不可用，请在设置中重新保存");
-  return { provider: "pdd", clientId, clientSecret };
+  if (!clientId || !clientSecret || !accessToken) {
+    throw new Error("拼多多联盟 OAuth 凭据不可用，请在设置中重新保存");
+  }
+  return { provider: "pdd", clientId, clientSecret, accessToken };
 }
 
 async function withAffiliateFlowEnvironment(
@@ -816,6 +1308,7 @@ async function withAffiliateFlowEnvironment(
         ...options.envOverrides?.secrets,
         [AFFILIATE_ENV_KEYS.pddClientId]: credentials.clientId,
         [AFFILIATE_ENV_KEYS.pddClientSecret]: credentials.clientSecret,
+        [AFFILIATE_ENV_KEYS.pddAccessToken]: credentials.accessToken,
       },
     },
   };
@@ -866,6 +1359,62 @@ export async function fetchCompatibleModels(
   return models;
 }
 
+export async function pingCompatibleModel(
+  baseUrl: string,
+  apiKey: string,
+  model: string,
+  fetchImpl: typeof globalThis.fetch,
+  signal?: AbortSignal,
+): Promise<number> {
+  const endpoint = new URL(baseUrl.trim());
+  if (!["http:", "https:"].includes(endpoint.protocol)) {
+    throw new Error("API URL 必须使用 HTTP 或 HTTPS");
+  }
+
+  endpoint.pathname = `${endpoint.pathname.replace(/\/$/, "")}/chat/completions`;
+  endpoint.search = "";
+  endpoint.hash = "";
+  const startedAt = Date.now();
+  const response = await fetchImpl(endpoint, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${apiKey.trim()}`,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      model: model.trim(),
+      messages: [{ role: "user", content: "ping" }],
+      max_tokens: 1,
+      stream: false,
+    }),
+    signal,
+  });
+  if (!response.ok) {
+    const detail = await readCompatibleError(response);
+    throw new Error(`Ping 失败：HTTP ${response.status}${detail ? ` · ${detail}` : ""}`);
+  }
+  return Math.max(1, Date.now() - startedAt);
+}
+
+async function readCompatibleError(response: Response): Promise<string> {
+  try {
+    const payload = await response.json() as unknown;
+    if (!payload || typeof payload !== "object") return "";
+    const error = (payload as { error?: unknown }).error;
+    if (typeof error === "string") return error.trim().slice(0, 160);
+    if (error && typeof error === "object" && typeof (error as { message?: unknown }).message === "string") {
+      return (error as { message: string }).message.trim().slice(0, 160);
+    }
+    if (typeof (payload as { message?: unknown }).message === "string") {
+      return (payload as { message: string }).message.trim().slice(0, 160);
+    }
+  } catch {
+    // Some compatible gateways return an empty or non-JSON error body.
+  }
+  return "";
+}
+
 export async function fetchSearxngResults(
   baseUrl: string,
   apiKey: string,
@@ -886,7 +1435,10 @@ export async function fetchSearxngResults(
   endpoint.hash = "";
   const response = await fetchImpl(endpoint, {
     method: "GET",
-    headers: { "X-API-Key": apiKey.trim(), Accept: "application/json" },
+    headers: {
+      ...(apiKey.trim() ? { "X-API-Key": apiKey.trim() } : {}),
+      Accept: "application/json",
+    },
     signal: options.signal,
   });
   if (!response.ok) {
@@ -923,4 +1475,19 @@ export async function fetchSearxngResults(
   return results;
 }
 
-export const providerSession = new ProviderSession();
+export const providerSession = new ProviderSession(
+  sqliteProviderStore,
+  SecretVault.openAutomatically,
+  (...args) => import("@tauri-apps/plugin-http").then(({ fetch }) => fetch(...args)),
+  undefined,
+  () => new LocalEmbeddingWorkerClient(),
+  () => invoke<PddCommerceBootstrap | undefined>("take_pdd_commerce_bootstrap"),
+);
+
+function normalizeComparableUrl(value: string): string {
+  try {
+    return new URL(value.trim()).toString().replace(/\/$/, "");
+  } catch {
+    return value.trim().replace(/\/$/, "");
+  }
+}

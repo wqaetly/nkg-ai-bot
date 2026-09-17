@@ -83,7 +83,7 @@ export function MemoryPanel({
         <div>
           <span className="settings-kicker">LOCAL LEARNING</span>
           <h2>本地记忆</h2>
-          <p>只有你批准的事实才会用于后续对话，随时可以停用、修改或删除。</p>
+          <p>自动归档会启用通过安全检查的稳定事实；所有记忆都可停用、修改或删除。</p>
         </div>
         <button aria-label="关闭本地记忆" className="icon-button" type="button" onClick={onClose}>
           <CloseIcon />
@@ -95,7 +95,7 @@ export function MemoryPanel({
         <>
           <section className="memory-section">
             <div className="memory-section-heading">
-              <div><h3>反思任务</h3><p>使用当前模型分析负反馈；挂起或退出后可以安全继续。</p></div>
+              <div><h3>记忆归档任务</h3><p>自动归档每轮问答，也可分析负反馈；挂起或退出后可以安全继续。</p></div>
               <span>{jobs.filter((job) => job.status === "running" || job.status === "queued").length} 进行中</span>
             </div>
             {jobs.length === 0 ? (
@@ -106,7 +106,7 @@ export function MemoryPanel({
                   <article className={`learning-job ${job.status}`} key={job.id}>
                     <span className="learning-job-status">{jobStatusLabel(job.status)}</span>
                     <div>
-                      <strong>反馈反思</strong>
+                      <strong>{job.mode === "auto_archive" ? "自动归档" : "反馈反思"}</strong>
                       <small>{jobSummary(job)} · 尝试 {job.attempt} 次</small>
                     </div>
                     <div className="learning-job-actions">
@@ -161,7 +161,7 @@ export function MemoryPanel({
               <div><h3>已保存记忆</h3><p>相关记忆会在本地检索后注入聊天 Flow。</p></div>
               <span>{memories.filter((memory) => memory.status === "active").length} 启用</span>
             </div>
-            {memories.length === 0 ? <div className="memory-empty">还没有已批准的记忆。</div> : (
+            {memories.length === 0 ? <div className="memory-empty">还没有已保存的长期记忆。</div> : (
               <div className="memory-list">
                 {memories.map((memory) => (
                   <article className={`memory-card ${memory.status}`} key={memory.id}>
@@ -199,7 +199,7 @@ export function MemoryPanel({
           </section>
         </>
       )}
-      <p className="memory-privacy-note">数据仅保存在当前设备的 SQLite 数据库中，不会同步到我们的服务器。</p>
+      <p className="memory-privacy-note">每次成功问答默认都会由当前模型异步提取稳定事实并自动归档，本地记忆正文与向量保存在当前设备的 SQLite 数据库中。语义检索默认由本机 BGE 完成；只有切换到云端 Embeddings 时，查询和待索引记忆才会额外发送给所选 Provider。启用 MemOS 后还会按其配置进行跨端召回与写入。</p>
     </div>
   );
 }
@@ -219,8 +219,10 @@ function jobStatusLabel(status: LearningJob["status"]): string {
 
 function jobSummary(job: LearningJob): string {
   if (job.status === "succeeded") {
-    const count = typeof job.result?.proposedCount === "number" ? job.result.proposedCount : 0;
-    return `${count} 条候选`;
+    const count = job.mode === "auto_archive" && typeof job.result?.approvedCount === "number"
+      ? job.result.approvedCount
+      : typeof job.result?.proposedCount === "number" ? job.result.proposedCount : 0;
+    return job.mode === "auto_archive" ? `${count} 条已归档` : `${count} 条候选`;
   }
   if (job.error?.message) return job.error.message;
   return formatDate(job.updatedAt);

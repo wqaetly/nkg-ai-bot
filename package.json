@@ -33,6 +33,8 @@
     "ios:build": "npm run tauri -w @nkg-ai-bot/client -- ios build",
     "ios:build:debug": "npm run tauri -w @nkg-ai-bot/client -- ios build --debug",
     "mock:provider": "node scripts/mock-openai-server.mjs",
+    "download:local-embedding": "node scripts/download-local-embedding.mjs",
+    "verify:local-embedding": "node scripts/verify-local-embedding.mjs",
     "android:e2e:chat": "node scripts/android-chat-e2e.mjs",
     "android:e2e:lifecycle": "node scripts/android-chat-e2e.mjs --lifecycle",
     "tauri": "npm run tauri -w @nkg-ai-bot/client --",

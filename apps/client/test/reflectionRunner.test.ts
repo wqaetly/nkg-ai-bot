@@ -16,6 +16,8 @@ function job(status: LearningJob["status"] = "queued"): LearningJob {
     type: "reflection",
     sourceConversationId: "conversation-1",
     sourceMessageId: "assistant-1",
+    mode: "review",
+    memoryNamespace: "global",
     status,
     checkpoint: { phase: status },
     attempt: status === "queued" ? 0 : 1,
@@ -80,6 +82,15 @@ function store(): ReflectionJobStore & { current: LearningJob } {
       updatedAt: 1,
     }]),
     propose: vi.fn(async () => ({ id: "candidate-1" })),
+    approve: vi.fn(async () => ({
+      id: "memory-1",
+      namespace: "global",
+      content: "用户喜欢蓝色",
+      confidence: 0.98,
+      status: "active" as const,
+      createdAt: 1,
+      updatedAt: 1,
+    })),
   };
   return value;
 }
@@ -115,6 +126,51 @@ describe("ReflectionJobRunner", () => {
     }));
     expect(completed.status).toBe("succeeded");
     expect(completed.result).toMatchObject({ proposedCount: 1, candidateIds: ["candidate-1"] });
+    expect(data.approve).not.toHaveBeenCalled();
+  });
+
+  it("auto-archives only the completed turn and approves extracted memories", async () => {
+    const data = store();
+    data.current = {
+      ...data.current,
+      mode: "auto_archive",
+      memoryNamespace: "computer_config",
+      checkpoint: { phase: "queued", mode: "auto_archive", memoryNamespace: "computer_config" },
+    };
+    data.listMessages.mockResolvedValue([
+      message("old-user", "user", "我以前聊过一次性问题"),
+      message("old-assistant", "assistant", "旧回复"),
+      message("user-1", "user", "我长期偏好静音电脑"),
+      message("assistant-1", "assistant", "以后会优先考虑静音"),
+    ]);
+    const runtime: ReflectionRuntime = {
+      stream: vi.fn(async function* (_flowId, _input, options) {
+        options?.onRunStarted?.("runtime-run-1");
+        yield event("run_finished", {
+          output: JSON.stringify({
+            memoryCandidates: [{ content: "用户长期偏好静音电脑", confidence: 0.96, rationale: "用户明确表达" }],
+          }),
+        });
+      }),
+      cancel: vi.fn(async () => undefined),
+    };
+
+    const completed = await new ReflectionJobRunner(runtime, data).run("job-1");
+
+    const prompt = vi.mocked(runtime.stream).mock.calls[0]![1] as string;
+    expect(prompt).toContain("自动记忆归档器");
+    expect(prompt).toContain("我长期偏好静音电脑");
+    expect(prompt).not.toContain("一次性问题");
+    expect(data.propose).toHaveBeenCalledWith(expect.objectContaining({
+      namespace: "computer_config",
+      content: "用户长期偏好静音电脑",
+    }));
+    expect(data.approve).toHaveBeenCalledWith("candidate-1");
+    expect(completed.result).toMatchObject({
+      approvalMode: "automatic",
+      approvedCount: 1,
+      approvedMemoryIds: ["memory-1"],
+    });
   });
 
   it("persists invalid model output as a failed job without creating candidates", async () => {

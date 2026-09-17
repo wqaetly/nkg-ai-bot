@@ -85,6 +85,11 @@ function client(overrides: Partial<HostedAiClientPort> = {}): HostedAiClientPort
       creditedPoints: 600,
       balance: { ...account.balance, availablePoints: 900, purchasedPoints: 600 },
     })),
+    searchWeb: vi.fn(async () => [{
+      title: "Result",
+      url: "https://example.test/result",
+      content: "Summary",
+    }]),
     ...overrides,
   };
 }

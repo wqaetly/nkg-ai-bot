@@ -16,8 +16,10 @@ import {
   type LearningJob,
 } from "./learningJobs";
 import {
+  approveMemoryCandidate,
   listMessageFeedback,
   proposeMemoryCandidate,
+  type MemoryItem,
   type MessageFeedback,
 } from "./learningRepository";
 import { listMessages, type LocalMessage } from "./storage/repositories";
@@ -64,6 +66,7 @@ export interface ReflectionJobStore {
   listMessages(conversationId: string): Promise<LocalMessage[]>;
   listFeedback(conversationId: string): Promise<MessageFeedback[]>;
   propose(input: Parameters<typeof proposeMemoryCandidate>[0]): Promise<{ id: string }>;
+  approve(id: string): Promise<MemoryItem>;
 }
 
 const sqliteReflectionStore: ReflectionJobStore = {
@@ -78,6 +81,7 @@ const sqliteReflectionStore: ReflectionJobStore = {
   listMessages: (conversationId) => listMessages(conversationId),
   listFeedback: (conversationId) => listMessageFeedback(conversationId),
   propose: (input) => proposeMemoryCandidate(input),
+  approve: (id) => approveMemoryCandidate(id),
 };
 
 export class ReflectionJobRunner {
@@ -102,7 +106,12 @@ export class ReflectionJobRunner {
         this.store.listMessages(job.sourceConversationId),
         this.store.listFeedback(job.sourceConversationId),
       ]);
-      const prompt = buildReflectionPrompt(messages, feedback, job.sourceMessageId);
+      const prompt = buildReflectionPrompt(
+        job.mode === "auto_archive" ? selectSourceTurn(messages, job.sourceMessageId) : messages,
+        feedback,
+        job.sourceMessageId,
+        job.mode,
+      );
       let streamed = "";
       let finalOutput = "";
       let runUpdate: Promise<void> = Promise.resolve();
@@ -131,20 +140,33 @@ export class ReflectionJobRunner {
       await runUpdate;
       const document = parseReflectionOutput(finalOutput || streamed);
       const candidateIds: string[] = [];
+      const approvedMemoryIds: string[] = [];
       for (const candidate of document.memoryCandidates) {
         const saved = await this.store.propose({
           content: candidate.content,
+          namespace: job.memoryNamespace,
           confidence: candidate.confidence,
-          rationale: `Reflection Flow：${candidate.rationale}`,
+          rationale: job.mode === "auto_archive"
+            ? `自动归档：${candidate.rationale}`
+            : `Reflection Flow：${candidate.rationale}`,
           sourceMessageId: job.sourceMessageId,
           sourceConversationId: job.sourceConversationId,
           jobId,
         });
         candidateIds.push(saved.id);
+        if (job.mode === "auto_archive") {
+          const memory = await this.store.approve(saved.id);
+          approvedMemoryIds.push(memory.id);
+        }
       }
       await this.store.complete(jobId, {
         candidateIds,
         proposedCount: candidateIds.length,
+        approvalMode: job.mode === "auto_archive" ? "automatic" : "review",
+        ...(job.mode === "auto_archive" ? {
+          approvedMemoryIds,
+          approvedCount: approvedMemoryIds.length,
+        } : {}),
         rejectedCount: document.rejectedCount,
         ...(active.runId ? { runtimeRunId: active.runId } : {}),
       });
@@ -192,6 +214,7 @@ export function buildReflectionPrompt(
   messages: LocalMessage[],
   feedback: MessageFeedback[],
   sourceMessageId?: string,
+  mode: "review" | "auto_archive" = "review",
 ): string {
   const feedbackByMessage = new Map(feedback.map((item) => [item.messageId, item]));
   const evidence: string[] = [];
@@ -210,13 +233,27 @@ export function buildReflectionPrompt(
     size += line.length;
   }
   return [
-    "你是本地 AI 客户端的学习反思器。根据下方有限的对话与用户反馈，只提出稳定、可复用、明确属于用户的事实或偏好。",
+    mode === "auto_archive"
+      ? "你是本地 AI 客户端的自动记忆归档器。仅分析当前一轮问答，只提取稳定、可复用、明确属于用户的事实或偏好。"
+      : "你是本地 AI 客户端的学习反思器。根据下方有限的对话与用户反馈，只提出稳定、可复用、明确属于用户的事实或偏好。",
     "不要记录助手自己的说法、一次性任务、推测、健康/财务等敏感推断，也绝不能记录 API Key、密码、Token、私钥或其他凭据。",
     "如果证据不足，返回空数组。最多返回 5 条。只输出一个 JSON 对象，不要 Markdown，不要解释。",
     '严格格式：{"memoryCandidates":[{"content":"简短事实","confidence":0.0,"rationale":"证据理由"}]}',
     "本地证据：",
     evidence.join("\n\n") || "（无可用证据）",
   ].join("\n\n");
+}
+
+function selectSourceTurn(messages: LocalMessage[], sourceMessageId?: string): LocalMessage[] {
+  if (!sourceMessageId) return messages.slice(-2);
+  const sourceIndex = messages.findIndex((message) => message.id === sourceMessageId);
+  if (sourceIndex < 0) return messages.slice(-2);
+  const source = messages[sourceIndex]!;
+  const precedingUser = messages
+    .slice(0, sourceIndex)
+    .reverse()
+    .find((message) => message.role === "user");
+  return precedingUser ? [precedingUser, source] : [source];
 }
 
 export function parseReflectionOutput(output: string): ReflectionDocument {

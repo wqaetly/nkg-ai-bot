@@ -1,4 +1,13 @@
 import { getDatabase, type DatabaseClient } from "./storage/database";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+
+// In-flight searches must not return a snapshot from before a manual mutation.
+export let memoryIndexRevision = 0;
+
+async function resetMemoryIndex(): Promise<void> {
+  memoryIndexRevision += 1;
+  if (isTauri()) await invoke("reset_memory_index");
+}
 
 export type FeedbackRating = "positive" | "negative";
 export type LearningCandidateStatus = "pending" | "approved" | "rejected";
@@ -285,6 +294,7 @@ export async function setMemoryItemStatus(
     "UPDATE memory_items SET status=$2, updated_at=$3 WHERE id=$1",
     [id, status, Date.now()],
   );
+  await resetMemoryIndex();
 }
 
 export async function updateMemoryItemContent(
@@ -298,11 +308,13 @@ export async function updateMemoryItemContent(
     "UPDATE memory_items SET content=$2, content_key=$3, updated_at=$4 WHERE id=$1",
     [id, normalized, memoryContentKey(normalized), Date.now()],
   );
+  await resetMemoryIndex();
 }
 
 export async function deleteMemoryItem(id: string, client?: DatabaseClient): Promise<void> {
   const database = client ?? await getDatabase();
   await database.execute("DELETE FROM memory_items WHERE id=$1", [id]);
+  await resetMemoryIndex();
 }
 
 export async function listRelevantMemories(
@@ -311,12 +323,27 @@ export async function listRelevantMemories(
   namespace = "global",
   client?: DatabaseClient,
 ): Promise<MemoryItem[]> {
+  const items = await listActiveMemoryItems(namespace, undefined, client);
+  return rankMemoryItems(query, items, Math.min(Math.max(limit, 0), 20));
+}
+
+export async function listActiveMemoryItems(
+  namespace = "global",
+  limit?: number,
+  client?: DatabaseClient,
+): Promise<MemoryItem[]> {
   const database = client ?? await getDatabase();
-  const rows = await database.select<MemoryRow[]>(
-    "SELECT * FROM memory_items WHERE status='active' AND namespace=$1 ORDER BY updated_at DESC LIMIT 500",
-    [normalizeNamespace(namespace)],
-  );
-  return rankMemoryItems(query, rows.map(mapMemory), Math.min(Math.max(limit, 0), 20));
+  const normalizedNamespace = normalizeNamespace(namespace);
+  const rows = limit === undefined
+    ? await database.select<MemoryRow[]>(
+      "SELECT * FROM memory_items WHERE status='active' AND namespace=$1 ORDER BY updated_at DESC",
+      [normalizedNamespace],
+    )
+    : await database.select<MemoryRow[]>(
+      "SELECT * FROM memory_items WHERE status='active' AND namespace=$1 ORDER BY updated_at DESC LIMIT $2",
+      [normalizedNamespace, Math.max(Math.floor(limit), 0)],
+    );
+  return rows.map(mapMemory);
 }
 
 export function rankMemoryItems(query: string, items: MemoryItem[], limit = 8): MemoryItem[] {

@@ -82,7 +82,11 @@ describe("ProviderFlowRuntimeClient", () => {
       }),
     };
     const prepare = vi.fn(async () => { calls.push("catalog"); });
-    const client = new ProviderFlowRuntimeClient(runtime as never, providers as never, prepare);
+    const client = new ProviderFlowRuntimeClient(
+      runtime as never,
+      providers as never,
+      prepare,
+    );
 
     await client.invoke("chat", {});
 

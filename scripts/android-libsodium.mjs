@@ -10,7 +10,7 @@ const ZIG_SHA256 = "3a0ed1e8799a2f8ce2a6e6290a9ff22e6906f8227865911fb7ddedc3cc14
 const SODIUM_VERSION = "1.0.22";
 const SODIUM_ARCHIVE = `libsodium-${SODIUM_VERSION}-stable.tar.gz`;
 const SODIUM_SHA256 = "3f7ea5cb0a90781cac9255f4b7cb108e8fbfec396317ecd6890749932500a4c7";
-const ANDROID_API = 24;
+const ANDROID_API = 28;
 
 const TARGETS = {
   aarch64: {

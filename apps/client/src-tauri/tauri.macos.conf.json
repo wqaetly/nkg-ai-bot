@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "macOS": { "frameworks": ["native/zvec/runtime/libzvec_c_api.dylib"] }
+  }
+}

@@ -4,6 +4,7 @@ import { copyFile, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createAndroidRustEnvironment } from "./rust-env.mjs";
+import { prepareZvec } from "./zvec-sdk.mjs";
 import {
   assertApkSize,
   createAndroidArtifactPlans,
@@ -34,6 +35,7 @@ if (!existsSync(join(androidDir, "gradlew.bat"))) {
 }
 
 const env = await createAndroidRustEnvironment(targetName);
+await prepareZvec(env, { platform: "android", arch: targetName });
 // Mobile bundles use the browser-safe in-process Runtime and must neither
 // build nor package the desktop Node sidecar.
 await run(

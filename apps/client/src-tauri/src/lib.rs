@@ -1,4 +1,5 @@
 mod lan_sync;
+mod memory_index;
 #[cfg(all(desktop, feature = "desktop-power"))]
 mod runtime_sidecar;
 mod runtime_tools;
@@ -14,11 +15,13 @@ use runtime_sidecar::{runtime_sidecar_start, runtime_sidecar_stop, RuntimeSideca
 use runtime_tools::runtime_tool_call;
 use serde::{Deserialize, Serialize};
 use std::{
+    env,
     fs::OpenOptions,
     io::Write,
     path::{Component, Path, PathBuf},
+    sync::Mutex,
 };
-use tauri::Manager;
+use tauri::{Manager, State};
 use tauri_plugin_sql::{Migration, MigrationKind};
 
 #[tauri::command]
@@ -35,6 +38,133 @@ fn runtime_platform() -> &'static str {
         "ios"
     } else {
         "unknown"
+    }
+}
+
+const PDD_BOOTSTRAP_CLIENT_ID: &str = "NKG_PDD_CLIENT_ID";
+const PDD_BOOTSTRAP_CLIENT_SECRET: &str = "NKG_PDD_CLIENT_SECRET";
+const PDD_BOOTSTRAP_ACCESS_TOKEN: &str = "NKG_PDD_ACCESS_TOKEN";
+const PDD_BOOTSTRAP_REFRESH_TOKEN: &str = "NKG_PDD_REFRESH_TOKEN";
+const PDD_BOOTSTRAP_AUTHORIZATION_CODE: &str = "NKG_PDD_AUTHORIZATION_CODE";
+const PDD_BOOTSTRAP_PID: &str = "NKG_PDD_PID";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PddCommerceBootstrap {
+    client_id: Option<String>,
+    client_secret: Option<String>,
+    access_token: Option<String>,
+    refresh_token: Option<String>,
+    authorization_code: Option<String>,
+    pid: Option<String>,
+}
+
+struct PendingPddCommerceBootstrap {
+    value: Mutex<Option<PddCommerceBootstrap>>,
+    error: Option<String>,
+}
+
+#[tauri::command]
+fn take_pdd_commerce_bootstrap(
+    state: State<'_, PendingPddCommerceBootstrap>,
+) -> Result<Option<PddCommerceBootstrap>, String> {
+    if let Some(error) = &state.error {
+        return Err(error.clone());
+    }
+    state
+        .value
+        .lock()
+        .map_err(|_| "拼多多安全初始化状态不可用".to_string())
+        .map(|mut pending| pending.take())
+}
+
+fn read_pdd_commerce_bootstrap() -> PendingPddCommerceBootstrap {
+    let read = |name: &str| env::var(name).ok().map(|value| value.trim().to_string());
+    let client_id = read(PDD_BOOTSTRAP_CLIENT_ID);
+    let client_secret = read(PDD_BOOTSTRAP_CLIENT_SECRET);
+    let access_token = read(PDD_BOOTSTRAP_ACCESS_TOKEN).filter(|value| !value.is_empty());
+    let refresh_token = read(PDD_BOOTSTRAP_REFRESH_TOKEN).filter(|value| !value.is_empty());
+    let authorization_code =
+        read(PDD_BOOTSTRAP_AUTHORIZATION_CODE).filter(|value| !value.is_empty());
+    let pid = read(PDD_BOOTSTRAP_PID);
+    for name in [
+        PDD_BOOTSTRAP_CLIENT_ID,
+        PDD_BOOTSTRAP_CLIENT_SECRET,
+        PDD_BOOTSTRAP_ACCESS_TOKEN,
+        PDD_BOOTSTRAP_REFRESH_TOKEN,
+        PDD_BOOTSTRAP_AUTHORIZATION_CODE,
+        PDD_BOOTSTRAP_PID,
+    ] {
+        env::remove_var(name);
+    }
+    let any_present = [
+        &client_id,
+        &client_secret,
+        &access_token,
+        &refresh_token,
+        &authorization_code,
+        &pid,
+    ]
+    .into_iter()
+    .any(|value| value.as_ref().is_some_and(|item| !item.is_empty()));
+    if !any_present {
+        return PendingPddCommerceBootstrap {
+            value: Mutex::new(None),
+            error: None,
+        };
+    }
+    let has_any_credentials = client_id.is_some() || client_secret.is_some() || pid.is_some();
+    let has_complete_credentials = client_id.is_some() && client_secret.is_some() && pid.is_some();
+    let valid_pid = pid.as_ref().is_none_or(|value| {
+        value.split_once('_').is_some_and(|(owner, position)| {
+            !owner.is_empty()
+                && !position.is_empty()
+                && owner.bytes().all(|value| value.is_ascii_digit())
+                && position.bytes().all(|value| value.is_ascii_digit())
+        })
+    });
+    let has_exactly_one_token_source = access_token.is_some() != authorization_code.is_some();
+    let valid_lengths = client_id
+        .as_ref()
+        .is_none_or(|value| (16..=128).contains(&value.len()))
+        && client_secret
+            .as_ref()
+            .is_none_or(|value| (20..=256).contains(&value.len()))
+        && access_token
+            .as_ref()
+            .is_none_or(|value| (20..=512).contains(&value.len()))
+        && refresh_token
+            .as_ref()
+            .is_none_or(|value| (20..=512).contains(&value.len()));
+    let valid_authorization_code = authorization_code
+        .as_ref()
+        .is_none_or(|value| (8..=512).contains(&value.len()));
+    let valid_source_credentials = if authorization_code.is_some() {
+        (!has_any_credentials || has_complete_credentials) && refresh_token.is_none()
+    } else {
+        has_complete_credentials
+    };
+    if !valid_pid
+        || !valid_lengths
+        || !valid_authorization_code
+        || !has_exactly_one_token_source
+        || !valid_source_credentials
+    {
+        return PendingPddCommerceBootstrap {
+            value: Mutex::new(None),
+            error: Some("拼多多安全初始化参数格式无效".to_string()),
+        };
+    }
+    PendingPddCommerceBootstrap {
+        value: Mutex::new(Some(PddCommerceBootstrap {
+            client_id,
+            client_secret,
+            access_token,
+            refresh_token,
+            authorization_code,
+            pid,
+        })),
+        error: None,
     }
 }
 
@@ -262,6 +392,7 @@ fn restart_app(app: tauri::AppHandle) {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    let pdd_bootstrap = read_pdd_commerce_bootstrap();
     let migrations = vec![
         Migration {
             version: 1,
@@ -323,10 +454,23 @@ pub fn run() {
             sql: include_str!("../migrations/0010_context_compression.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 11,
+            description: "add_local_memory_embeddings",
+            sql: include_str!("../migrations/0011_local_memory_embeddings.sql"),
+            kind: MigrationKind::Up,
+        },
+        Migration {
+            version: 12,
+            description: "add_conversation_flow_variables",
+            sql: include_str!("../migrations/0012_conversation_flow_variables.sql"),
+            kind: MigrationKind::Up,
+        },
     ];
 
     let builder = tauri::Builder::default()
         .manage(LanSyncState::default())
+        .manage(pdd_bootstrap)
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_storekit::init())
         .plugin(
@@ -354,7 +498,10 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .manage(RuntimeSidecarState::default())
         .invoke_handler(tauri::generate_handler![
+            memory_index::search_memory_index,
+            memory_index::reset_memory_index,
             runtime_platform,
+            take_pdd_commerce_bootstrap,
             secret_vault_device_password,
             save_chat_images,
             read_chat_image,
@@ -375,7 +522,10 @@ pub fn run() {
 
     #[cfg(all(desktop, not(feature = "desktop-power")))]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        memory_index::search_memory_index,
+        memory_index::reset_memory_index,
         runtime_platform,
+        take_pdd_commerce_bootstrap,
         secret_vault_device_password,
         save_chat_images,
         read_chat_image,
@@ -394,7 +544,10 @@ pub fn run() {
 
     #[cfg(mobile)]
     let builder = builder.invoke_handler(tauri::generate_handler![
+        memory_index::search_memory_index,
+        memory_index::reset_memory_index,
         runtime_platform,
+        take_pdd_commerce_bootstrap,
         secret_vault_device_password,
         save_chat_images,
         read_chat_image,
@@ -710,6 +863,14 @@ mod migration_tests {
             .execute(&pool)
             .await
             .expect("apply context compression migration");
+        sqlx::raw_sql(include_str!("../migrations/0011_local_memory_embeddings.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply local memory embeddings migration");
+        sqlx::raw_sql(include_str!("../migrations/0012_conversation_flow_variables.sql"))
+            .execute(&pool)
+            .await
+            .expect("apply conversation Flow variables migration");
 
         let tables: Vec<String> = sqlx::query("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name")
             .fetch_all(&pool)
@@ -737,6 +898,7 @@ mod migration_tests {
                 "flows",
                 "learning_candidates",
                 "learning_jobs",
+                "memory_item_embeddings",
                 "memory_items",
                 "message_feedback",
                 "messages",
@@ -765,6 +927,13 @@ mod migration_tests {
                 .await
                 .expect("read touched timestamp");
         assert_eq!(updated_at, 42);
+
+        let flow_variables: String =
+            sqlx::query_scalar("SELECT flow_variables_json FROM conversations WHERE id='c1'")
+                .fetch_one(&pool)
+                .await
+                .expect("read conversation Flow variables");
+        assert_eq!(flow_variables, "{}");
 
         let foreign_key_violations: i64 =
             sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
@@ -1090,6 +1259,7 @@ mod migration_tests {
             include_str!("../migrations/0006_assistant_skills.sql"),
             include_str!("../migrations/0007_evaluation.sql"),
             include_str!("../migrations/0008_provider_models.sql"),
+            include_str!("../migrations/0011_local_memory_embeddings.sql"),
         ] {
             sqlx::raw_sql(migration)
                 .execute(&pool)
@@ -1105,6 +1275,8 @@ mod migration_tests {
             .execute(&pool).await.expect("insert reviewable candidate");
         sqlx::query("INSERT INTO memory_items (id, content, content_key, source_message_id, confidence, status, created_at, updated_at) VALUES ('memory-1', '用户喜欢蓝色', '用户喜欢蓝色', 'm1', 1, 'active', 4, 4)")
             .execute(&pool).await.expect("insert approved memory");
+        sqlx::query("INSERT INTO memory_item_embeddings (memory_id, model_key, content_fingerprint, dimensions, vector_base64, created_at, updated_at) VALUES ('memory-1', 'provider:model', '4:test', 2, 'AACAPwAAAAA=', 4, 4)")
+            .execute(&pool).await.expect("insert compact local embedding");
         sqlx::query("INSERT INTO message_feedback (id, message_id, conversation_id, rating, created_at, updated_at) VALUES ('feedback-1', 'm1', 'c1', 'positive', 5, 5)")
             .execute(&pool).await.expect("insert message feedback");
         sqlx::query("INSERT INTO learning_jobs (id, type, source_conversation_id, source_message_id, status, checkpoint_json, created_at, updated_at) VALUES ('job-1', 'reflection', 'c1', 'm1', 'running', '{\"phase\":\"running\"}', 6, 6)")
@@ -1113,6 +1285,8 @@ mod migration_tests {
             .execute(&pool).await.expect("link candidate to learning job");
 
         assert!(sqlx::query("INSERT INTO memory_items (id, content, content_key, confidence, status, created_at, updated_at) VALUES ('bad-confidence', 'bad', 'bad', 2, 'active', 1, 1)")
+            .execute(&pool).await.is_err());
+        assert!(sqlx::query("INSERT INTO memory_item_embeddings (memory_id, model_key, content_fingerprint, dimensions, vector_base64, created_at, updated_at) VALUES ('memory-1', 'bad-model', 'bad', 9000, '', 1, 1)")
             .execute(&pool).await.is_err());
         assert!(sqlx::query("UPDATE learning_candidates SET status='applied-without-review' WHERE id='candidate-1'")
             .execute(&pool).await.is_err());
@@ -1127,6 +1301,11 @@ mod migration_tests {
         let recovered: String = sqlx::query_scalar("SELECT status FROM learning_jobs WHERE id='job-1'")
             .fetch_one(&pool).await.expect("read recovered job");
         assert_eq!(recovered, "interrupted");
+        sqlx::query("DELETE FROM memory_items WHERE id='memory-1'")
+            .execute(&pool).await.expect("delete memory with embeddings");
+        let remaining_embeddings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM memory_item_embeddings")
+            .fetch_one(&pool).await.expect("count cascaded embeddings");
+        assert_eq!(remaining_embeddings, 0);
         let foreign_key_violations: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM pragma_foreign_key_check")
             .fetch_one(&pool).await.expect("check learning foreign keys");
         assert_eq!(foreign_key_violations, 0);

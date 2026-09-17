@@ -25,6 +25,7 @@
 - `nkg-ai-flow`：固定版本的上游子模块；
 - `docs/architecture/runtime-routing.md`：路由设计、安全约束和下一阶段。
 - `docs/architecture/lan-sync.md`：局域网发现、iOS Bonjour、配对加密和平台验证边界。
+- `docs/search-memory-configuration.md`：Steam 发布版的默认 SearXNG、本地语义记忆、MemOS 与隐私边界。
 - `scripts/local-release.mjs`：按本机系统执行完整 Release；Windows 默认产出 portable MSI 与
   Android APK，macOS 产出 DMG 与 App Store Connect IPA。Google Play AAB 按需生成；发布过程不依赖
   GitHub Actions，并复用本机 npm、Cargo、Gradle 与 Xcode 缓存。
@@ -46,11 +47,19 @@ npm run build:client
 拼多多联盟；只有明确指定京东联盟时才切换平台。Client ID/App Key 与 Secret 只写入
 本地 Stronghold，SQLite 仅保存密钥引用、PID 和推广位等非敏感元数据。
 
-用户选择“电脑配置顾问”后，一次 Flow 运行会经过 `product_query_planner`、
-`parse_query_plan`、`affiliate_products` 和 `chat_model`，规划最多 8 个具体商品搜索，
-再由联盟适配节点调用商品搜索与推广转链接口。候选商品按需求匹配、价格、店铺与
-质量信息筛选，不读取或按佣金比例排序；最终建议会标明推广链接，并提醒用户在下单前
-复核型号、店铺、券后价和库存。常规聊天及其他助手不会触发联盟查询。
+用户选择“电脑配置顾问”后，Flow 先由 `requirement_planner` 和
+`computer_requirement_policy` 把对话规格化为 DIY 整套、局部配件、品牌整机、笔记本、
+升级、诊断、比较或知识问答，并明确预算覆盖范围、复用件和目标部件。缺少关键信息或
+无需购买时直接回答，不调用商品接口；品牌整机按单个整机预算槽位处理，局部升级也不会
+被强行扩展成八件配置。
+
+需要购买时，`technical_planner` 只为已批准的预算槽位生成带 `slotId` / `queryId` 的
+候选查询，联盟适配节点再调用商品搜索与推广转链接口。确定性优化节点负责金额求和、
+硬预算过滤和 CPU 插槽、内存代际、尺寸、供电等结构化兼容性检查；缺件、超预算或硬
+兼容冲突只会重搜问题部件，最多修正两轮。候选商品按需求匹配、价格、店铺与质量信息
+筛选，不读取或按佣金比例排序；只有最终通过校验的商品才能进入回答和推广链接，且会
+提醒用户在下单前复核型号、店铺、券后价、库存及仍缺少证据的规格。常规聊天及其他助手
+不会触发联盟查询。
 
 桌面联调通常直接启动 Tauri 开发模式；需要验证 Windows 安装流程、但尚未准备正式发布时，
 使用保留增量编译并关闭 LTO 的快速 MSI：
@@ -115,9 +124,9 @@ npm run android:init
 npm run android:build -- --target aarch64
 ```
 
-Android 默认构建 Release APK，并执行 40 MiB 体积门禁；显式调试构建使用
+Android 默认构建 Release APK，并执行 64 MiB 体积门禁；显式调试构建使用
 `npm run android:build:debug -- --target aarch64`。同时生成商店 AAB 时追加 `--aab`。
-当前 arm64 实测基线约为 14.40 MiB APK；AAB 仅在准备上传 Google Play 时按需生成，
+内置本地 BGE 与 zvec 后，arm64 Release APK 实测约为 62.88 MiB，最低 Android 9（API 28）；AAB 仅在准备上传 Google Play 时按需生成，
 不是默认 Release 产物。移动 Cargo
 依赖图和生成的 Gradle 工程均不包含桌面 Shell/sidecar 模块。
 
@@ -173,8 +182,8 @@ HTTP；真机外部网络仍需在实际设备上复核。
 当前测试只扫描本项目 `packages/`，上游子模块保持自己的依赖、测试配置和
 发布节奏。
 
-当前验证基线：本项目 187 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
+当前验证基线：本项目 312 项测试、默认 Rust 检查、SQLite migration、Windows portable MSI、
 Android arm64 Release APK、Android Emulator 流式聊天与
 前后台恢复通过；子模块 757 项测试、类型检查和 browser bundle Node builtin 门禁通过。
-Windows portable MSI 约 5.77 MiB，Android arm64 APK 约 14.40 MiB。macOS DMG、
+引入本地 BGE 和 zvec 后，Android arm64 Release APK 约 62.88 MiB，旧版 Windows MSI 体积基线已不适用。macOS DMG、
 iOS IPA/真机与 Android 物理真机仍需在对应真实设备和签名环境验收。

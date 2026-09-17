@@ -7,6 +7,7 @@ coverage/
 .DS_Store
 apps/client/dist/
 apps/client/src-tauri/target/
+apps/client/src-tauri/native/zvec/
 apps/client/src-tauri/binaries/*
 !apps/client/src-tauri/binaries/.gitkeep
 apps/runtime-sidecar/dist/

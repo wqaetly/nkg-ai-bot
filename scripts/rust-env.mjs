@@ -156,8 +156,8 @@ function configureAndroidCompiler(env, ndkHome, targetName) {
   const target = targets[targetName];
   if (!target) throw new Error(`Unsupported Android target: ${targetName}`);
   const toolchain = join(ndkHome, "toolchains", "llvm", "prebuilt", "windows-x86_64", "bin");
-  const compiler = join(toolchain, `${target.compiler}24-clang.cmd`);
-  const compilerCxx = join(toolchain, `${target.compiler}24-clang++.cmd`);
+  const compiler = join(toolchain, `${target.compiler}28-clang.cmd`);
+  const compilerCxx = join(toolchain, `${target.compiler}28-clang++.cmd`);
   const archiver = join(toolchain, "llvm-ar.exe");
   for (const file of [compiler, compilerCxx, archiver]) {
     if (!existsSync(file)) throw new Error(`Android NDK tool not found: ${file}`);

@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import { createRequire } from "node:module";
+import { prepareZvec } from "./zvec-sdk.mjs";
 import {
   createAndroidRustEnvironment,
   createRustEnvironment,
@@ -20,6 +21,20 @@ const env = buildsDesktopRust
       ? await createSourceRustEnvironment()
       : { ...process.env };
 const require = createRequire(import.meta.url);
+if (buildsDesktopRust || buildsAndroidRust || buildsIosRust) {
+  const targetIndex = args.findIndex((arg) => arg === "--target" || arg === "-t");
+  const explicitTarget = args.find((arg) => arg.startsWith("--target="))?.slice(9)
+    ?? (targetIndex >= 0 ? args[targetIndex + 1] : undefined);
+  await prepareZvec(env, buildsAndroidRust ? { platform: "android", arch: androidTarget ?? "aarch64" }
+    : buildsIosRust ? {
+      platform: "ios",
+      arch: explicitTarget?.split("-")[0] ?? "arm64",
+      simulator: /simulator/i.test([env.SDKROOT, env.PLATFORM_NAME, env.SDK_NAME].join(" "))
+        || /sim/.test(explicitTarget ?? ""),
+    } : {
+      arch: explicitTarget?.split("-")[0] ?? process.arch,
+    });
+}
 const cli = require.resolve("@tauri-apps/cli/tauri.js");
 
 const child = spawn(process.execPath, [cli, ...args], { env, stdio: "inherit" });

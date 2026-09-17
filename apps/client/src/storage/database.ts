@@ -1,10 +1,12 @@
 import Database from "@tauri-apps/plugin-sql";
 import type { AffiliateCommerceConfig } from "@nkg-ai-bot/commerce-flow";
+import { LOCAL_EMBEDDING_MODEL_ID } from "../localEmbedding";
 
 const DATABASE_URL = "sqlite:nkg-ai-bot.db";
 const SELECTED_PROVIDER_KEY = "selected_provider_id";
 const WEB_SEARCH_CONFIG_KEY = "web_search_config";
 const MEMORY_SERVICE_CONFIG_KEY = "memory_service_config";
+const LOCAL_MEMORY_CONFIG_KEY = "local_memory_config";
 const AFFILIATE_COMMERCE_CONFIG_KEY = "affiliate_commerce_config";
 const HOSTED_AI_INSTALLATION_ID_KEY = "hosted_ai_installation_id";
 export const DEFAULT_MODEL_CONTEXT_WINDOW = 128_000;
@@ -52,6 +54,7 @@ export interface WebSearchConfig {
   provider: "searxng";
   baseUrl: string;
   apiKeyRef: string;
+  authMode: "none" | "x-api-key" | "nkg-session";
   enabled: boolean;
 }
 
@@ -62,6 +65,26 @@ export interface MemoryServiceConfig {
   apiKeyRef: string;
   enabled: boolean;
 }
+
+export interface LocalMemoryConfig {
+  provider: "local";
+  enabled: boolean;
+  autoArchive: boolean;
+  semanticSearch: boolean;
+  embeddingMode: "local" | "cloud";
+  embeddingProviderId: string;
+  embeddingModel: string;
+}
+
+export const DEFAULT_LOCAL_MEMORY_CONFIG: LocalMemoryConfig = {
+  provider: "local",
+  enabled: true,
+  autoArchive: true,
+  semanticSearch: true,
+  embeddingMode: "local",
+  embeddingProviderId: "",
+  embeddingModel: LOCAL_EMBEDDING_MODEL_ID,
+};
 
 export type { AffiliateCommerceConfig } from "@nkg-ai-bot/commerce-flow";
 
@@ -288,6 +311,39 @@ export async function setMemoryServiceConfig(
   return config;
 }
 
+export async function getLocalMemoryConfig(
+  client?: DatabaseClient,
+): Promise<LocalMemoryConfig> {
+  const database = client ?? await getDatabase();
+  const [row] = await database.select<SettingRow[]>(
+    "SELECT value_json FROM app_settings WHERE key = $1",
+    [LOCAL_MEMORY_CONFIG_KEY],
+  );
+  if (!row) return { ...DEFAULT_LOCAL_MEMORY_CONFIG };
+  try {
+    return normalizeLocalMemoryConfig(JSON.parse(row.value_json) as LocalMemoryConfig);
+  } catch {
+    return { ...DEFAULT_LOCAL_MEMORY_CONFIG };
+  }
+}
+
+export async function setLocalMemoryConfig(
+  input: LocalMemoryConfig,
+  client?: DatabaseClient,
+): Promise<LocalMemoryConfig> {
+  const config = normalizeLocalMemoryConfig(input);
+  const database = client ?? await getDatabase();
+  await database.execute(
+    `INSERT INTO app_settings (key, value_json, updated_at)
+     VALUES ($1, $2, $3)
+     ON CONFLICT(key) DO UPDATE SET
+       value_json = excluded.value_json,
+       updated_at = excluded.updated_at`,
+    [LOCAL_MEMORY_CONFIG_KEY, JSON.stringify(config), Date.now()],
+  );
+  return config;
+}
+
 export async function getAffiliateCommerceConfig(
   client?: DatabaseClient,
 ): Promise<AffiliateCommerceConfig | undefined> {
@@ -375,6 +431,9 @@ export function normalizeWebSearchConfig(input: WebSearchConfig): WebSearchConfi
     provider: "searxng",
     baseUrl: url.toString().replace(/\/$/, ""),
     apiKeyRef,
+    authMode: input.authMode === "none" || input.authMode === "nkg-session"
+      ? input.authMode
+      : "x-api-key",
     enabled: input.enabled,
   };
 }
@@ -401,6 +460,34 @@ export function normalizeMemoryServiceConfig(input: MemoryServiceConfig): Memory
   };
 }
 
+export function normalizeLocalMemoryConfig(input: LocalMemoryConfig): LocalMemoryConfig {
+  if (input.provider !== "local") throw new Error("Unsupported local memory provider");
+  const semanticSearch = Boolean(input.semanticSearch);
+  const embeddingProviderId = input.embeddingProviderId.trim();
+  const storedMode = (input as Partial<LocalMemoryConfig>).embeddingMode;
+  const embeddingMode = storedMode === "cloud" || (storedMode !== "local" && embeddingProviderId)
+    ? "cloud"
+    : "local";
+  const embeddingModel = embeddingMode === "local"
+    ? LOCAL_EMBEDDING_MODEL_ID
+    : input.embeddingModel.trim();
+  if (embeddingProviderId.length > 256 || embeddingModel.length > 256) {
+    throw new Error("Embedding Provider 与模型名称不能超过 256 个字符");
+  }
+  if (semanticSearch && embeddingMode === "cloud" && (!embeddingProviderId || !embeddingModel)) {
+    throw new Error("启用语义检索前必须选择 Embedding Provider 并填写模型");
+  }
+  return {
+    provider: "local",
+    enabled: Boolean(input.enabled),
+    autoArchive: (input as Partial<LocalMemoryConfig>).autoArchive !== false,
+    semanticSearch,
+    embeddingMode,
+    embeddingProviderId: embeddingMode === "cloud" ? embeddingProviderId : "",
+    embeddingModel,
+  };
+}
+
 export function normalizeAffiliateCommerceConfig(
   input: AffiliateCommerceConfig,
 ): AffiliateCommerceConfig {
@@ -417,6 +504,16 @@ export function normalizeAffiliateCommerceConfig(
   const pdd = input.pdd ? {
     clientIdRef: requireSetting(input.pdd.clientIdRef, "拼多多 Client ID 引用"),
     clientSecretRef: requireSetting(input.pdd.clientSecretRef, "拼多多 Client Secret 引用"),
+    accessTokenRef: requireSetting(input.pdd.accessTokenRef, "拼多多 Access Token 引用"),
+    ...(input.pdd.refreshTokenRef
+      ? { refreshTokenRef: requireSetting(input.pdd.refreshTokenRef, "拼多多 Refresh Token 引用") }
+      : {}),
+    ...(input.pdd.accessTokenExpiresAt
+      ? { accessTokenExpiresAt: requireTimestamp(input.pdd.accessTokenExpiresAt, "拼多多 Access Token 过期时间") }
+      : {}),
+    ...(input.pdd.refreshTokenExpiresAt
+      ? { refreshTokenExpiresAt: requireTimestamp(input.pdd.refreshTokenExpiresAt, "拼多多 Refresh Token 过期时间") }
+      : {}),
     pid: requireSetting(input.pdd.pid, "拼多多 PID"),
   } : undefined;
   if (input.enabled && input.selectedProvider === "jd" && !jd) throw new Error("京东联盟配置不完整");
@@ -439,6 +536,13 @@ function requireDigits(value: string, label: string): string {
   const normalized = requireSetting(value, label);
   if (!/^\d+$/.test(normalized)) throw new Error(`${label}必须为数字`);
   return normalized;
+}
+
+function requireTimestamp(value: string, label: string): string {
+  const normalized = requireSetting(value, label);
+  const milliseconds = Date.parse(normalized);
+  if (!Number.isFinite(milliseconds)) throw new Error(`${label}格式无效`);
+  return new Date(milliseconds).toISOString();
 }
 
 function isUuid(value: string): boolean {

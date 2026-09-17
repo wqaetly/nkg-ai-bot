@@ -58,6 +58,13 @@ export interface HostedAiPurchaseResult {
   balance: HostedAiBalance;
 }
 
+export interface HostedAiSearchResult {
+  title: string;
+  url: string;
+  content: string;
+  engine?: string;
+}
+
 export interface StartHostedAiSessionInput {
   installationId: string;
   platform: HostedAiPlatform;
@@ -193,6 +200,21 @@ export class HostedAiClient {
       signal,
     });
     return parsePurchaseResult(payload);
+  }
+
+  async searchWeb(
+    sessionToken: string,
+    query: string,
+    maxResults: number,
+    signal?: AbortSignal,
+  ): Promise<HostedAiSearchResult[]> {
+    const payload = await this.request("/api/app/v1/search", {
+      method: "POST",
+      sessionToken,
+      body: { query: query.trim().slice(0, 500), maxResults },
+      signal,
+    });
+    return parseSearchResults(payload, maxResults);
   }
 
   async createRunOptions(
@@ -360,6 +382,33 @@ function parsePurchaseResult(payload: unknown): HostedAiPurchaseResult {
     creditedPoints: requirePositiveInteger(object.creditedPoints, "入账点数"),
     balance: parseBalance(object.balance),
   };
+}
+
+function parseSearchResults(payload: unknown, maximum: number): HostedAiSearchResult[] {
+  const rows = requireArray(payload, "联网搜索结果");
+  const results: HostedAiSearchResult[] = [];
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const object = requireObject(row, "联网搜索结果");
+    let url: URL;
+    try {
+      url = new URL(requireText(object.url, "搜索结果 URL"));
+    } catch {
+      throw invalidResponse("搜索结果 URL 格式无效");
+    }
+    if ((url.protocol !== "http:" && url.protocol !== "https:") || seen.has(url.href)) continue;
+    seen.add(url.href);
+    const engine = typeof object.engine === "string" ? object.engine.trim().slice(0, 80) : "";
+    results.push({
+      title: requireText(object.title, "搜索结果标题").slice(0, 300),
+      url: url.href,
+      content: typeof object.content === "string" ? object.content.trim().slice(0, 2_000) : "",
+      ...(engine ? { engine } : {}),
+    });
+    if (results.length >= Math.min(Math.max(maximum, 1), 10)) break;
+  }
+  if (!results.length) throw invalidResponse("NKG AI 搜索没有返回可用结果");
+  return results;
 }
 
 function parseApiError(payload: unknown, status: number): HostedAiApiError {

@@ -7,22 +7,22 @@ import {
 import { getDatabase, type DatabaseClient } from "./storage/database";
 
 export const DEFAULT_ASSISTANT_ID = "builtin_assistant";
-export const DEFAULT_ASSISTANT_VERSION = "1.0.0";
+export const DEFAULT_ASSISTANT_VERSION = "1.0.2";
 export const DEFAULT_ASSISTANT_SYSTEM_PROMPT =
   "你是一个可靠、自然的 AI 对话助手。请直接回答最后一条用户消息，并结合前文保持上下文一致。";
 export const COMPUTER_CONFIG_ASSISTANT_ID = "computer_config_advisor";
-export const COMPUTER_CONFIG_ASSISTANT_VERSION = "2.1.0";
-export const COMPUTER_CONFIG_SYSTEM_PROMPT = `你是“电脑配置顾问”，专门提供客观、可执行、可核验的台式机装机、笔记本选购、现有配置诊断与升级建议。
+export const COMPUTER_CONFIG_ASSISTANT_VERSION = "4.4.0";
+export const COMPUTER_CONFIG_SYSTEM_PROMPT = `你是“电脑配置顾问”，专门提供客观、可执行、可核验的台式机装机、品牌整机、笔记本、局部配件、现有配置诊断与升级建议。
 
 工作规则：
-1. 先判断信息是否足够。关键字段包括购买地区与币种、总预算、设备类型、主要用途与常用软件/游戏、分辨率和刷新率、是否复用旧件、购买时间，以及体积、噪音、外观、接口、无线网络和品牌偏好。缺少会显著改变结论的信息时，先用一组简短问题补齐，不要急着给出虚假精确的配置。
-2. 信息足够时给出一套主推荐，并按需给出“更省预算”和“更重性能”的替代项。台式机配置至少覆盖 CPU、散热、主板、内存、显卡、存储、电源和机箱；笔记本方案说明 CPU/GPU 功耗档、内存与硬盘可扩展性、屏幕和接口。
-3. 必须检查兼容性与平衡性：CPU 插槽和主板芯片组、内存代际、散热高度/冷排、显卡长度与厚度、机箱规格、电源额定功率和接口、存储与 PCIe 通道、显示输出和前置接口。明确指出瓶颈、风险和仍需商家确认的尺寸或 BIOS 条件。
-4. 输出应包含：需求摘要、配置表（部件/建议型号或规格/价格区间/理由）、预算合计、兼容性结论、替代方案、升级路线和购买核对清单。价格是区间估算，不要伪装成实时成交价。
-5. 涉及当前价格、库存、新发布硬件或近期性能数据时，只能把本轮联网搜索与联盟电商 API 结果当作时效证据，并注明地区与查询日期；没有证据就明确说明需要联网核价。不要编造来源、跑分、商品链接或优惠。
-6. 当上下文提供联盟商品候选时，在技术方案确定后为对应部件选择型号严格匹配、质量与售后更可靠的候选，给出价格和推广购买链接。必须明确披露“推广链接，用户购买后平台可能向我们支付佣金”，并提醒用户下单前复核型号、店铺、券后价和库存。不得按佣金高低排序，不得为了变现推荐不合适的商品。
-7. 清楚区分事实、合理推断和个人取舍。优先考虑稳定性、售后、能效与真实用途，不因佣金或品牌偏好牺牲用户利益。
-8. 用户提供现有配置或截图时，先逐项提取并复述不确定字段，再分析兼容性、性能瓶颈和升级优先级。
+1. 严格遵守 Flow 给出的 intent、targetParts、ownedParts、excludedParts 和预算覆盖范围。DIY 整套才覆盖完整部件；局部配件和升级只回答目标部件；品牌整机与笔记本按整机 SKU 比较，禁止强行拆成八件配置。
+2. 用户要求推荐时，必须先给出完整、可执行的推荐清单，不得先提问或只回复澄清问题。信息不足时采用清楚标注的合理默认假设；所有疑问、风险和需要用户选择的事项统一放在回答最后，合并为最多三项，让用户在已有方案上定夺。
+3. Flow V4 的技术蓝图、coverage、stopReason、selectedCandidates 与实价小计是唯一业务事实来源。联网检索先确认适合预算与用途的当前型号候选，联盟电商 API 再核验真实在售价格；联网网页价格不得冒充核价结果。只有本轮联盟 API 观察到的价格才算实价；部分槽位有实价时只能给“已核验小计”，不得心算整机总价。硬预算不得超出或被隐式提高；已核验完整组合超预算时必须如实标记超预算，不能拿缺件方案冒充成功。
+4. 必须检查兼容性与平衡性：CPU 插槽和主板芯片组、内存代际、散热高度/冷排、显卡尺寸、机箱规格、电源额定功率和接口、存储与 PCIe 通道、显示输出和前置接口。结构化校验的 error 是阻断项；warning 和未知字段是系统尚未完成的校验状态，集中说明一次，不得转写成让用户逐项自行核验的购买清单。
+5. 输出按场景先给推荐结论与完整清单，再给预算状态、兼容性结论、替代方案和升级路线，最后给问题与待确认项；不适用的章节可以省略。实时商品未覆盖的部件仍要给出明确型号或规格，并只在预算结论处集中说明一次系统本轮未匹配到实时商品，不能从清单中删除，也不能把检索工作转交用户。
+6. 涉及当前价格、库存、新发布硬件或近期性能数据时，只能把本轮联网搜索与联盟电商 API 结果当作时效证据，并注明地区与查询日期；没有证据就如实报告系统检索状态一次。不要编造来源、跑分、商品链接或优惠，不要反复输出“请自行核价/核验”。
+7. 购物路径的最终正文由 Flow V4 确定性报告节点生成。只能展示最终 selectedCandidates 中通过品类、型号与价格校验且成功转链的商品，并集中披露一次“推广链接，用户购买后平台可能向我们支付佣金”。不得改写报告中的价格、链接、槽位行、覆盖率或停止原因，也不得展示未通过校验的候选。
+8. 清楚区分事实、合理推断和个人取舍。用户提供现有配置或截图时，先逐项提取并复述不确定字段，再分析瓶颈和升级优先级。
 
 默认使用简体中文和人民币；如果用户给出其他地区、语言或币种，则跟随用户。`;
 
@@ -58,6 +58,29 @@ export interface AssistantSkillIndex {
   failureCount: number;
   lastUsedAt?: number;
   updatedAt: number;
+}
+
+export function filterAssistantSkillIndex(
+  skills: AssistantSkillIndex[],
+  query: string,
+): AssistantSkillIndex[] {
+  const terms = query
+    .normalize("NFKC")
+    .trim()
+    .toLocaleLowerCase()
+    .split(/\s+/)
+    .filter(Boolean);
+  if (terms.length === 0) return skills;
+  return skills.filter((skill) => {
+    const searchableText = [
+      skill.name,
+      skill.description,
+      skill.assistantId,
+      ...skill.capabilities,
+      ...skill.activationHints,
+    ].join("\n").normalize("NFKC").toLocaleLowerCase();
+    return terms.every((term) => searchableText.includes(term));
+  });
 }
 
 export type AssistantRunStatus = "succeeded" | "failed" | "cancelled" | "interrupted";
@@ -116,6 +139,7 @@ export async function ensureBuiltinAssistantSkills(client?: DatabaseClient): Pro
       memoryNamespace: "global",
       capabilities: ["network.http", "secret.read"],
       activationHints: ["通用问答", "整理想法", "制定计划"],
+      previousBuiltinVersions: ["1.0.0", "1.0.1"],
     },
     {
       assistantId: COMPUTER_CONFIG_ASSISTANT_ID,
@@ -128,7 +152,7 @@ export async function ensureBuiltinAssistantSkills(client?: DatabaseClient): Pro
       memoryNamespace: "computer_config",
       capabilities: ["network.http", "secret.read"],
       activationHints: ["专业装机", "预算配置单", "兼容性检查", "升级建议", "笔记本选购"],
-      previousBuiltinVersion: "2.0.0",
+      previousBuiltinVersions: ["2.0.0", "2.1.0", "3.0.0", "3.0.1", "3.0.2", "3.0.3", "3.0.4", "3.0.5", "3.0.6", "4.0.0", "4.1.0", "4.2.0", "4.2.1", "4.2.2", "4.3.0", "4.3.1"],
     },
   ] as const;
   for (const definition of definitions) {
@@ -149,7 +173,7 @@ async function seedBuiltinAssistantSkill(
     memoryNamespace: string;
     capabilities: readonly string[];
     activationHints: readonly string[];
-    previousBuiltinVersion?: string;
+    previousBuiltinVersions?: readonly string[];
   },
   now: number,
 ): Promise<void> {
@@ -194,12 +218,29 @@ async function seedBuiltinAssistantSkill(
      ON CONFLICT(assistant_id) DO NOTHING`,
     [definition.assistantId, definition.version, now],
   );
-  if (definition.previousBuiltinVersion) {
+  if (definition.previousBuiltinVersions?.length) {
+    const placeholders = definition.previousBuiltinVersions
+      .map((_, index) => `$${index + 3}`)
+      .join(", ");
     await database.execute(
       `UPDATE assistant_active
-          SET previous_version=active_version, active_version=$2, updated_at=$4
-        WHERE assistant_id=$1 AND active_version=$3`,
-      [definition.assistantId, definition.version, definition.previousBuiltinVersion, now],
+          SET previous_version=active_version,
+              active_version=$2,
+              updated_at=$${definition.previousBuiltinVersions.length + 3}
+        WHERE assistant_id=$1 AND active_version IN (${placeholders})`,
+      [definition.assistantId, definition.version, ...definition.previousBuiltinVersions, now],
+    );
+    await database.execute(
+      `UPDATE conversations
+          SET assistant_version=$2,
+              updated_at=$${definition.previousBuiltinVersions.length + 3}
+        WHERE assistant_id=$1
+          AND assistant_version IN (${placeholders})
+          AND EXISTS (
+            SELECT 1 FROM assistant_active current
+             WHERE current.assistant_id=$1 AND current.active_version=$2
+          )`,
+      [definition.assistantId, definition.version, ...definition.previousBuiltinVersions, now],
     );
   }
   await database.execute(

@@ -37,10 +37,12 @@ import {
 } from "./learningRepository";
 import { MemoryPanel } from "./MemoryPanel";
 import { createReflectionJob } from "./learningJobs";
+import { LocalMemoryTurnArchiver } from "./localMemoryArchive";
 import { ReflectionJobRunner, type ReflectionRuntime } from "./reflectionRunner";
 import {
   COMPUTER_CONFIG_ASSISTANT_ID,
   DEFAULT_ASSISTANT_ID,
+  filterAssistantSkillIndex,
   listAssistantSkillIndex,
   resolveAssistantSkill,
   type AssistantSkillIndex,
@@ -54,12 +56,20 @@ import type { AppPlatform, NodeEvent } from "@nkg-ai-bot/runtime-router";
 import {
   type FlowPreviewGraph,
 } from "@ai-native-flow/studio/flowPreview";
+import type { FlowConfigurableVariable } from "@ai-native-flow/flow-ir";
 import { subscribeAppPanel } from "./appPanel";
 import { FlowPreviewPanel } from "./FlowPreviewPanel";
 import { MarkdownContent } from "./MarkdownContent";
 import { ReasoningPanel } from "./ReasoningPanel";
 import { SearchReferencesPanel } from "./SearchReferencesPanel";
 import { ConversationSidebar } from "./ConversationSidebar";
+import { ModelSelector } from "./ModelSelector";
+import { ConversationFlowConfigDialog } from "./ConversationFlowConfigDialog";
+import {
+  flowConfigurableVariables,
+  normalizeConversationFlowVariables,
+  type ConversationFlowVariables,
+} from "./conversationFlowConfig";
 import { providerSession, type ProviderSessionSnapshot } from "./providerSession";
 import {
   deleteConversation,
@@ -107,7 +117,11 @@ export function ChatPage({
   const [chatActivity, setChatActivity] = useState<ChatActivity>();
   const [streamingFlowEvents, setStreamingFlowEvents] = useState<NodeEvent[]>([]);
   const [flowEventsByMessage, setFlowEventsByMessage] = useState<Record<string, NodeEvent[]>>({});
-  const [activeFlow, setActiveFlow] = useState<{ graph: FlowPreviewGraph; name: string }>();
+  const [activeFlow, setActiveFlow] = useState<{
+    graph: FlowPreviewGraph;
+    name: string;
+    configurableVariables: FlowConfigurableVariable[];
+  }>();
   const [busy, setBusy] = useState(false);
   const [loadingMessages, setLoadingMessages] = useState(true);
   const [error, setError] = useState("");
@@ -120,6 +134,7 @@ export function ChatPage({
     }
   });
   const [newConversationOpen, setNewConversationOpen] = useState(false);
+  const [flowConfigOpen, setFlowConfigOpen] = useState(false);
   const [newConversationSkillId, setNewConversationSkillId] = useState(DEFAULT_ASSISTANT_ID);
   const [copiedId, setCopiedId] = useState<string>();
   const [feedback, setFeedback] = useState<Record<string, FeedbackRating>>({});
@@ -152,7 +167,8 @@ export function ChatPage({
     ? providerSnapshot.hostedAi?.account?.balance
     : undefined;
   const hostedConnectionState = providerSnapshot.hostedAi?.state;
-  const webSearchAvailable = providerSnapshot.webSearch?.enabled === true;
+  const webSearchAvailable = providerSnapshot.webSearch?.enabled === true
+    && (providerSnapshot.webSearch.authMode !== "nkg-session" || hostedConnectionState === "ready");
   const affiliateCommerceActive = activeConversation?.assistantId === COMPUTER_CONFIG_ASSISTANT_ID
     && providerSnapshot.commerce?.enabled === true;
   const conversationModel = selectedProvider && activeConversation?.providerId === selectedProvider.id
@@ -160,9 +176,20 @@ export function ChatPage({
     ? activeConversation.modelId
     : selectedProvider?.defaultModel;
   const headerModel = unlocked ? conversationModel ?? "未选择模型" : "尚未配置模型";
+  const conversationFlowOverrides = activeFlow
+    ? normalizeConversationFlowVariables(
+        activeFlow.configurableVariables,
+        activeConversation?.flowVariables,
+      )
+    : {};
+  const conversationFlowOverrideCount = Object.keys(conversationFlowOverrides).length;
   const reflectionRunner = useMemo(
     () => runtime ? new ReflectionJobRunner(runtime) : undefined,
     [runtime],
+  );
+  const localMemoryArchiver = useMemo(
+    () => reflectionRunner ? new LocalMemoryTurnArchiver(reflectionRunner) : undefined,
+    [reflectionRunner],
   );
 
   useEffect(() => {
@@ -171,14 +198,21 @@ export function ChatPage({
     const unsubscribeProvider = providerSession.subscribe(syncProvider);
     Promise.all([
       import("./runtime").then(({ getRuntimeServices }) => getRuntimeServices()),
-      listConversations(),
       providerSession.initialize(),
-    ]).then(async ([{ client, platform: runtimePlatform }, stored, provider]) => {
+    ]).then(async ([{ client, platform: runtimePlatform }, provider]) => {
+      if (!active) return;
+      // Runtime startup seeds and migrates built-in Assistant/Flow versions.
+      // Read conversations afterwards so the first launch never retains stale
+      // pre-migration assistant versions in React state.
+      const [stored, assistantSkills] = await Promise.all([
+        listConversations(),
+        listAssistantSkillIndex(),
+      ]);
       if (!active) return;
       setProviderSnapshot(provider);
       setRuntime(client);
       setPlatform(runtimePlatform);
-      setSkills(await listAssistantSkillIndex());
+      setSkills(assistantSkills);
       if (stored.length > 0) {
         setConversations(stored);
         setActiveId(stored[0]!.id);
@@ -207,6 +241,7 @@ export function ChatPage({
     setFlowEventsByMessage({});
     setChatActivity(undefined);
     setError("");
+    setFlowConfigOpen(false);
     if (!activeId || !runtime) return;
     let active = true;
     setLoadingMessages(true);
@@ -234,7 +269,11 @@ export function ChatPage({
       .then((skill) => getStoredFlow(skill.flowId, skill.flowVersion))
       .then((stored) => {
         if (!active || !stored || !isFlowPreviewGraph(stored.graph)) return;
-        setActiveFlow({ graph: stored.graph, name: stored.name });
+        setActiveFlow({
+          graph: stored.graph,
+          name: stored.name,
+          configurableVariables: flowConfigurableVariables(stored.graph),
+        });
       })
       .catch(() => {
         // A missing preview must never block chat; runtime errors still surface normally.
@@ -292,7 +331,8 @@ export function ChatPage({
   }, []);
 
   useEffect(() => {
-    if (!memoryOpen && !skillsOpen && !evaluationOpen && !imageStudioOpen && !previewImage && !newConversationOpen) return;
+    if (!memoryOpen && !skillsOpen && !evaluationOpen && !imageStudioOpen
+      && !previewImage && !newConversationOpen && !flowConfigOpen) return;
     const closeOnEscape = (event: globalThis.KeyboardEvent) => {
       if (event.key === "Escape") {
         setMemoryOpen(false);
@@ -301,11 +341,12 @@ export function ChatPage({
         setImageStudioOpen(false);
         setPreviewImage(undefined);
         setNewConversationOpen(false);
+        setFlowConfigOpen(false);
       }
     };
     window.addEventListener("keydown", closeOnEscape);
     return () => window.removeEventListener("keydown", closeOnEscape);
-  }, [evaluationOpen, imageStudioOpen, memoryOpen, newConversationOpen, previewImage, skillsOpen]);
+  }, [evaluationOpen, flowConfigOpen, imageStudioOpen, memoryOpen, newConversationOpen, previewImage, skillsOpen]);
 
   useEffect(() => subscribeAppPanel((panel) => {
     setSidebarOpen(false);
@@ -334,6 +375,7 @@ export function ChatPage({
       ...activeConversation,
       assistantId: skill.assistantId,
       assistantVersion: skill.activeVersion,
+      flowVariables: {},
     });
     await refreshConversations();
   }
@@ -466,6 +508,19 @@ export function ChatPage({
           }
         },
       });
+      const localMemoryConfig = providerSession.snapshot.localMemory;
+      if (!result.failed
+        && localMemoryArchiver
+        && (localMemoryConfig?.enabled ?? true)
+        && (localMemoryConfig?.autoArchive ?? true)) {
+        void localMemoryArchiver.enqueue({
+          conversationId,
+          assistantMessageId: result.assistant.id,
+          memoryNamespace: result.memoryNamespace,
+        }).catch((cause: unknown) => {
+          console.warn("本轮本地记忆自动归档失败，可在记忆任务中重试", cause);
+        });
+      }
       if (activeIdRef.current === conversationId) {
         setFlowEventsByMessage((current) => ({
           ...current,
@@ -582,6 +637,17 @@ export function ChatPage({
       modelId,
     });
     await refreshConversations();
+  }
+
+  async function saveConversationFlowVariables(values: ConversationFlowVariables) {
+    if (!activeConversation || !activeFlow) return;
+    const flowVariables = normalizeConversationFlowVariables(
+      activeFlow.configurableVariables,
+      values,
+    );
+    await upsertConversation({ ...activeConversation, flowVariables });
+    await refreshConversations();
+    setFlowConfigOpen(false);
   }
 
   function stopGeneration() {
@@ -759,17 +825,34 @@ export function ChatPage({
               </span>
             </div>
           </div>
-          {hostedBalance ? (
+          <div className="chat-header-actions">
+            {hostedBalance ? (
+              <button
+                className="hosted-points-badge"
+                title={`购买点数 ${formatPoints(hostedBalance.purchasedPoints)} · 赠送点数 ${formatPoints(hostedBalance.grantedPoints)}`}
+                type="button"
+                onClick={openCredits}
+              >
+                <span>AI 点数</span>
+                <strong>{formatPoints(hostedBalance.availablePoints)}</strong>
+              </button>
+            ) : null}
             <button
-              className="hosted-points-badge"
-              title={`购买点数 ${formatPoints(hostedBalance.purchasedPoints)} · 赠送点数 ${formatPoints(hostedBalance.grantedPoints)}`}
+              aria-label="配置当前 Flow"
+              className={`chat-flow-config-button ${conversationFlowOverrideCount ? "configured" : ""}`}
+              disabled={!activeFlow?.configurableVariables.length || busy}
+              title={activeFlow?.configurableVariables.length
+                ? "配置当前对话的 Flow 运行参数"
+                : "当前 Flow 没有公开可配置项"}
               type="button"
-              onClick={openCredits}
+              onClick={() => setFlowConfigOpen(true)}
             >
-              <span>AI 点数</span>
-              <strong>{formatPoints(hostedBalance.availablePoints)}</strong>
+              <SlidersIcon />
+              {conversationFlowOverrideCount
+                ? <span>{conversationFlowOverrideCount}</span>
+                : null}
             </button>
-          ) : null}
+          </div>
         </header>
 
         <div ref={messageScrollRef} className={`message-scroll ${visible.length === 0 && !busy ? "empty" : ""}`} aria-live="polite">
@@ -946,16 +1029,21 @@ export function ChatPage({
                   aria-pressed={webSearchEnabled && webSearchAvailable}
                   className={`web-search-toggle ${webSearchEnabled && webSearchAvailable ? "active" : ""}`}
                   disabled={busy || !webSearchAvailable}
-                  title={webSearchAvailable ? "为本轮消息使用联网搜索" : "请先在设置中配置并启用 SearXNG"}
+                  title={webSearchAvailable ? "由 AI 判断并规划本轮联网搜索" : "请先在设置中配置并启用 SearXNG"}
                   type="button"
                   onClick={() => setWebSearchEnabled((value) => !value)}
                 >
                   <SearchIcon />联网
                 </button>
                 {selectedProvider && conversationModel ? (
-                  <select aria-label="当前对话模型" className="composer-model-select" disabled={busy} value={conversationModel} onChange={(event) => void selectConversationModel(event.currentTarget.value)}>
-                    {selectedProvider.enabledModels.map((model) => <option key={model} value={model}>{model}</option>)}
-                  </select>
+                  <ModelSelector
+                    aria-label="当前对话模型"
+                    disabled={busy}
+                    models={selectedProvider.enabledModels}
+                    value={conversationModel}
+                    onChange={(model) => void selectConversationModel(model)}
+                    onPing={(model, signal) => providerSession.pingModel(model, signal)}
+                  />
                 ) : null}
                 {busy ? (
                   <button aria-label="停止生成" className="send-button stop" type="button" onClick={stopGeneration}><StopIcon /></button>
@@ -979,6 +1067,17 @@ export function ChatPage({
               void startConversation(assistantId);
             }}
             onSelect={setNewConversationSkillId}
+          />
+        </div>
+      ) : null}
+      {flowConfigOpen && activeConversation && activeFlow?.configurableVariables.length ? (
+        <div className="settings-layer" role="presentation" onMouseDown={() => setFlowConfigOpen(false)}>
+          <ConversationFlowConfigDialog
+            definitions={activeFlow.configurableVariables}
+            flowName={activeFlow.name}
+            values={activeConversation.flowVariables ?? {}}
+            onCancel={() => setFlowConfigOpen(false)}
+            onSave={saveConversationFlowVariables}
           />
         </div>
       ) : null}
@@ -1051,12 +1150,26 @@ function NewConversationDialog({
   onConfirm: (assistantId: string) => void;
   onSelect: (assistantId: string) => void;
 }) {
-  const orderedSkills = [...skills].sort((left, right) => {
+  const [searchQuery, setSearchQuery] = useState("");
+  const orderedSkills = useMemo(() => [...skills].sort((left, right) => {
     if (left.assistantId === DEFAULT_ASSISTANT_ID) return -1;
     if (right.assistantId === DEFAULT_ASSISTANT_ID) return 1;
     return left.name.localeCompare(right.name, "zh-CN");
-  });
-  const selectedSkill = orderedSkills.find((skill) => skill.assistantId === selectedAssistantId);
+  }), [skills]);
+  const visibleSkills = useMemo(
+    () => filterAssistantSkillIndex(orderedSkills, searchQuery),
+    [orderedSkills, searchQuery],
+  );
+  const selectedSkill = visibleSkills.find((skill) => skill.assistantId === selectedAssistantId);
+
+  function updateSearchQuery(nextQuery: string) {
+    setSearchQuery(nextQuery);
+    const nextSkills = filterAssistantSkillIndex(orderedSkills, nextQuery);
+    if (nextSkills.length > 0 && !nextSkills.some((skill) => skill.assistantId === selectedAssistantId)) {
+      onSelect(nextSkills[0].assistantId);
+    }
+  }
+
   return (
     <form
       aria-labelledby="new-conversation-title"
@@ -1071,10 +1184,23 @@ function NewConversationDialog({
     >
       <header>
         <h2 id="new-conversation-title">新建对话</h2>
-        <p>选择这个对话要使用的 Skill，默认使用 NKG。</p>
+        <p>选择这个对话要使用的助手，默认使用 NKG。</p>
       </header>
-      <div aria-label="选择 Skill" className="new-conversation-skill-list" role="radiogroup">
-        {orderedSkills.map((skill) => (
+      <div className="new-conversation-search">
+        <MagnifierIcon />
+        <label className="visually-hidden" htmlFor="new-conversation-search-input">搜索助手</label>
+        <input
+          autoFocus
+          id="new-conversation-search-input"
+          placeholder="搜索名称、描述或能力"
+          type="search"
+          value={searchQuery}
+          onChange={(event) => updateSearchQuery(event.currentTarget.value)}
+        />
+        <small aria-live="polite">{visibleSkills.length} / {orderedSkills.length}</small>
+      </div>
+      <div aria-label="选择助手" className="new-conversation-skill-list" role="radiogroup">
+        {visibleSkills.map((skill) => (
           <label className={skill.assistantId === selectedAssistantId ? "selected" : ""} key={skill.assistantId}>
             <input
               checked={skill.assistantId === selectedAssistantId}
@@ -1087,11 +1213,12 @@ function NewConversationDialog({
             {skill.assistantId === DEFAULT_ASSISTANT_ID ? <em>默认</em> : null}
           </label>
         ))}
-        {orderedSkills.length === 0 ? <p>正在加载 Skill…</p> : null}
+        {orderedSkills.length === 0 ? <p>正在加载助手…</p> : null}
+        {orderedSkills.length > 0 && visibleSkills.length === 0 ? <p>没有匹配的助手</p> : null}
       </div>
       <footer>
         <button className="ghost-button" type="button" onClick={onCancel}>取消</button>
-        <button autoFocus className="primary-button" disabled={!selectedSkill} type="submit">创建对话</button>
+        <button className="primary-button" disabled={!selectedSkill} type="submit">创建对话</button>
       </footer>
     </form>
   );
@@ -1200,6 +1327,7 @@ function isFlowPreviewGraph(value: unknown): value is FlowPreviewGraph {
 function Icon({ children }: { children: React.ReactNode }) { return <svg aria-hidden viewBox="0 0 24 24">{children}</svg>; }
 function MenuIcon() { return <Icon><path d="M4 7h16M4 12h16M4 17h16" /></Icon>; }
 function SidebarIcon({ collapsed }: { collapsed: boolean }) { return <Icon><rect height="16" rx="2" width="18" x="3" y="4" /><path d="M9 4v16" />{collapsed ? <path d="m13 9 3 3-3 3" /> : <path d="m16 9-3 3 3 3" />}</Icon>; }
+function SlidersIcon() { return <Icon><path d="M4 7h10M18 7h2M4 17h2M10 17h10M14 4v6M10 14v6" /><circle cx="14" cy="7" r="2" /><circle cx="8" cy="17" r="2" /></Icon>; }
 function CloseIcon() { return <Icon><path d="m6 6 12 12M18 6 6 18" /></Icon>; }
 function ChevronIcon() { return <Icon><path d="m9 6 6 6-6 6" /></Icon>; }
 function KeyIcon() { return <Icon><circle cx="8" cy="12" r="4" /><path d="M12 12h9M17 12v3M20 12v2" /></Icon>; }
@@ -1213,4 +1341,5 @@ function AlertIcon() { return <Icon><path d="M12 3 2.8 20h18.4L12 3Z" /><path d=
 function StopIcon() { return <Icon><rect x="7" y="7" width="10" height="10" rx="2" /></Icon>; }
 function ArrowUpIcon() { return <Icon><path d="m6 11 6-6 6 6M12 5v14" /></Icon>; }
 function SearchIcon() { return <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4M8 11h6M11 8v6" /></Icon>; }
+function MagnifierIcon() { return <Icon><circle cx="11" cy="11" r="6" /><path d="m16 16 4 4" /></Icon>; }
 function PaperclipIcon() { return <Icon><path d="m20.5 11.5-8.2 8.2a6 6 0 0 1-8.5-8.5l8.8-8.8a4 4 0 0 1 5.7 5.7l-8.9 8.8a2 2 0 0 1-2.8-2.8l8.2-8.2" /></Icon>; }

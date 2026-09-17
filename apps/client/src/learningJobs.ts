@@ -8,11 +8,15 @@ export type LearningJobStatus =
   | "cancelled"
   | "interrupted";
 
+export type LearningJobMode = "review" | "auto_archive";
+
 export interface LearningJob {
   id: string;
   type: "reflection";
   sourceConversationId: string;
   sourceMessageId?: string;
+  mode: LearningJobMode;
+  memoryNamespace: string;
   status: LearningJobStatus;
   checkpoint: Record<string, unknown>;
   result?: Record<string, unknown>;
@@ -43,10 +47,17 @@ type LearningJobRow = {
 };
 
 export async function createReflectionJob(
-  input: { sourceConversationId: string; sourceMessageId?: string },
+  input: {
+    sourceConversationId: string;
+    sourceMessageId?: string;
+    mode?: LearningJobMode;
+    memoryNamespace?: string;
+  },
   client?: DatabaseClient,
 ): Promise<LearningJob> {
   requireText(input.sourceConversationId, "Conversation id");
+  const memoryNamespace = input.memoryNamespace?.trim() || "global";
+  if (memoryNamespace.length > 120) throw new Error("Memory namespace is too long");
   const database = client ?? await getDatabase();
   const id = crypto.randomUUID();
   const now = Date.now();
@@ -59,7 +70,11 @@ export async function createReflectionJob(
       id,
       input.sourceConversationId,
       input.sourceMessageId ?? null,
-      JSON.stringify({ phase: "queued" }),
+      JSON.stringify({
+        phase: "queued",
+        mode: input.mode ?? "review",
+        memoryNamespace,
+      }),
       now,
     ],
   );
@@ -98,11 +113,14 @@ export async function recoverInterruptedLearningJobs(client?: DatabaseClient): P
   const now = Date.now();
   const result = await database.execute(
     `UPDATE learning_jobs
-        SET status='interrupted', checkpoint_json=$1, runtime_run_id=NULL,
-            error_json=$2, updated_at=$3, completed_at=NULL
+        SET status='interrupted',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'interrupted', '$.reason', 'process_restart'),
+              '$.step', '$.runtimeRunId'
+            ),
+            runtime_run_id=NULL, error_json=$1, updated_at=$2, completed_at=NULL
       WHERE status='running'`,
     [
-      JSON.stringify({ phase: "interrupted", reason: "process_restart" }),
       JSON.stringify({ code: "learning.interrupted", message: "应用退出时任务仍在运行，可安全继续" }),
       now,
     ],
@@ -118,11 +136,15 @@ export async function claimLearningJob(
   const now = Date.now();
   const result = await database.execute(
     `UPDATE learning_jobs
-        SET status='running', checkpoint_json=$2, error_json=NULL, result_json=NULL,
-            runtime_run_id=NULL, attempt=attempt+1, started_at=$3,
-            completed_at=NULL, updated_at=$3
+        SET status='running',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'running', '$.step', 'building_evidence'),
+              '$.reason', '$.runtimeRunId'
+            ),
+            error_json=NULL, result_json=NULL, runtime_run_id=NULL,
+            attempt=attempt+1, started_at=$2, completed_at=NULL, updated_at=$2
       WHERE id=$1 AND status IN ('queued', 'interrupted')`,
-    [id, JSON.stringify({ phase: "running", step: "building_evidence" }), now],
+    [id, now],
   );
   if (result.rowsAffected !== 1) throw new Error("Learning job is not resumable");
   const job = await getLearningJob(id, database);
@@ -138,14 +160,13 @@ export async function updateLearningJobRun(
   const database = client ?? await getDatabase();
   await database.execute(
     `UPDATE learning_jobs
-        SET runtime_run_id=$2, checkpoint_json=$3, updated_at=$4
+        SET runtime_run_id=$2,
+            checkpoint_json=json_set(
+              checkpoint_json, '$.phase', 'running', '$.step', 'reflection_flow', '$.runtimeRunId', $2
+            ),
+            updated_at=$3
       WHERE id=$1 AND status='running'`,
-    [
-      id,
-      runtimeRunId,
-      JSON.stringify({ phase: "running", step: "reflection_flow", runtimeRunId }),
-      Date.now(),
-    ],
+    [id, runtimeRunId, Date.now()],
   );
 }
 
@@ -158,10 +179,15 @@ export async function completeLearningJob(
   const now = Date.now();
   await database.execute(
     `UPDATE learning_jobs
-        SET status='succeeded', checkpoint_json=$2, result_json=$3, error_json=NULL,
-            runtime_run_id=NULL, updated_at=$4, completed_at=$4
+        SET status='succeeded',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'completed'),
+              '$.step', '$.reason', '$.runtimeRunId'
+            ),
+            result_json=$2, error_json=NULL, runtime_run_id=NULL,
+            updated_at=$3, completed_at=$3
       WHERE id=$1 AND status='running'`,
-    [id, JSON.stringify({ phase: "completed" }), JSON.stringify(result), now],
+    [id, JSON.stringify(result), now],
   );
 }
 
@@ -175,10 +201,14 @@ export async function failLearningJob(
   const payload = serializeError(error, "learning.failed");
   await database.execute(
     `UPDATE learning_jobs
-        SET status='failed', checkpoint_json=$2, error_json=$3,
-            runtime_run_id=NULL, updated_at=$4, completed_at=$4
+        SET status='failed',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'failed'),
+              '$.step', '$.reason', '$.runtimeRunId'
+            ),
+            error_json=$2, runtime_run_id=NULL, updated_at=$3, completed_at=$3
       WHERE id=$1 AND status='running'`,
-    [id, JSON.stringify({ phase: "failed" }), JSON.stringify(payload), now],
+    [id, JSON.stringify(payload), now],
   );
 }
 
@@ -192,10 +222,14 @@ export async function interruptLearningJob(
   const payload = serializeError(error, "learning.interrupted");
   await database.execute(
     `UPDATE learning_jobs
-        SET status='interrupted', checkpoint_json=$2, error_json=$3,
-            runtime_run_id=NULL, updated_at=$4, completed_at=NULL
+        SET status='interrupted',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'interrupted', '$.reason', 'execution_aborted'),
+              '$.step', '$.runtimeRunId'
+            ),
+            error_json=$2, runtime_run_id=NULL, updated_at=$3, completed_at=NULL
       WHERE id=$1 AND status='running'`,
-    [id, JSON.stringify({ phase: "interrupted", reason: "execution_aborted" }), JSON.stringify(payload), now],
+    [id, JSON.stringify(payload), now],
   );
 }
 
@@ -204,10 +238,14 @@ export async function cancelLearningJob(id: string, client?: DatabaseClient): Pr
   const now = Date.now();
   await database.execute(
     `UPDATE learning_jobs
-        SET status='cancelled', checkpoint_json=$2, runtime_run_id=NULL,
-            updated_at=$3, completed_at=$3
+        SET status='cancelled',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'cancelled'),
+              '$.step', '$.reason', '$.runtimeRunId'
+            ),
+            runtime_run_id=NULL, updated_at=$2, completed_at=$2
       WHERE id=$1 AND status IN ('queued', 'running', 'interrupted')`,
-    [id, JSON.stringify({ phase: "cancelled" }), now],
+    [id, now],
   );
 }
 
@@ -215,22 +253,32 @@ export async function requeueLearningJob(id: string, client?: DatabaseClient): P
   const database = client ?? await getDatabase();
   const result = await database.execute(
     `UPDATE learning_jobs
-        SET status='queued', checkpoint_json=$2, error_json=NULL, result_json=NULL,
-            runtime_run_id=NULL, updated_at=$3, completed_at=NULL
+        SET status='queued',
+            checkpoint_json=json_remove(
+              json_set(checkpoint_json, '$.phase', 'queued', '$.reason', 'user_retry'),
+              '$.step', '$.runtimeRunId'
+            ),
+            error_json=NULL, result_json=NULL, runtime_run_id=NULL,
+            updated_at=$2, completed_at=NULL
       WHERE id=$1 AND status IN ('failed', 'interrupted')`,
-    [id, JSON.stringify({ phase: "queued", reason: "user_retry" }), Date.now()],
+    [id, Date.now()],
   );
   if (result.rowsAffected !== 1) throw new Error("Learning job cannot be retried");
 }
 
 function mapLearningJob(row: LearningJobRow): LearningJob {
+  const checkpoint = parseObject(row.checkpoint_json);
   return {
     id: row.id,
     type: row.type,
     sourceConversationId: row.source_conversation_id,
     ...(row.source_message_id ? { sourceMessageId: row.source_message_id } : {}),
+    mode: checkpoint.mode === "auto_archive" ? "auto_archive" : "review",
+    memoryNamespace: typeof checkpoint.memoryNamespace === "string" && checkpoint.memoryNamespace.trim()
+      ? checkpoint.memoryNamespace.trim()
+      : "global",
     status: row.status,
-    checkpoint: parseObject(row.checkpoint_json),
+    checkpoint,
     ...(row.result_json ? { result: parseObject(row.result_json) } : {}),
     ...(row.error_json ? { error: parseError(row.error_json) } : {}),
     ...(row.runtime_run_id ? { runtimeRunId: row.runtime_run_id } : {}),

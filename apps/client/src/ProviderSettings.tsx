@@ -8,12 +8,17 @@ import {
   providerSession,
   type ProviderDraft,
   type ProviderSessionSnapshot,
+  type LocalMemoryDraft,
   type MemoryServiceDraft,
   type WebSearchDraft,
 } from "./providerSession";
 import { DEFAULT_MEMOS_URL } from "./memoryGateway";
 import { INSECURE_PROVIDER_WARNING, isPlainHttpProviderUrl } from "./providerSecurity";
 import { HOSTED_AI_PROVIDER_ID } from "./hostedAi";
+import {
+  LOCAL_EMBEDDING_MODEL_ID,
+  LOCAL_EMBEDDING_MODEL_LABEL,
+} from "./localEmbedding";
 import {
   DEFAULT_MODEL_CONTEXT_WINDOW,
   MAX_MODEL_CONTEXT_WINDOW,
@@ -32,6 +37,7 @@ const EMPTY_DRAFT: ProviderDraft = {
 const EMPTY_SEARCH_DRAFT: WebSearchDraft = {
   baseUrl: DEFAULT_SEARXNG_URL,
   apiKey: "",
+  authMode: "x-api-key",
   enabled: true,
 };
 
@@ -42,7 +48,16 @@ const EMPTY_MEMORY_DRAFT: MemoryServiceDraft = {
   enabled: false,
 };
 
-type SettingsSection = "appearance" | "credits" | "tools" | "models" | "search" | "memory" | "data";
+const EMPTY_LOCAL_MEMORY_DRAFT: LocalMemoryDraft = {
+  enabled: true,
+  autoArchive: true,
+  semanticSearch: true,
+  embeddingMode: "local",
+  embeddingProviderId: "",
+  embeddingModel: LOCAL_EMBEDDING_MODEL_ID,
+};
+
+export type SettingsSection = "appearance" | "credits" | "tools" | "models" | "search" | "memory" | "data";
 
 const SETTINGS_SECTIONS: Array<{
   id: SettingsSection;
@@ -54,7 +69,7 @@ const SETTINGS_SECTIONS: Array<{
   { id: "tools", label: "工具与能力", description: "记忆、能力与生图" },
   { id: "models", label: "模型服务", description: "API 与可用模型" },
   { id: "search", label: "联网搜索", description: "SearXNG 服务" },
-  { id: "memory", label: "长期记忆", description: "MemOS 服务" },
+  { id: "memory", label: "长期记忆", description: "本地优先与 MemOS" },
   { id: "data", label: "数据迁移", description: "一键备份与恢复" },
 ];
 
@@ -68,7 +83,7 @@ export function ProviderSettings({
   onThemeModeChange,
 }: {
   appearance: AppearancePreferences;
-  initialSection?: "appearance" | "credits";
+  initialSection?: SettingsSection;
   themeMode: ThemeMode;
   onAppearanceChange: (next: AppearancePreferences) => boolean;
   onClose: () => void;
@@ -80,6 +95,7 @@ export function ProviderSettings({
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [searchDraft, setSearchDraft] = useState<WebSearchDraft>(EMPTY_SEARCH_DRAFT);
   const [memoryDraft, setMemoryDraft] = useState<MemoryServiceDraft>(EMPTY_MEMORY_DRAFT);
+  const [localMemoryDraft, setLocalMemoryDraft] = useState<LocalMemoryDraft>(EMPTY_LOCAL_MEMORY_DRAFT);
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([]);
   const [modelQuery, setModelQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -98,6 +114,10 @@ export function ProviderSettings({
   const insecureDraft = isPlainHttpProviderUrl(draft.baseUrl);
   const insecureSearchDraft = isPlainHttpProviderUrl(searchDraft.baseUrl);
   const insecureMemoryDraft = isPlainHttpProviderUrl(memoryDraft.baseUrl);
+  const searchEndpointChanged = Boolean(snapshot.webSearch
+    && snapshot.webSearch.baseUrl.replace(/\/+$/, "") !== searchDraft.baseUrl.trim().replace(/\/+$/, ""));
+  const searchApiKeyRequired = searchDraft.authMode === "x-api-key"
+    && (snapshot.webSearch?.authMode !== "x-api-key" || searchEndpointChanged);
   const selected = snapshot.profiles.find((profile) => (
     profile.id === snapshot.selectedProviderId && profile.source !== "nkg-hosted"
   )) ?? snapshot.profiles.find((profile) => profile.source !== "nkg-hosted");
@@ -140,9 +160,23 @@ export function ProviderSettings({
     setSearchDraft({
       baseUrl: snapshot.webSearch?.baseUrl ?? DEFAULT_SEARXNG_URL,
       apiKey: "",
+      authMode: snapshot.webSearch?.authMode ?? "x-api-key",
       enabled: snapshot.webSearch?.enabled ?? true,
     });
   }, [snapshot.webSearch?.baseUrl, snapshot.webSearch?.enabled]);
+
+  useEffect(() => {
+    setLocalMemoryDraft({
+      enabled: snapshot.localMemory?.enabled ?? true,
+      autoArchive: snapshot.localMemory?.autoArchive ?? true,
+      semanticSearch: snapshot.localMemory?.semanticSearch ?? true,
+      embeddingMode: snapshot.localMemory?.embeddingMode ?? "local",
+      embeddingProviderId: snapshot.localMemory?.embeddingProviderId
+        || snapshot.profiles.find((profile) => profile.source !== "nkg-hosted")?.id
+        || "",
+      embeddingModel: snapshot.localMemory?.embeddingModel ?? LOCAL_EMBEDDING_MODEL_ID,
+    });
+  }, [snapshot.localMemory, snapshot.profiles]);
 
   useEffect(() => {
     setMemoryDraft({
@@ -243,18 +277,40 @@ export function ProviderSettings({
     }
   }
 
+  async function testLocalSemanticMemory() {
+    setMemoryBusy(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const dimensions = await providerSession.testLocalMemorySemanticSearch(localMemoryDraft);
+      setNotice(localMemoryDraft.embeddingMode === "local"
+        ? `本地 BGE 模型已就绪，返回 ${dimensions} 维向量`
+        : `Embedding 连接成功，返回 ${dimensions} 维向量`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause));
+    } finally {
+      setMemoryBusy(false);
+    }
+  }
+
   async function saveMemory() {
     setMemoryBusy(true);
     setError(undefined);
     setNotice(undefined);
     try {
-      setSnapshot(await providerSession.saveMemoryService({
-        ...memoryDraft,
-        ...(insecureMemoryDraft ? { allowInsecureHttp: insecureMemoryHttpConfirmed } : {}),
-      }));
+      let next = await providerSession.saveLocalMemory(localMemoryDraft);
+      if (memoryDraft.enabled || snapshot.memory) {
+        next = await providerSession.saveMemoryService({
+          ...memoryDraft,
+          ...(insecureMemoryDraft ? { allowInsecureHttp: insecureMemoryHttpConfirmed } : {}),
+        });
+      }
+      setSnapshot(next);
       setMemoryDraft((current) => ({ ...current, apiKey: "" }));
       setInsecureMemoryHttpConfirmed(false);
-      setNotice("MemOS 记忆配置已保存，API Key 已进入本机加密存储");
+      setNotice(memoryDraft.enabled
+        ? "本地记忆与 MemOS 配置已保存，API Key 已进入本机加密存储"
+        : "本地记忆配置已保存；MemOS 保持关闭");
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -498,12 +554,33 @@ export function ProviderSettings({
         {activeSection === "search" ? (
         <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveSearch(); }}>
           <div className="settings-section-heading">
-            <div><strong>联网搜索</strong><small>通过自建 SearXNG 为本轮回答补充最新资料与来源</small></div>
+            <div><strong>联网搜索</strong><small>默认走 NKG 匿名会话代理，也可改用自己的 SearXNG</small></div>
             <span className={`connection-dot ${snapshot.webSearch?.enabled ? "online" : ""}`} />
           </div>
+          <p className="field-hint">开启后先由当前模型结合近期对话判断是否需要联网，并规划最多 3 组搜索词；不会直接把整段用户输入作为常规查询。</p>
+
+          <label htmlFor="search-mode">搜索服务</label>
+          <select
+            id="search-mode"
+            value={searchDraft.authMode}
+            onChange={(event) => {
+              const authMode = event.currentTarget.value as WebSearchDraft["authMode"];
+              setSearchDraft({
+                ...searchDraft,
+                authMode,
+                ...(authMode === "nkg-session" ? { baseUrl: DEFAULT_SEARXNG_URL, apiKey: "" } : {}),
+              });
+              setInsecureSearchHttpConfirmed(false);
+            }}
+          >
+            {snapshot.hostedAi ? <option value="nkg-session">NKG 默认搜索（推荐）</option> : null}
+            <option value="x-api-key">自定义 SearXNG（X-API-Key）</option>
+            <option value="none">自定义 SearXNG（无认证）</option>
+          </select>
 
           <label htmlFor="searxng-url">SearXNG URL</label>
           <input
+            disabled={searchDraft.authMode === "nkg-session"}
             id="searxng-url"
             placeholder={DEFAULT_SEARXNG_URL}
             required
@@ -514,24 +591,30 @@ export function ProviderSettings({
               setInsecureSearchHttpConfirmed(false);
             }}
           />
-          <p className="field-hint">应用会调用 <code>/search?format=json</code>，请求通过跨平台原生 HTTP 传输。</p>
+          <p className="field-hint">{searchDraft.authMode === "nkg-session"
+            ? "客户端只发送 NKG 匿名会话；SearXNG Key 保留在服务端并按会话限流。"
+            : <>应用会调用 <code>/search?format=json</code>，请求通过跨平台原生 HTTP 传输。</>}</p>
 
-          <label htmlFor="searxng-key">API Key</label>
-          <div className="secret-input">
-            <input
-              autoComplete="off"
-              id="searxng-key"
-              placeholder={snapshot.webSearch ? "留空表示保留当前密钥" : "输入 API Key"}
-              required={!snapshot.webSearch}
-              type={showSearchApiKey ? "text" : "password"}
-              value={searchDraft.apiKey}
-              onChange={(event) => setSearchDraft({ ...searchDraft, apiKey: event.currentTarget.value })}
-            />
-            <button aria-label={showSearchApiKey ? "隐藏搜索 API Key" : "显示搜索 API Key"} type="button" onClick={() => setShowSearchApiKey((value) => !value)}>
-              {showSearchApiKey ? <EyeOffIcon /> : <EyeIcon />}
-            </button>
-          </div>
-          <p className="field-hint">使用 <code>X-API-Key</code> 请求头；密钥只保存在本机 Stronghold。</p>
+          {searchDraft.authMode === "x-api-key" ? (
+            <>
+              <label htmlFor="searxng-key">API Key</label>
+              <div className="secret-input">
+                <input
+                  autoComplete="off"
+                  id="searxng-key"
+                  placeholder={snapshot.webSearch ? "URL 未变时留空表示保留当前密钥" : "输入 API Key"}
+                  required={searchApiKeyRequired}
+                  type={showSearchApiKey ? "text" : "password"}
+                  value={searchDraft.apiKey}
+                  onChange={(event) => setSearchDraft({ ...searchDraft, apiKey: event.currentTarget.value })}
+                />
+                <button aria-label={showSearchApiKey ? "隐藏搜索 API Key" : "显示搜索 API Key"} type="button" onClick={() => setShowSearchApiKey((value) => !value)}>
+                  {showSearchApiKey ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+              <p className="field-hint">使用 <code>X-API-Key</code> 请求头；密钥只保存在本机 Stronghold。更换 URL 时必须重新输入，避免把旧密钥发给新服务。</p>
+            </>
+          ) : null}
 
           <label className="search-enabled-option">
             <input checked={searchDraft.enabled} type="checkbox" onChange={(event) => setSearchDraft({ ...searchDraft, enabled: event.currentTarget.checked })} />
@@ -546,10 +629,10 @@ export function ProviderSettings({
           ) : null}
 
           <div className="settings-actions">
-            <button className="ghost-button" disabled={searchBusy || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="button" onClick={() => void testSearch()}>
+            <button className="ghost-button" disabled={searchBusy || (searchApiKeyRequired && !searchDraft.apiKey.trim()) || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="button" onClick={() => void testSearch()}>
               {searchBusy ? "正在连接…" : "测试连接"}
             </button>
-            <button className="primary-button" disabled={searchBusy || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="submit">
+            <button className="primary-button" disabled={searchBusy || (searchApiKeyRequired && !searchDraft.apiKey.trim()) || (insecureSearchDraft && !insecureSearchHttpConfirmed)} type="submit">
               {searchBusy ? "正在保存…" : "保存联网设置"}
             </button>
           </div>
@@ -559,69 +642,167 @@ export function ProviderSettings({
         {activeSection === "memory" ? (
         <form className="openai-form search-form" onSubmit={(event) => { event.preventDefault(); void saveMemory(); }}>
           <div className="settings-section-heading">
-            <div><strong>跨端长期记忆</strong><small>通过 MemOS 在回答前召回、完整回答后写入</small></div>
-            <span className={`connection-dot ${snapshot.memory?.enabled ? "online" : ""}`} />
+            <div><strong>本地优先长期记忆</strong><small>默认存入当前设备；MemOS 是可选的跨端增强</small></div>
+            <span className={`connection-dot ${localMemoryDraft.enabled ? "online" : ""}`} />
           </div>
 
-          <label htmlFor="memos-url">MemOS API URL</label>
-          <input
-            id="memos-url"
-            placeholder={DEFAULT_MEMOS_URL}
-            required
-            type="url"
-            value={memoryDraft.baseUrl}
-            onChange={(event) => {
-              setMemoryDraft({ ...memoryDraft, baseUrl: event.currentTarget.value });
-              setInsecureMemoryHttpConfirmed(false);
-            }}
-          />
-          <p className="field-hint">云服务默认使用 <code>/api/openmem/v1</code>；请求通过跨平台原生 HTTP 传输。</p>
+          <label className="search-enabled-option">
+            <input checked={localMemoryDraft.enabled} type="checkbox" onChange={(event) => setLocalMemoryDraft({ ...localMemoryDraft, enabled: event.currentTarget.checked })} />
+            <span><strong>启用本地记忆</strong><small>长期记忆保存在 SQLite，可随时编辑、停用或删除。</small></span>
+          </label>
 
-          <label htmlFor="memos-user-id">用户标识</label>
-          <input
-            id="memos-user-id"
-            maxLength={256}
-            placeholder="同一用户在所有设备上保持一致"
-            required
-            value={memoryDraft.userId}
-            onChange={(event) => setMemoryDraft({ ...memoryDraft, userId: event.currentTarget.value })}
-          />
-          <p className="field-hint">建议使用账号系统中的稳定 ID，不要填写邮箱、手机号等明文个人信息。</p>
-
-          <label htmlFor="memos-key">MemOS API Key</label>
-          <div className="secret-input">
+          <label className="search-enabled-option">
             <input
-              autoComplete="off"
-              id="memos-key"
-              placeholder={snapshot.memory ? "留空表示保留当前密钥" : "mpg-..."}
-              required={!snapshot.memory}
-              type={showMemoryApiKey ? "text" : "password"}
-              value={memoryDraft.apiKey}
-              onChange={(event) => setMemoryDraft({ ...memoryDraft, apiKey: event.currentTarget.value })}
+              checked={localMemoryDraft.autoArchive}
+              disabled={!localMemoryDraft.enabled}
+              type="checkbox"
+              onChange={(event) => setLocalMemoryDraft({ ...localMemoryDraft, autoArchive: event.currentTarget.checked })}
             />
-            <button aria-label={showMemoryApiKey ? "隐藏 MemOS API Key" : "显示 MemOS API Key"} type="button" onClick={() => setShowMemoryApiKey((value) => !value)}>
-              {showMemoryApiKey ? <EyeOffIcon /> : <EyeIcon />}
-            </button>
-          </div>
-          <p className="field-hint">使用 <code>Authorization: Token</code>；密钥只保存在本机 Stronghold。</p>
+            <span><strong>自动归档每轮对话</strong><small>默认开启。每次成功问答都会异步提取稳定事实并自动写入；无长期价值的轮次不会生成记忆。</small></span>
+          </label>
+
+          <label className="search-enabled-option">
+            <input
+              checked={localMemoryDraft.semanticSearch}
+              disabled={!localMemoryDraft.enabled}
+              type="checkbox"
+              onChange={(event) => setLocalMemoryDraft({ ...localMemoryDraft, semanticSearch: event.currentTarget.checked })}
+            />
+            <span><strong>混合语义检索</strong><small>默认在本机运行 BGE Small 中文模型；记忆文本不上传，失败时自动回退词项检索。</small></span>
+          </label>
+
+          {localMemoryDraft.semanticSearch && localMemoryDraft.enabled ? (
+            <>
+              <label htmlFor="memory-embedding-mode">Embedding 运行方式</label>
+              <select
+                id="memory-embedding-mode"
+                value={localMemoryDraft.embeddingMode}
+                onChange={(event) => {
+                  const embeddingMode = event.currentTarget.value as LocalMemoryDraft["embeddingMode"];
+                  setLocalMemoryDraft({
+                    ...localMemoryDraft,
+                    embeddingMode,
+                    ...(embeddingMode === "local" ? { embeddingModel: LOCAL_EMBEDDING_MODEL_ID } : {}),
+                  });
+                }}
+              >
+                <option value="local">{LOCAL_EMBEDDING_MODEL_LABEL}（默认）</option>
+                <option value="cloud">云端 OpenAI 兼容 Embeddings</option>
+              </select>
+
+              {localMemoryDraft.embeddingMode === "local" ? (
+                <>
+                  <p className="field-hint">约 25 MB 的 q8 模型已随应用安装，推理在独立 Worker 中离线完成。历史记忆会以每批 8 条在后台补齐向量，不再限制只检索最近 500 条。</p>
+                  <div className="settings-actions">
+                    <button className="ghost-button" disabled={memoryBusy} type="button" onClick={() => void testLocalSemanticMemory()}>
+                      {memoryBusy ? "正在加载本地模型…" : "检查本地模型"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <label htmlFor="memory-embedding-provider">Embedding Provider</label>
+                  <select
+                    id="memory-embedding-provider"
+                    required
+                    value={localMemoryDraft.embeddingProviderId}
+                    onChange={(event) => setLocalMemoryDraft({ ...localMemoryDraft, embeddingProviderId: event.currentTarget.value })}
+                  >
+                    <option value="">选择已配置的模型服务</option>
+                    {snapshot.profiles.filter((profile) => profile.source !== "nkg-hosted").map((profile) => (
+                      <option key={profile.id} value={profile.id}>{profile.name}</option>
+                    ))}
+                  </select>
+
+                  <label htmlFor="memory-embedding-model">Embedding 模型</label>
+                  <input
+                    id="memory-embedding-model"
+                    maxLength={256}
+                    placeholder="例如 text-embedding-3-small 或 bge-m3"
+                    required
+                    value={localMemoryDraft.embeddingModel}
+                    onChange={(event) => setLocalMemoryDraft({ ...localMemoryDraft, embeddingModel: event.currentTarget.value })}
+                  />
+                  <p className="field-hint">只有选择此模式时，查询和待索引记忆才会发送到该 Provider。</p>
+                  <div className="settings-actions">
+                    <button className="ghost-button" disabled={memoryBusy || !localMemoryDraft.embeddingProviderId || !localMemoryDraft.embeddingModel.trim()} type="button" onClick={() => void testLocalSemanticMemory()}>
+                      {memoryBusy ? "正在连接…" : "测试云端 Embeddings"}
+                    </button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : null}
 
           <label className="search-enabled-option">
             <input checked={memoryDraft.enabled} type="checkbox" onChange={(event) => setMemoryDraft({ ...memoryDraft, enabled: event.currentTarget.checked })} />
-            <span><strong>启用 MemOS 长期记忆</strong><small>远程召回失败时继续使用本地已批准记忆，不阻断聊天。</small></span>
+            <span><strong>同时启用 MemOS</strong><small>完整问答会发送到你的 MemOS，并在回答前进行跨端召回；远程失败不阻断本地记忆。</small></span>
           </label>
 
-          {insecureMemoryDraft ? (
-            <label className="security-warning">
-              <input checked={insecureMemoryHttpConfirmed} type="checkbox" onChange={(event) => setInsecureMemoryHttpConfirmed(event.currentTarget.checked)} />
-              <span><strong>确认记忆服务使用明文 HTTP</strong><small>{INSECURE_PROVIDER_WARNING}</small></span>
-            </label>
+          {memoryDraft.enabled ? (
+            <>
+              <label htmlFor="memos-url">MemOS API URL</label>
+              <input
+                id="memos-url"
+                placeholder={DEFAULT_MEMOS_URL}
+                required
+                type="url"
+                value={memoryDraft.baseUrl}
+                onChange={(event) => {
+                  setMemoryDraft({ ...memoryDraft, baseUrl: event.currentTarget.value });
+                  setInsecureMemoryHttpConfirmed(false);
+                }}
+              />
+              <p className="field-hint">云服务默认使用 <code>/api/openmem/v1</code>；请求通过跨平台原生 HTTP 传输。</p>
+
+              <label htmlFor="memos-user-id">用户标识</label>
+              <input
+                id="memos-user-id"
+                maxLength={256}
+                placeholder="同一用户在所有设备上保持一致"
+                required
+                value={memoryDraft.userId}
+                onChange={(event) => setMemoryDraft({ ...memoryDraft, userId: event.currentTarget.value })}
+              />
+              <p className="field-hint">建议使用稳定的随机 ID，不要填写邮箱、手机号等明文个人信息。</p>
+
+              <label htmlFor="memos-key">MemOS API Key</label>
+              <div className="secret-input">
+                <input
+                  autoComplete="off"
+                  id="memos-key"
+                  placeholder={snapshot.memory ? "留空表示保留当前密钥" : "mpg-..."}
+                  required={!snapshot.memory}
+                  type={showMemoryApiKey ? "text" : "password"}
+                  value={memoryDraft.apiKey}
+                  onChange={(event) => setMemoryDraft({ ...memoryDraft, apiKey: event.currentTarget.value })}
+                />
+                <button aria-label={showMemoryApiKey ? "隐藏 MemOS API Key" : "显示 MemOS API Key"} type="button" onClick={() => setShowMemoryApiKey((value) => !value)}>
+                  {showMemoryApiKey ? <EyeOffIcon /> : <EyeIcon />}
+                </button>
+              </div>
+              <p className="field-hint">使用 <code>Authorization: Token</code>；密钥只保存在本机 Stronghold。</p>
+
+              {insecureMemoryDraft ? (
+                <label className="security-warning">
+                  <input checked={insecureMemoryHttpConfirmed} type="checkbox" onChange={(event) => setInsecureMemoryHttpConfirmed(event.currentTarget.checked)} />
+                  <span><strong>确认记忆服务使用明文 HTTP</strong><small>{INSECURE_PROVIDER_WARNING}</small></span>
+                </label>
+              ) : null}
+
+              <div className="settings-actions">
+                <button className="ghost-button" disabled={memoryBusy || !memoryDraft.userId.trim() || (insecureMemoryDraft && !insecureMemoryHttpConfirmed)} type="button" onClick={() => void testMemory()}>
+                  {memoryBusy ? "正在连接…" : "测试 MemOS"}
+                </button>
+              </div>
+            </>
           ) : null}
 
           <div className="settings-actions">
-            <button className="ghost-button" disabled={memoryBusy || !memoryDraft.userId.trim() || (insecureMemoryDraft && !insecureMemoryHttpConfirmed)} type="button" onClick={() => void testMemory()}>
-              {memoryBusy ? "正在连接…" : "测试连接"}
-            </button>
-            <button className="primary-button" disabled={memoryBusy || !memoryDraft.userId.trim() || (insecureMemoryDraft && !insecureMemoryHttpConfirmed)} type="submit">
+            <button className="primary-button" disabled={memoryBusy
+              || (localMemoryDraft.semanticSearch && localMemoryDraft.embeddingMode === "cloud"
+                && (!localMemoryDraft.embeddingProviderId || !localMemoryDraft.embeddingModel.trim()))
+              || (memoryDraft.enabled && (!memoryDraft.userId.trim() || (!snapshot.memory && !memoryDraft.apiKey.trim()) || (insecureMemoryDraft && !insecureMemoryHttpConfirmed)))} type="submit">
               {memoryBusy ? "正在保存…" : "保存记忆设置"}
             </button>
           </div>

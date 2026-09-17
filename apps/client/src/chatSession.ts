@@ -2,6 +2,8 @@ import type { FlowInvokeOptions, NodeEvent } from "@nkg-ai-bot/runtime-router";
 import {
   BUILTIN_CHAT_FLOW_ID,
   BUILTIN_CHAT_FLOW_VERSION,
+  BUILTIN_WEB_SEARCH_PLANNER_FLOW_ID,
+  BUILTIN_WEB_SEARCH_PLANNER_FLOW_VERSION,
 } from "./builtinFlows";
 import {
   chatMessageImages,
@@ -43,6 +45,13 @@ import {
   type WebSearchResult,
 } from "./providerSession";
 import {
+  buildWebSearchPlanningPrompt,
+  computerHardwareFallbackSearchQueries,
+  mergePlannedWebSearchResults,
+  parseWebSearchPlan,
+  safeFallbackSearchQuery,
+} from "./webSearchPlanner";
+import {
   appendMessage,
   completeConversationCompression,
   failConversationCompression,
@@ -79,6 +88,7 @@ export interface ChatStore {
     assistantVersion?: string;
     providerId?: string;
     modelId?: string;
+    flowVariables?: LocalConversation["flowVariables"];
   }): Promise<void>;
   appendMessage(input: {
     id: string;
@@ -152,6 +162,7 @@ export interface SendChatOptions {
 export interface SendChatResult {
   user: LocalMessage;
   assistant: LocalMessage;
+  memoryNamespace: string;
   runId?: string;
   failed?: true;
 }
@@ -176,6 +187,12 @@ export interface ChatActivity {
 
 export interface RemoteMemoryClient {
   isMemoryEnabled(): boolean;
+  isLocalMemoryEnabled?(): boolean;
+  searchLocalMemory?(
+    query: string,
+    namespace: string,
+    options?: { signal?: AbortSignal; limit?: number },
+  ): Promise<MemoryItem[]>;
   searchMemory(
     query: string,
     conversationId: string,
@@ -299,13 +316,16 @@ export class LocalChatSession {
       throw new Error("当前助手没有联网搜索所需的权限");
     }
 
+    const localMemoryEnabled = this.remoteMemory.isLocalMemoryEnabled?.() ?? true;
     options.onActivity?.(options.webSearch && content
-      ? { kind: "searching-web", label: "正在联网搜索" }
-      : this.remoteMemory.isMemoryEnabled()
+      ? { kind: "searching-web", label: "正在规划搜索关键词" }
+      : localMemoryEnabled || this.remoteMemory.isMemoryEnabled()
         ? { kind: "recalling-memory", label: "正在检索相关记忆" }
         : { kind: "preparing", label: "正在整理上下文" });
     const [localMemories, remoteMemories, searchResults] = await Promise.all([
-      this.store.listRelevantMemories(retrievalQuery, skill.memoryNamespace),
+      localMemoryEnabled
+        ? this.searchLocalMemories(retrievalQuery, skill.memoryNamespace, options.signal)
+        : Promise.resolve([]),
       this.remoteMemory.isMemoryEnabled()
         ? this.remoteMemory.searchMemory(retrievalQuery, this.conversationId, {
           signal: options.signal,
@@ -316,7 +336,7 @@ export class LocalChatSession {
         })
         : Promise.resolve([]),
       options.webSearch && content
-        ? this.webSearch.searchWeb(content, { signal: options.signal, maxResults: 6 })
+        ? this.searchWebWithPlanning(content, promptMessages, conversation, skill, options)
         : Promise.resolve([]),
     ]);
     const webReferences = searchResults.map((result) => ({
@@ -369,11 +389,15 @@ export class LocalChatSession {
 
     try {
       options.onActivity?.({ kind: "thinking", label: "模型正在思考" });
+      const conversationVariables = {
+        ...conversation?.flowVariables,
+        ...(conversation?.modelId ? { LLM_DEFAULT_MODEL: conversation.modelId } : {}),
+      };
       for await (const event of this.runtime.stream(skill.flowId, runtimeInput, {
         flowVersion: skill.flowVersion,
         ...(options.signal ? { signal: options.signal } : {}),
-        ...(conversation?.modelId ? {
-          envOverrides: { variables: { LLM_DEFAULT_MODEL: conversation.modelId } },
+        ...(Object.keys(conversationVariables).length ? {
+          envOverrides: { variables: conversationVariables },
         } : {}),
       })) {
         runId ??= event.runId;
@@ -403,7 +427,10 @@ export class LocalChatSession {
         if (event.kind === "run_finished") {
           finalOutput = readRunOutput(event.payload);
         }
-        if (event.kind === "node_error" || event.kind === "run_failed") {
+        // A node_error can be an authored, handled branch (for example the
+        // computer advisor's deterministic planner fallback). Only the Run's
+        // terminal failure event makes the chat fail.
+        if (event.kind === "run_failed") {
           terminalError = new Error(readRuntimeError(event.payload));
         }
         if (event.kind === "run_cancelled") {
@@ -436,7 +463,7 @@ export class LocalChatSession {
           { role: "assistant", content: answer },
         ]).catch(() => undefined);
       }
-      return { user, assistant, ...(runId ? { runId } : {}) };
+      return { user, assistant, memoryNamespace: skill.memoryNamespace, ...(runId ? { runId } : {}) };
     } catch (error: unknown) {
       let failureAssistant: LocalMessage | undefined;
       if (flowOutputPending && !isAbort(error)) {
@@ -460,12 +487,112 @@ export class LocalChatSession {
         return {
           user,
           assistant: failureAssistant,
+          memoryNamespace: skill.memoryNamespace,
           ...(runId ? { runId } : {}),
           failed: true,
         };
       }
       throw error;
     }
+  }
+
+  private async searchLocalMemories(
+    query: string,
+    namespace: string,
+    signal?: AbortSignal,
+  ): Promise<MemoryItem[]> {
+    if (!this.remoteMemory.searchLocalMemory) {
+      return this.store.listRelevantMemories(query, namespace);
+    }
+    try {
+      return await this.remoteMemory.searchLocalMemory(query, namespace, { signal, limit: 8 });
+    } catch (cause: unknown) {
+      if (isAbort(cause)) throw cause;
+      return this.store.listRelevantMemories(query, namespace);
+    }
+  }
+
+  private async searchWebWithPlanning(
+    currentRequest: string,
+    messages: LocalMessage[],
+    conversation: LocalConversation | undefined,
+    skill: AssistantSkillVersion,
+    options: SendChatOptions,
+  ): Promise<WebSearchResult[]> {
+    const computerHardwareSearch = skill.assistantId === "computer_config_advisor";
+    let queries: string[];
+    try {
+      queries = await this.planWebSearchQueries(
+        buildWebSearchPlanningPrompt(
+          messages,
+          currentRequest,
+          computerHardwareSearch ? "computer_hardware" : "general",
+        ),
+        conversation,
+        options.signal,
+      );
+    } catch (cause: unknown) {
+      if (isAbort(cause)) throw cause;
+      console.warn("AI 搜索词规划失败，已回退到安全裁剪后的用户原文", cause);
+      if (computerHardwareSearch) {
+        queries = computerHardwareFallbackSearchQueries(currentRequest);
+      } else {
+        const fallback = safeFallbackSearchQuery(currentRequest);
+        queries = fallback ? [fallback] : [];
+      }
+    }
+    if (computerHardwareSearch && queries.length === 0) {
+      queries = computerHardwareFallbackSearchQueries(currentRequest);
+    }
+    if (queries.length === 0) return [];
+
+    options.onActivity?.({
+      kind: "searching-web",
+      label: queries.length > 1 ? `正在并行搜索 ${queries.length} 组关键词` : "正在联网搜索",
+    });
+    const settled = await Promise.allSettled(queries.map((query) => (
+      this.webSearch.searchWeb(query, { signal: options.signal, maxResults: 4 })
+    )));
+    if (options.signal?.aborted) throw abortError(options.signal.reason);
+    const groups = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
+    if (groups.length === 0) {
+      const failure = settled.find((result) => result.status === "rejected");
+      throw failure?.status === "rejected" ? failure.reason : new Error("联网搜索没有返回结果");
+    }
+    return mergePlannedWebSearchResults(
+      groups,
+      computerHardwareSearch ? 9 : 6,
+    );
+  }
+
+  private async planWebSearchQueries(
+    prompt: string,
+    conversation: LocalConversation | undefined,
+    signal?: AbortSignal,
+  ): Promise<string[]> {
+    let streamed = "";
+    let finalOutput = "";
+    for await (const event of this.runtime.stream(BUILTIN_WEB_SEARCH_PLANNER_FLOW_ID, prompt, {
+      flowVersion: BUILTIN_WEB_SEARCH_PLANNER_FLOW_VERSION,
+      ...(signal ? { signal } : {}),
+      ...(conversation?.modelId ? {
+        envOverrides: { variables: { LLM_DEFAULT_MODEL: conversation.modelId } },
+      } : {}),
+    })) {
+      if (event.kind === "stream_delta" && event.nodeId === "search_query_planner") {
+        streamed += readTextDelta(event.payload);
+      }
+      if (event.kind === "run_finished") {
+        finalOutput = readSearchPlanOutput(event.payload);
+      }
+      if (event.kind === "node_error" || event.kind === "run_failed") {
+        throw new Error(readRuntimeError(event.payload));
+      }
+      if (event.kind === "run_cancelled") {
+        throw new DOMException("搜索词规划已取消", "AbortError");
+      }
+    }
+    return parseWebSearchPlan(finalOutput || streamed);
   }
 
   private async preparePromptContext(input: {
@@ -849,8 +976,20 @@ function readRunOutput(payload: unknown): string {
   return typeof output === "string" ? output : "";
 }
 
+function readSearchPlanOutput(payload: unknown): string {
+  if (!payload || typeof payload !== "object") return "";
+  const output = (payload as { output?: unknown }).output;
+  if (typeof output === "string") return output;
+  return output && typeof output === "object" ? JSON.stringify(output) : "";
+}
+
 function isAbort(error: unknown): boolean {
   return error instanceof Error && error.name === "AbortError";
+}
+
+function abortError(reason: unknown): Error {
+  if (reason instanceof Error && reason.name === "AbortError") return reason;
+  return new DOMException("操作已取消", "AbortError");
 }
 
 function errorMessage(error: unknown): string {

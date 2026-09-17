@@ -11,6 +11,10 @@ export interface ServiceConfig {
   runTokenSecret: string;
   newApiBaseUrl: string;
   newApiKey: string;
+  searxngBaseUrl: string;
+  searxngApiKey: string;
+  searchTimeoutMs: number;
+  searchMaxResults: number;
   appleBundleId: string;
   appleAppId: number;
   appleRootCertificates: Buffer[];
@@ -25,6 +29,11 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     "NEW_API_BASE_URL",
     env.NEW_API_ALLOW_INSECURE_HTTP === "true",
   ));
+  const searxngBaseUrl = serviceUrl(
+    required(env, "SEARXNG_BASE_URL"),
+    "SEARXNG_BASE_URL",
+    env.SEARXNG_ALLOW_INSECURE_HTTP === "true",
+  );
   const rootPaths = required(env, "APPLE_ROOT_CA_PATHS").split(",").map((value) => value.trim()).filter(Boolean);
   if (!rootPaths.length) throw new Error("APPLE_ROOT_CA_PATHS 至少需要一个 Apple 根证书");
   const appleRootCertificates = await Promise.all(rootPaths.map((path) => readFile(path)));
@@ -40,6 +49,10 @@ export async function loadConfig(env: NodeJS.ProcessEnv = process.env): Promise<
     runTokenSecret: secret(env, "NKG_RUN_TOKEN_SECRET", 32),
     newApiBaseUrl,
     newApiKey: secret(env, "NEW_API_KEY", 8),
+    searxngBaseUrl,
+    searxngApiKey: secret(env, "SEARXNG_API_KEY", 8),
+    searchTimeoutMs: integer(env.NKG_SEARCH_TIMEOUT_MS ?? "12000", "NKG_SEARCH_TIMEOUT_MS", 1_000, 30_000),
+    searchMaxResults: integer(env.NKG_SEARCH_MAX_RESULTS ?? "6", "NKG_SEARCH_MAX_RESULTS", 1, 10),
     appleBundleId: required(env, "APPLE_BUNDLE_ID"),
     appleAppId: integer(required(env, "APPLE_APP_ID"), "APPLE_APP_ID", 1, Number.MAX_SAFE_INTEGER),
     appleRootCertificates,

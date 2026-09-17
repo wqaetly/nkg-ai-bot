@@ -13,12 +13,16 @@ describe("chat-first UI consistency", () => {
     expect(source).not.toContain("助理");
   });
 
-  it("keeps affiliate configuration inside the computer configuration Flow", async () => {
-    const source = await readFile(new URL("../src/ProviderSettings.tsx", import.meta.url), "utf8");
+  it("keeps affiliate credentials out of the settings and chat UI", async () => {
+    const settings = await readFile(new URL("../src/ProviderSettings.tsx", import.meta.url), "utf8");
+    const chat = await readFile(new URL("../src/ChatPage.tsx", import.meta.url), "utf8");
+    const session = await readFile(new URL("../src/providerSession.ts", import.meta.url), "utf8");
 
-    expect(source).not.toContain('id: "commerce"');
-    expect(source).not.toContain("商品推荐与返利");
-    expect(source).not.toContain("保存返利设置");
+    expect(settings).not.toContain('{ id: "commerce"');
+    expect(settings).not.toContain("OAuth Access Token");
+    expect(settings).not.toContain("Client Secret");
+    expect(chat).not.toContain("openCommerceSettings");
+    expect(session).toContain("take_pdd_commerce_bootstrap");
   });
 
   it("keeps the chat chrome free of redundant brand tiles", async () => {
@@ -61,6 +65,9 @@ describe("chat-first UI consistency", () => {
     expect(source).toContain('sidebar-collapse-toggle');
     expect(source).not.toContain('assistantVersion ?? "1.0.0"');
     expect(styles).toContain("height: 44px; min-height: 44px");
+    expect(source).toContain('aria-label="配置当前 Flow"');
+    expect(source).toContain("<ConversationFlowConfigDialog");
+    expect(styles).toContain(".chat-flow-config-button");
   });
 
   it("keeps complete migration inside the settings navigation", async () => {
@@ -72,12 +79,17 @@ describe("chat-first UI consistency", () => {
     expect(migration).toContain("备份当前数据并导入");
   });
 
-  it("asks for a Skill before creating a global conversation and defaults to NKG", async () => {
+  it("offers a compact searchable assistant picker before creating a global conversation", async () => {
     const source = await readFile(new URL("../src/ChatPage.tsx", import.meta.url), "utf8");
+    const styles = await readFile(new URL("../src/App.css", import.meta.url), "utf8");
 
     expect(source).toContain("setNewConversationOpen(true)");
     expect(source).toContain("setNewConversationSkillId(DEFAULT_ASSISTANT_ID)");
-    expect(source).toContain("选择这个对话要使用的 Skill，默认使用 NKG。");
+    expect(source).toContain("选择这个对话要使用的助手，默认使用 NKG。");
+    expect(source).toContain('placeholder="搜索名称、描述或能力"');
+    expect(source).toContain("filterAssistantSkillIndex(orderedSkills, searchQuery)");
+    expect(styles).toContain(".new-conversation-search");
+    expect(styles).toContain("min-height: 42px");
     expect(source).toContain("void startConversation(assistantId)");
   });
 
@@ -87,12 +99,16 @@ describe("chat-first UI consistency", () => {
     expect(source).toContain('import("./runtime")');
     expect(source).not.toContain('from "./runtime"');
     expect(source).toContain("listConversations()");
+    expect(source).toContain("Runtime startup seeds and migrates built-in Assistant/Flow versions");
     expect(source).toContain("deleteConversation(id)");
     expect(source).toContain('event.key === "Enter" && !event.shiftKey');
     expect(source).toContain("abortRef.current?.abort()");
     expect(source).not.toContain("scrollIntoView");
     expect(source).toContain("messageScroll.scrollTo");
     expect(source).toContain('aria-label="当前对话模型"');
+    expect(source).toContain("<ModelSelector");
+    expect(source).toContain("providerSession.pingModel(model, signal)");
+    expect(source).not.toContain('<select aria-label="当前对话模型"');
     expect(source).toContain("const value = event.currentTarget.value;");
     expect(source).toContain("[activeId]: value");
     expect(source).not.toContain("[activeId]: event.currentTarget.value");
@@ -107,6 +123,8 @@ describe("chat-first UI consistency", () => {
     expect(styles).toContain(".conversation-sidebar.open { transform: translateX(0); }");
     expect(styles).toContain("env(safe-area-inset-bottom)");
     expect(styles).toContain(".composer-model-select");
+    expect(styles).toContain(".model-selector-popover");
+    expect(styles).toContain(".model-ping-button");
   });
 
   it("makes the empty composer focus and caret visible", async () => {

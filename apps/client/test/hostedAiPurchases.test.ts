@@ -50,6 +50,7 @@ async function setup(unfinished: StoreKitTransaction[] = []) {
     createRunOptions: vi.fn(),
     completeRun: vi.fn(async () => account.balance),
     redeemApplePurchase,
+    searchWeb: vi.fn(async () => []),
   };
   const hosted = new HostedAiSession(client, { getInstallationId: async () => "b130c491-0f3a-4491-a30a-7a281026a42b", setInstallationId: async () => undefined });
   await hosted.initialize(new Vault(), { platform: "ios", appVersion: "0.1.0" });

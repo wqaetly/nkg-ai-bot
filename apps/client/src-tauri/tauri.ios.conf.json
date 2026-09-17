@@ -5,7 +5,8 @@
   "bundle": {
     "externalBin": [],
     "iOS": {
-      "minimumSystemVersion": "15.0"
+      "minimumSystemVersion": "15.0",
+      "frameworks": ["native/zvec/zvec_c_api.xcframework"]
     }
   }
 }

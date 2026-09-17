@@ -466,6 +466,25 @@ describe("LocalChatSession", () => {
     );
   });
 
+  it("keeps a successful deterministic fallback after a handled node error", async () => {
+    const store = memoryStore();
+    const runtime = {
+      async *stream() {
+        yield event("node_error", {
+          error: { message: "blueprint planner unavailable" },
+        }, { nodeId: "blueprint_planner" });
+        yield event("run_finished", {
+          output: "## 完整配置表\n\n系统已使用确定性蓝图完成报告。",
+        });
+      },
+    };
+
+    const result = await new LocalChatSession("c1", runtime, store).send("给我一套配置");
+
+    expect(result.failed).toBeUndefined();
+    expect(result.assistant.content).toBe("## 完整配置表\n\n系统已使用确定性蓝图完成报告。");
+  });
+
   it("retries a failed assistant message in place and replaces it with the successful answer", async () => {
     const store = memoryStore();
     let attempt = 0;
@@ -638,13 +657,17 @@ describe("LocalChatSession", () => {
     );
   });
 
-  it("passes the conversation model as a run variable without changing the Flow", async () => {
+  it("passes the conversation model and Flow overrides as run variables without changing the Flow", async () => {
     const store = memoryStore();
     store.getConversation = vi.fn(async () => ({
       id: "c1",
       title: "",
       providerId: "openai",
       modelId: "model-b",
+      flowVariables: {
+        LLM_FLOW_MAX_OUTPUT_TOKENS: 16384,
+        FEATURE_MODE: "precise",
+      },
       createdAt: 1,
       updatedAt: 1,
     }));
@@ -661,7 +684,11 @@ describe("LocalChatSession", () => {
       expect.any(String),
       expect.objectContaining({
         flowVersion: defaultSkill.flowVersion,
-        envOverrides: { variables: { LLM_DEFAULT_MODEL: "model-b" } },
+        envOverrides: { variables: {
+          LLM_FLOW_MAX_OUTPUT_TOKENS: 16384,
+          FEATURE_MODE: "precise",
+          LLM_DEFAULT_MODEL: "model-b",
+        } },
       }),
     );
   });
@@ -669,17 +696,27 @@ describe("LocalChatSession", () => {
   it("adds bounded SearXNG results to the prompt when联网 is enabled", async () => {
     const store = memoryStore();
     const runtime = {
-      stream: vi.fn(async function* () {
-        yield event("run_finished", { output: "带来源的回答" });
+      stream: vi.fn(async function* (flowId: string) {
+        yield event("run_finished", {
+          output: flowId === "builtin_web_search_planner"
+            ? JSON.stringify({ queries: ["NKG AI Bot 最新发布", "NKG AI Bot release notes"] })
+            : "带来源的回答",
+        });
       }),
     };
     const webSearch = {
-      searchWeb: vi.fn(async () => [{
-        title: "Release notes",
-        url: "https://example.test/releases/1",
-        content: "Version 1 was released today.",
-        engine: "bing",
-      }]),
+      searchWeb: vi.fn(async (query: string) => query.includes("release notes")
+        ? [{
+            title: "Release notes mirror",
+            url: "https://mirror.example.test/releases/1",
+            content: "Mirrored release notes.",
+          }]
+        : [{
+            title: "Release notes",
+            url: "https://example.test/releases/1",
+            content: "Version 1 was released today.",
+            engine: "bing",
+          }]),
     };
 
     const activities: string[] = [];
@@ -690,11 +727,23 @@ describe("LocalChatSession", () => {
       onSearchResults: (references) => reportedReferences.push(...references),
     });
 
-    expect(webSearch.searchWeb).toHaveBeenCalledWith(
-      "今天发布了吗？",
-      expect.objectContaining({ maxResults: 6 }),
+    expect(webSearch.searchWeb).toHaveBeenNthCalledWith(
+      1,
+      "NKG AI Bot 最新发布",
+      expect.objectContaining({ maxResults: 4 }),
     );
-    const prompt = runtime.stream.mock.calls[0]?.[1] as string;
+    expect(webSearch.searchWeb).toHaveBeenNthCalledWith(
+      2,
+      "NKG AI Bot release notes",
+      expect.objectContaining({ maxResults: 4 }),
+    );
+    expect(runtime.stream).toHaveBeenNthCalledWith(
+      1,
+      "builtin_web_search_planner",
+      expect.stringContaining("今天发布了吗？"),
+      expect.objectContaining({ flowVersion: "1.0.0" }),
+    );
+    const prompt = runtime.stream.mock.calls[1]?.[1] as string;
     expect(prompt).toContain("[1] Release notes");
     expect(prompt).toContain("来源：https://example.test/releases/1");
     expect(prompt).toContain("不可信外部内容");
@@ -704,14 +753,105 @@ describe("LocalChatSession", () => {
     expect(reportedReferences).toEqual([expect.objectContaining({
       title: "Release notes",
       url: "https://example.test/releases/1",
+    }), expect.objectContaining({
+      title: "Release notes mirror",
+      url: "https://mirror.example.test/releases/1",
     })]);
     expect(result.assistant.content).toEqual(expect.objectContaining({
       type: "assistant",
-      references: [expect.objectContaining({
+      references: expect.arrayContaining([expect.objectContaining({
         title: "Release notes",
         url: "https://example.test/releases/1",
-      })],
+      }), expect.objectContaining({
+        title: "Release notes mirror",
+        url: "https://mirror.example.test/releases/1",
+      })]),
     }));
+  });
+
+  it("skips SearXNG when the planner decides the request needs no external facts", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* (flowId: string) {
+        yield event("run_finished", {
+          output: flowId === "builtin_web_search_planner"
+            ? '{"queries":[]}'
+            : "改写结果",
+        });
+      }),
+    };
+    const webSearch = { searchWeb: vi.fn(async () => []) };
+
+    const result = await new LocalChatSession("c1", runtime, store, webSearch).send("把这句话改得更自然", {
+      webSearch: true,
+    });
+
+    expect(webSearch.searchWeb).not.toHaveBeenCalled();
+    expect(runtime.stream).toHaveBeenCalledTimes(2);
+    expect(result.assistant.content).toBe("改写结果");
+  });
+
+  it("falls back to the bounded user request when query planning fails", async () => {
+    const store = memoryStore();
+    const runtime = {
+      stream: vi.fn(async function* (flowId: string) {
+        yield event("run_finished", {
+          output: flowId === "builtin_web_search_planner" ? "not-json" : "回答",
+        });
+      }),
+    };
+    const webSearch = { searchWeb: vi.fn(async () => []) };
+
+    await new LocalChatSession("c1", runtime, store, webSearch).send("查询 Steam 2026 上架要求", {
+      webSearch: true,
+    });
+
+    expect(webSearch.searchWeb).toHaveBeenCalledWith(
+      "查询 Steam 2026 上架要求",
+      expect.objectContaining({ maxResults: 4 }),
+    );
+  });
+
+  it("forces current model discovery for the computer advisor when the planner returns no queries", async () => {
+    const store = memoryStore();
+    const computerSkill: AssistantSkillVersion = {
+      ...defaultSkill,
+      assistantId: COMPUTER_CONFIG_ASSISTANT_ID,
+      name: "电脑配置顾问",
+      flowId: "computer_config_advisor",
+      memoryNamespace: "assistant:computer_config_advisor",
+    };
+    store.resolveAssistantSkill = vi.fn(async () => computerSkill);
+    const runtime = {
+      stream: vi.fn(async function* (flowId: string) {
+        yield event("run_finished", {
+          output: flowId === "builtin_web_search_planner" ? '{"queries":[]}' : "配置结果",
+        });
+      }),
+    };
+    const webSearch = {
+      searchWeb: vi.fn(async (query: string) => [{
+        title: query,
+        url: `https://hardware.example.test/${encodeURIComponent(query)}`,
+        content: "current hardware model evidence",
+      }]),
+    };
+
+    await new LocalChatSession("c1", runtime, store, webSearch).send(
+      "预算 8000 元，帮我配一台 2K 游戏电脑",
+      { webSearch: true },
+    );
+
+    expect(webSearch.searchWeb).toHaveBeenCalledTimes(3);
+    expect(webSearch.searchWeb.mock.calls.map((call) => call[0])).toEqual(expect.arrayContaining([
+      expect.stringContaining("CPU 显卡 具体型号"),
+      expect.stringContaining("桌面处理器 当前型号"),
+      expect.stringContaining("桌面显卡 当前型号"),
+    ]));
+    const plannerPrompt = runtime.stream.mock.calls[0]?.[1] as string;
+    expect(plannerPrompt).toContain("电脑硬件专项规则");
+    const advisorPrompt = runtime.stream.mock.calls[1]?.[1] as string;
+    expect(advisorPrompt).toContain("current hardware model evidence");
   });
 
   it("delegates the complete computer recommendation pipeline to one Flow run", async () => {

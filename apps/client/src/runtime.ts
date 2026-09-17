@@ -65,14 +65,16 @@ async function startRuntime(): Promise<StartedRuntimeServices> {
   });
   const fetchImpl = await getPlatformFetch(platform);
   if (import.meta.env.VITE_NKG_HOSTED_AI_ENABLED === "true") {
+    const hostedServiceUrl = import.meta.env.VITE_NKG_HOSTED_AI_SERVICE_URL || DEFAULT_HOSTED_AI_SERVICE_URL;
     const hostedSession = new HostedAiSession(new HostedAiClient(
-      import.meta.env.VITE_NKG_HOSTED_AI_SERVICE_URL || DEFAULT_HOSTED_AI_SERVICE_URL,
+      hostedServiceUrl,
       fetchImpl,
     ));
     providerSession.configureHostedAi({
       session: hostedSession,
       platform,
       appVersion: await getVersion(),
+      serviceUrl: hostedServiceUrl,
       ...(platform === "ios"
         ? { purchases: new HostedAiPurchaseController(new StoreKitClient(), hostedSession) }
         : {}),

@@ -1,6 +1,6 @@
 [package]
 name = "nkg-ai-bot"
-version = "0.1.0"
+version = "0.1.5"
 description = "Local-first cross-platform AI client"
 authors = ["NKG AI Bot contributors"]
 edition = "2021"
@@ -41,6 +41,7 @@ chacha20poly1305 = "0.10"
 sha2 = "0.10"
 x25519-dalek = { version = "2", features = ["static_secrets"] }
 libc = "0.2"
+zvec-rust = { version = "=0.7.1", default-features = false }
 
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-shell = { version = "2", optional = true }

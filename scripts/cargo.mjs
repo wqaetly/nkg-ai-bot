@@ -1,9 +1,11 @@
 import { spawn } from "node:child_process";
 import { join } from "node:path";
 import { createRustEnvironment } from "./rust-env.mjs";
+import { prepareZvec } from "./zvec-sdk.mjs";
 
 const args = process.argv.slice(2);
 const env = await createRustEnvironment();
+await prepareZvec(env);
 const cargo = process.platform === "win32"
   ? join(process.env.USERPROFILE ?? "", ".cargo", "bin", "cargo.exe")
   : "cargo";

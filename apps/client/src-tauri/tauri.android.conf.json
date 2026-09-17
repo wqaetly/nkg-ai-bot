@@ -3,6 +3,7 @@
     "beforeBuildCommand": "npm run build:frontend"
   },
   "bundle": {
-    "externalBin": []
+    "externalBin": [],
+    "android": { "minSdkVersion": 28 }
   }
 }

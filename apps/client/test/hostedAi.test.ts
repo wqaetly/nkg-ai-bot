@@ -112,6 +112,32 @@ describe("HostedAiClient", () => {
     expect(headers["Idempotency-Key"]).not.toContain(signedTransactionInfo);
   });
 
+  it("uses the anonymous session for default hosted search", async () => {
+    const request = vi.fn(async () => json({ data: [{
+      title: "Steam release",
+      url: "https://example.test/release",
+      content: "Release notes",
+      engine: "bing",
+    }] }));
+    const client = new HostedAiClient("https://api.example.test", request);
+
+    await expect(client.searchWeb("session-secret-token", "Steam release", 3))
+      .resolves.toEqual([{
+        title: "Steam release",
+        url: "https://example.test/release",
+        content: "Release notes",
+        engine: "bing",
+      }]);
+    expect(request).toHaveBeenCalledWith(
+      new URL("https://api.example.test/api/app/v1/search"),
+      expect.objectContaining({
+        method: "POST",
+        headers: expect.objectContaining({ Authorization: "Bearer session-secret-token" }),
+        body: JSON.stringify({ query: "Steam release", maxResults: 3 }),
+      }),
+    );
+  });
+
   it("maps insufficient credit responses to a stable public error", async () => {
     const request = vi.fn(async () => json({ error: { code: "insufficient_points" } }, 402));
     const client = new HostedAiClient("https://api.example.test", request);

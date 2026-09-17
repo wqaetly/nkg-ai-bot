@@ -5,7 +5,7 @@ import {
   type TauriInvoke,
 } from "../../../packages/tauri-runtime-adapter/src/index.js";
 import { createNkgPortableRuntime } from "../../../packages/tauri-runtime-adapter/src/nkgPortableRuntime.js";
-import { BUILTIN_CHAT_FLOW } from "../src/builtinFlows";
+import { BUILTIN_CHAT_FLOW, BUILTIN_CHAT_FLOW_VERSION } from "../src/builtinFlows";
 import { ProviderFlowRuntimeClient } from "../src/providerFlowClient";
 
 const openServers: Array<ReturnType<typeof createServer>> = [];
@@ -56,7 +56,7 @@ describe("mobile Provider streaming contract", () => {
       try {
         const deltas: string[] = [];
         let terminalKind = "";
-        for await (const event of client.stream("builtin_chat", "验证移动端真实网络流", { flowVersion: "1.0.0" })) {
+        for await (const event of client.stream("builtin_chat", "验证移动端真实网络流", { flowVersion: BUILTIN_CHAT_FLOW_VERSION })) {
           if (event.kind === "stream_delta" && event.nodeId === "chat_model") {
             deltas.push((event.payload as { text: string }).text);
           }

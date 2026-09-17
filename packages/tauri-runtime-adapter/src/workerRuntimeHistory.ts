@@ -31,6 +31,9 @@ interface RetentionRow {
 interface JsonRow { record_json: string }
 interface EventJsonRow { event_json: string }
 
+const EVENT_INSERT_BATCH_SIZE = 100;
+const EVENT_COLUMNS_PER_ROW = 15;
+
 export class TauriWorkerRuntimeHistory implements WorkerRuntimeHistory {
   constructor(
     private readonly database: SqliteRuntimeDatabase,
@@ -40,28 +43,46 @@ export class TauriWorkerRuntimeHistory implements WorkerRuntimeHistory {
 
   async save(result: ExecuteResult, events: readonly NodeEvent[]): Promise<void> {
     const record = result.runRecord;
+    const runningRecord = createRunningRecord(record);
+
+    // Publish a non-terminal staging record before replacing the durable event
+    // set. If the process exits (or a later write rejects), readers can observe
+    // an interrupted run, but never a terminal success backed by an event
+    // prefix.
     await this.database.execute(
       `INSERT INTO runtime_runs (run_id, flow_id, status, created_at, record_json)
        VALUES ($1, $2, $3, $4, $5)
        ON CONFLICT(run_id) DO UPDATE SET
          flow_id=excluded.flow_id, status=excluded.status,
          created_at=excluded.created_at, record_json=excluded.record_json`,
-      [record.runId, record.flowId, record.status, record.createdAt, JSON.stringify(record)],
+      [runningRecord.runId, runningRecord.flowId, runningRecord.status,
+        runningRecord.createdAt, JSON.stringify(runningRecord)],
     );
     await this.database.execute("DELETE FROM runtime_events WHERE run_id = $1", [record.runId]);
-    for (const [index, event] of events.entries()) {
+
+    const durableEvents = compactDurableStreamEvents(events);
+    for (let offset = 0; offset < durableEvents.length; offset += EVENT_INSERT_BATCH_SIZE) {
+      const batch = durableEvents.slice(offset, offset + EVENT_INSERT_BATCH_SIZE);
       await this.database.execute(
         `INSERT INTO runtime_events
            (run_id, event_sequence, flow_id, flow_version, node_id, node_version,
             attempt, node_sequence, timestamp, kind, port_id, stream_id, trace_id,
             parent_event_id, payload_json)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
-        [event.runId, index + 1, event.flowId, event.flowVersion,
-          event.nodeId ?? null, event.nodeVersion ?? null, event.attempt ?? null,
-          event.seq, event.timestamp, event.kind, event.portId ?? null,
-          event.streamId ?? null, event.traceId ?? null, event.parentEventId ?? null,
-          JSON.stringify(event.payload ?? null)],
+         VALUES ${createEventValuePlaceholders(batch.length)}`,
+        batch.flatMap((event, batchIndex) => eventInsertValues(event, offset + batchIndex + 1)),
       );
+    }
+
+    // The terminal state is the commit marker for this application-level
+    // write protocol. It is deliberately last, after every event batch.
+    const finalWrite = await this.database.execute(
+      `UPDATE runtime_runs
+          SET flow_id = $2, status = $3, created_at = $4, record_json = $5
+        WHERE run_id = $1`,
+      [record.runId, record.flowId, record.status, record.createdAt, JSON.stringify(record)],
+    );
+    if (finalWrite.rowsAffected === 0) {
+      throw new Error("Runtime history staging record disappeared before finalization");
     }
   }
 
@@ -130,4 +151,118 @@ function compactEvent(event: NodeEvent): NodeEvent {
   return Object.fromEntries(
     Object.entries(event).filter(([, value]) => value !== null),
   ) as unknown as NodeEvent;
+}
+
+function createRunningRecord(record: RunRecord): RunRecord {
+  const { output: _output, error: _error, finishedAt: _finishedAt, ...inProgress } = record;
+  return { ...inProgress, status: "running" };
+}
+
+function createEventValuePlaceholders(rowCount: number): string {
+  return Array.from({ length: rowCount }, (_, rowIndex) => {
+    const first = rowIndex * EVENT_COLUMNS_PER_ROW + 1;
+    return `(${Array.from(
+      { length: EVENT_COLUMNS_PER_ROW },
+      (__, columnIndex) => `$${first + columnIndex}`,
+    ).join(", ")})`;
+  }).join(", ");
+}
+
+function eventInsertValues(event: NodeEvent, eventSequence: number): unknown[] {
+  return [
+    event.runId,
+    eventSequence,
+    event.flowId,
+    event.flowVersion,
+    event.nodeId ?? null,
+    event.nodeVersion ?? null,
+    event.attempt ?? null,
+    event.seq,
+    event.timestamp,
+    event.kind,
+    event.portId ?? null,
+    event.streamId ?? null,
+    event.traceId ?? null,
+    event.parentEventId ?? null,
+    JSON.stringify(event.payload ?? null),
+  ];
+}
+
+/**
+ * Reduce durable-write volume without changing the live event stream. Only
+ * adjacent, consecutive deltas with identical stream identity and canonical
+ * payload shapes are merged; arbitrary artifacts and enriched payloads remain
+ * byte-for-byte separate events.
+ */
+function compactDurableStreamEvents(events: readonly NodeEvent[]): NodeEvent[] {
+  const compacted: NodeEvent[] = [];
+  for (const event of events) {
+    const previous = compacted.at(-1);
+    const mergedPayload = previous ? mergeableStreamPayload(previous, event) : undefined;
+    if (previous && mergedPayload !== undefined) {
+      // Retain the latest cursor metadata so a run of more than two
+      // consecutive deltas can continue coalescing.
+      compacted[compacted.length - 1] = { ...event, payload: mergedPayload };
+    } else {
+      compacted.push(event);
+    }
+  }
+  return compacted;
+}
+
+function mergeableStreamPayload(
+  previous: NodeEvent,
+  current: NodeEvent,
+): Record<string, unknown> | undefined {
+  if (!hasSameStreamIdentity(previous, current) || current.seq !== previous.seq + 1) {
+    return undefined;
+  }
+  const previousPayload = asRecord(previous.payload);
+  const currentPayload = asRecord(current.payload);
+  if (!previousPayload || !currentPayload) return undefined;
+
+  if (previous.kind === "stream_delta") {
+    for (const field of ["text", "delta"] as const) {
+      if (hasExactKeys(previousPayload, [field]) && hasExactKeys(currentPayload, [field]) &&
+          typeof previousPayload[field] === "string" && typeof currentPayload[field] === "string") {
+        return { [field]: previousPayload[field] + currentPayload[field] };
+      }
+    }
+    return undefined;
+  }
+
+  if (previous.kind === "stream_artifact" &&
+      hasExactKeys(previousPayload, ["kind", "text"]) &&
+      hasExactKeys(currentPayload, ["kind", "text"]) &&
+      previousPayload.kind === "thinking_delta" && currentPayload.kind === "thinking_delta" &&
+      typeof previousPayload.text === "string" && typeof currentPayload.text === "string") {
+    return { kind: "thinking_delta", text: previousPayload.text + currentPayload.text };
+  }
+  return undefined;
+}
+
+function hasSameStreamIdentity(previous: NodeEvent, current: NodeEvent): boolean {
+  return previous.kind === current.kind &&
+    previous.runId === current.runId &&
+    previous.flowId === current.flowId &&
+    previous.flowVersion === current.flowVersion &&
+    previous.nodeId === current.nodeId &&
+    previous.nodeVersion === current.nodeVersion &&
+    previous.attempt === current.attempt &&
+    previous.portId === current.portId &&
+    previous.streamId === current.streamId &&
+    previous.traceId === current.traceId &&
+    previous.parentEventId === current.parentEventId;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  return value !== null && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined;
+}
+
+function hasExactKeys(record: Record<string, unknown>, keys: readonly string[]): boolean {
+  const actual = Object.keys(record);
+  return actual.length === keys.length
+    && keys.every((key) => Object.prototype.hasOwnProperty.call(record, key));
 }

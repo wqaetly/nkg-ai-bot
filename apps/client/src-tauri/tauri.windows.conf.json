@@ -1,0 +1,5 @@
+{
+  "bundle": {
+    "resources": { "native/zvec/runtime/zvec_c_api.dll": "zvec_c_api.dll" }
+  }
+}

@@ -6,6 +6,7 @@ import { CommerceDomainError } from "./domain.js";
 import { HostedAiGateway } from "./gateway.js";
 import { PostgresCommerceRepository } from "./postgres.js";
 import { HostedAiCommerceService } from "./service.js";
+import { HostedSearxngSearch } from "./search.js";
 
 const config = await loadConfig();
 const repository = new PostgresCommerceRepository(
@@ -22,10 +23,13 @@ const appleVerifier = new OfficialAppleTransactionVerifier({
 });
 const commerce = new HostedAiCommerceService(config, repository, appleVerifier);
 const gateway = new HostedAiGateway(config, repository);
+const hostedSearch = new HostedSearxngSearch(config, repository);
 const anonymousLimiter = createFixedWindowLimiter(12, 60_000);
 const recoveryLimiter = createFixedWindowLimiter(8, 60_000);
 const accountLimiter = createFixedWindowLimiter(180, 60_000);
 const authorizeLimiter = createFixedWindowLimiter(60, 60_000);
+const searchLimiter = createFixedWindowLimiter(30, 60_000);
+const searchIpLimiter = createFixedWindowLimiter(120, 60_000);
 const purchaseLimiter = createFixedWindowLimiter(20, 60_000);
 const notificationLimiter = createFixedWindowLimiter(120, 60_000);
 
@@ -79,6 +83,15 @@ const server = createServer(async (request, response) => {
       sendData(response, 200, await commerce.completeRun(
         sessionToken(request),
         await readJson(request),
+      ));
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/api/app/v1/search") {
+      searchIpLimiter.consume(clientAddress(request));
+      searchLimiter.consume(sessionRateKey(request));
+      sendData(response, 200, await hostedSearch.search(
+        sessionToken(request),
+        await readJson(request, 8 * 1024),
       ));
       return;
     }

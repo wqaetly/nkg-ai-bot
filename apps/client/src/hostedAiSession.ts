@@ -65,6 +65,12 @@ export interface HostedAiClientPort {
     input: RedeemApplePurchaseInput,
     signal?: AbortSignal,
   ): ReturnType<HostedAiClient["redeemApplePurchase"]>;
+  searchWeb(
+    sessionToken: string,
+    query: string,
+    maxResults: number,
+    signal?: AbortSignal,
+  ): ReturnType<HostedAiClient["searchWeb"]>;
 }
 
 const sqliteInstallationStore: HostedAiInstallationStore = {
@@ -184,6 +190,22 @@ export class HostedAiSession {
       await this.invalidateExpiredSession(cause);
       throw cause;
     }
+  }
+
+  async searchWeb(query: string, maxResults: number, signal?: AbortSignal) {
+    const token = this.requireReadyToken();
+    try {
+      return await this.client.searchWeb(token, query, maxResults, signal);
+    } catch (cause) {
+      await this.invalidateExpiredSession(cause);
+      throw cause;
+    }
+  }
+
+  /** A run-scoped copy is injected into the isolated Flow worker only for the
+   * public market search node. It is never persisted in Flow state or logs. */
+  getSearchSessionToken(): string {
+    return this.requireReadyToken();
   }
 
   async completeRun(authorizationId: string, signal?: AbortSignal): Promise<void> {
