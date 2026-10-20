@@ -57,6 +57,7 @@ import {
   type FlowPreviewGraph,
 } from "@ai-native-flow/studio/flowPreview";
 import type { FlowConfigurableVariable } from "@ai-native-flow/flow-ir";
+import { SHOPPING_PLATFORM_VARIABLE } from "@nkg-ai-bot/commerce-flow";
 import { subscribeAppPanel } from "./appPanel";
 import { FlowPreviewPanel } from "./FlowPreviewPanel";
 import { MarkdownContent } from "./MarkdownContent";
@@ -169,8 +170,7 @@ export function ChatPage({
   const hostedConnectionState = providerSnapshot.hostedAi?.state;
   const webSearchAvailable = providerSnapshot.webSearch?.enabled === true
     && (providerSnapshot.webSearch.authMode !== "nkg-session" || hostedConnectionState === "ready");
-  const affiliateCommerceActive = activeConversation?.assistantId === COMPUTER_CONFIG_ASSISTANT_ID
-    && providerSnapshot.commerce?.enabled === true;
+  const computerAdvisorActive = activeConversation?.assistantId === COMPUTER_CONFIG_ASSISTANT_ID;
   const conversationModel = selectedProvider && activeConversation?.providerId === selectedProvider.id
     && activeConversation.modelId && selectedProvider.enabledModels.includes(activeConversation.modelId)
     ? activeConversation.modelId
@@ -555,12 +555,16 @@ export function ChatPage({
   async function regenerateMessage(message: LocalMessage) {
     if (!activeId || !runtime || busy || !unlocked || message.role !== "assistant") return;
     const conversationId = activeId;
+    const retryingFailure = chatMessageFailed(message.content);
+    if (retryingFailure) {
+      setMessages((current) => current.filter((item) => item.id !== message.id));
+    }
     setError("");
     setStreamingText("");
     setStreamingReasoning("");
     setStreamingReferences([]);
     setStreamingFlowEvents([]);
-    setChatActivity({ kind: "preparing", label: "正在重新生成回复" });
+    setChatActivity({ kind: "preparing", label: retryingFailure ? "正在重试" : "正在重新生成回复" });
     setBusy(true);
     const controller = new AbortController();
     const requestId = crypto.randomUUID();
@@ -639,7 +643,7 @@ export function ChatPage({
     await refreshConversations();
   }
 
-  async function saveConversationFlowVariables(values: ConversationFlowVariables) {
+  async function saveConversationFlowVariables(values: ConversationFlowVariables, close = true) {
     if (!activeConversation || !activeFlow) return;
     const flowVariables = normalizeConversationFlowVariables(
       activeFlow.configurableVariables,
@@ -647,7 +651,7 @@ export function ChatPage({
     );
     await upsertConversation({ ...activeConversation, flowVariables });
     await refreshConversations();
-    setFlowConfigOpen(false);
+    if (close) setFlowConfigOpen(false);
   }
 
   function stopGeneration() {
@@ -826,6 +830,14 @@ export function ChatPage({
             </div>
           </div>
           <div className="chat-header-actions">
+            {computerAdvisorActive ? (
+              <button
+                className="chat-shop-login-button"
+                disabled={!activeFlow?.configurableVariables.some((field) => field.name === SHOPPING_PLATFORM_VARIABLE)}
+                type="button"
+                onClick={() => setFlowConfigOpen(true)}
+              >商城登录</button>
+            ) : null}
             {hostedBalance ? (
               <button
                 className="hosted-points-badge"
@@ -1053,7 +1065,7 @@ export function ChatPage({
               </div>
             </div>
           </form>
-          <p className="composer-disclaimer">AI 生成的内容可能不准确，请核查重要信息。{affiliateCommerceActive ? " 商品购买链接属于推广链接，成交后平台可能向我们支付佣金。" : ""}</p>
+          <p className="composer-disclaimer">AI 生成的内容可能不准确，请核查重要信息。{computerAdvisorActive ? " 点击右上角「商城登录」选择平台并登录；商品价格以所选规格的结算页面为准。" : ""}</p>
         </div>
       </section>
       {newConversationOpen ? (

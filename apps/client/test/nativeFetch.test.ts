@@ -15,7 +15,8 @@ describe("platform HTTP client", () => {
 
       const fetchImpl = await getPlatformFetch(platform);
 
-      expect(fetchImpl).toBe(mocks.nativeFetch);
+      await fetchImpl("https://example.test/provider");
+      expect(mocks.nativeFetch).toHaveBeenCalledWith("https://example.test/provider", undefined);
       expect(globalThis.fetch).toBe(original);
     },
   );

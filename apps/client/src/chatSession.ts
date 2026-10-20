@@ -1,4 +1,5 @@
 import type { FlowInvokeOptions, NodeEvent } from "@nkg-ai-bot/runtime-router";
+import { SearchResponseError } from "@nkg-ai-bot/commerce-flow";
 import {
   BUILTIN_CHAT_FLOW_ID,
   BUILTIN_CHAT_FLOW_VERSION,
@@ -316,63 +317,6 @@ export class LocalChatSession {
       throw new Error("当前助手没有联网搜索所需的权限");
     }
 
-    const localMemoryEnabled = this.remoteMemory.isLocalMemoryEnabled?.() ?? true;
-    options.onActivity?.(options.webSearch && content
-      ? { kind: "searching-web", label: "正在规划搜索关键词" }
-      : localMemoryEnabled || this.remoteMemory.isMemoryEnabled()
-        ? { kind: "recalling-memory", label: "正在检索相关记忆" }
-        : { kind: "preparing", label: "正在整理上下文" });
-    const [localMemories, remoteMemories, searchResults] = await Promise.all([
-      localMemoryEnabled
-        ? this.searchLocalMemories(retrievalQuery, skill.memoryNamespace, options.signal)
-        : Promise.resolve([]),
-      this.remoteMemory.isMemoryEnabled()
-        ? this.remoteMemory.searchMemory(retrievalQuery, this.conversationId, {
-          signal: options.signal,
-          limit: 6,
-        }).catch((cause: unknown) => {
-          if (isAbort(cause)) throw cause;
-          return [];
-        })
-        : Promise.resolve([]),
-      options.webSearch && content
-        ? this.searchWebWithPlanning(content, promptMessages, conversation, skill, options)
-        : Promise.resolve([]),
-    ]);
-    const webReferences = searchResults.map((result) => ({
-      title: result.title,
-      url: result.url,
-      snippet: result.content,
-      ...(result.engine ? { engine: result.engine } : {}),
-    }));
-    options.onSearchResults?.(webReferences);
-    const memories = mergePromptMemories(localMemories, remoteMemories);
-    const context = await this.preparePromptContext({
-      messages: promptMessages,
-      memories,
-      systemPrompt: skill.systemPrompt,
-      searchResults,
-      conversation,
-      options,
-    });
-    const prompt = buildChatPrompt(
-      context.messages,
-      memories,
-      skill.systemPrompt,
-      searchResults,
-      context.historySummary,
-    );
-    const contextImages = collectContextImages(context.messages);
-    const hydratedImages = await Promise.all(contextImages.map(async (image) => ({
-      data: await this.imageStore.readBase64(image),
-      mediaType: image.mediaType,
-    })));
-    const runtimeInput = contextImages.length > 0
-      ? {
-        prompt,
-        images: hydratedImages,
-      }
-      : prompt;
     let answer = "";
     let reasoning = "";
     let finalOutput = "";
@@ -388,6 +332,63 @@ export class LocalChatSession {
     });
 
     try {
+      const localMemoryEnabled = this.remoteMemory.isLocalMemoryEnabled?.() ?? true;
+      options.onActivity?.(options.webSearch && content
+        ? { kind: "searching-web", label: "正在规划搜索关键词" }
+        : localMemoryEnabled || this.remoteMemory.isMemoryEnabled()
+          ? { kind: "recalling-memory", label: "正在检索相关记忆" }
+          : { kind: "preparing", label: "正在整理上下文" });
+      const [localMemories, remoteMemories, searchResults] = await Promise.all([
+        localMemoryEnabled
+          ? this.searchLocalMemories(retrievalQuery, skill.memoryNamespace, options.signal)
+          : Promise.resolve([]),
+        this.remoteMemory.isMemoryEnabled()
+          ? this.remoteMemory.searchMemory(retrievalQuery, this.conversationId, {
+            signal: options.signal,
+            limit: 6,
+          }).catch((cause: unknown) => {
+            if (isAbort(cause)) throw cause;
+            return [];
+          })
+          : Promise.resolve([]),
+        options.webSearch && content
+          ? this.searchWebWithPlanning(content, promptMessages, conversation, skill, options)
+          : Promise.resolve([]),
+      ]);
+      const webReferences = searchResults.map((result) => ({
+        title: result.title,
+        url: result.url,
+        snippet: result.content,
+        ...(result.engine ? { engine: result.engine } : {}),
+      }));
+      options.onSearchResults?.(webReferences);
+      const memories = mergePromptMemories(localMemories, remoteMemories);
+      const context = await this.preparePromptContext({
+        messages: promptMessages,
+        memories,
+        systemPrompt: skill.systemPrompt,
+        searchResults,
+        conversation,
+        options,
+      });
+      const prompt = buildChatPrompt(
+        context.messages,
+        memories,
+        skill.systemPrompt,
+        searchResults,
+        context.historySummary,
+      );
+      const contextImages = collectContextImages(context.messages);
+      const hydratedImages = await Promise.all(contextImages.map(async (image) => ({
+        data: await this.imageStore.readBase64(image),
+        mediaType: image.mediaType,
+      })));
+      const runtimeInput = contextImages.length > 0
+        ? {
+          prompt,
+          images: hydratedImages,
+        }
+        : prompt;
       options.onActivity?.({ kind: "thinking", label: "模型正在思考" });
       const conversationVariables = {
         ...conversation?.flowVariables,
@@ -548,16 +549,25 @@ export class LocalChatSession {
 
     options.onActivity?.({
       kind: "searching-web",
-      label: queries.length > 1 ? `正在并行搜索 ${queries.length} 组关键词` : "正在联网搜索",
+      label: queries.length > 1 ? `正在搜索 ${queries.length} 组关键词` : "正在联网搜索",
     });
-    const settled = await Promise.allSettled(queries.map((query) => (
-      this.webSearch.searchWeb(query, { signal: options.signal, maxResults: 4 })
-    )));
+    const groups: WebSearchResult[][] = [];
+    let failure: unknown;
+    // Stop amplifying traffic once the upstream reports a service-wide failure.
+    for (const query of queries) {
+      options.signal?.throwIfAborted();
+      try {
+        const results = await this.webSearch.searchWeb(query, { signal: options.signal, maxResults: 4 });
+        if (results.length) groups.push(results);
+      } catch (cause) {
+        if (isAbort(cause)) throw cause;
+        failure = cause;
+        if (cause instanceof SearchResponseError && cause.code !== "no_results") break;
+      }
+    }
     if (options.signal?.aborted) throw abortError(options.signal.reason);
-    const groups = settled.flatMap((result) => result.status === "fulfilled" ? [result.value] : []);
     if (groups.length === 0) {
-      const failure = settled.find((result) => result.status === "rejected");
-      throw failure?.status === "rejected" ? failure.reason : new Error("联网搜索没有返回结果");
+      throw failure ?? new SearchResponseError("no_results", "本轮关键词没有找到可用网页，可以调整需求后重试。");
     }
     return mergePlannedWebSearchResults(
       groups,

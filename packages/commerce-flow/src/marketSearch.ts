@@ -1,5 +1,6 @@
 import { defineNode } from "@ai-native-flow/node-sdk";
 import { z } from "zod";
+import { checkSearchResponse } from "./searchFailure.js";
 import { isAffiliateProductMatch } from "./commerce.js";
 import type {
   BlueprintSlotV4,
@@ -36,7 +37,7 @@ export interface PublicMarketPriceEvidence {
   confidence: "single_source" | "multi_source";
 }
 
-interface SearchResult {
+export interface SearchResult {
   title: string;
   url: string;
   content: string;
@@ -125,7 +126,7 @@ type VariableReader = {
   getString(name: string): string | undefined;
 };
 
-function readSearchRuntime(variables: VariableReader): {
+export function readSearchRuntime(variables: VariableReader): {
   mode: "searxng" | "nkg-session";
   baseUrl: string;
   authorization: string;
@@ -141,7 +142,7 @@ function readSearchRuntime(variables: VariableReader): {
   return { mode, baseUrl, authorization };
 }
 
-async function searchPublicMarket(
+export async function searchPublicMarket(
   runtime: ReturnType<typeof readSearchRuntime>,
   query: string,
   maxResults: number,
@@ -179,6 +180,7 @@ async function searchPublicMarket(
   }
   if (!response.ok) throw new Error(`公开市场搜索失败：HTTP ${response.status}`);
   const payload = await response.json() as unknown;
+  checkSearchResponse(payload);
   return parseSearchResults(payload, maxResults);
 }
 

@@ -3,9 +3,9 @@ import { z } from "zod";
 import type {
   AffiliateProduct,
   AffiliateSearchTelemetry,
-  CommerceProvider,
+  ProductProvider,
 } from "./commerce.js";
-import type { PublicMarketPriceEvidence } from "./marketSearch.js";
+import { hasAmbiguousModelPrice, matchesCommerceIdentity, productPurchaseUrl } from "./browserCommerce.js";
 
 export const COMPUTER_REQUIREMENT_POLICY_V2_NODE_TYPE = "computer_requirement_policy_v2";
 export const COMPUTER_BLUEPRINT_GUARD_NODE_TYPE = "computer_blueprint_guard";
@@ -152,7 +152,8 @@ export type ComputerAdvisorStopReasonV4 =
   | "query_budget_exhausted"
   | "wall_clock_exhausted"
   | "no_progress"
-  | "commerce_unavailable";
+  | "commerce_unavailable"
+  | "research_unavailable";
 
 export interface QuerySchedulerStateV4 {
   schemaVersion: "computer.query-scheduler.v4";
@@ -163,6 +164,7 @@ export interface QuerySchedulerStateV4 {
   startedAtMs: number;
   attemptsBySlot: Record<string, number>;
   alternativeAttemptsBySlot: Record<string, number>;
+  researchAttemptsBySlot: Record<string, number>;
   issuedFingerprints: string[];
   exhaustedSlotIds: string[];
   noProgressWaves: number;
@@ -205,7 +207,9 @@ export type CandidateVerificationStatusV4 =
 
 export interface VerifiedCandidateV4 {
   candidateId: string;
-  provider: CommerceProvider;
+  provider: ProductProvider;
+  sourceKind?: "browser" | "affiliate";
+  detailVerified?: boolean;
   productId: string;
   queryId: string;
   slotId: string;
@@ -251,6 +255,7 @@ export interface ComputerAdvisorStateV4 {
   blueprint: ComputerBlueprintV4;
   scheduler: QuerySchedulerStateV4;
   marketDiscoveries: MarketDiscoveryClusterV4[];
+  revisionNotes?: string[];
   candidatePool: VerifiedCandidateV4[];
   selectedCandidates: VerifiedCandidateV4[];
   selectedSubtotal?: number;
@@ -882,6 +887,7 @@ export interface QuerySchedulerOptionsV4 {
   maxAttemptsPerSlot?: number;
   wallClockLimitMs?: number;
   nowMs?: number;
+  researchEnabled?: boolean;
 }
 
 export function scheduleComputerCommerceQueriesV4(
@@ -905,7 +911,7 @@ export function scheduleComputerCommerceQueriesV4(
     state.scheduler.maxAttemptsPerSlot || 5,
   );
   const nowMs = finiteNumber(options.nowMs) ?? Date.now();
-  const wallClockLimitMs = clampInteger(options.wallClockLimitMs, 1_000, 120_000, 25_000);
+  const wallClockLimitMs = clampInteger(options.wallClockLimitMs, 1_000, 480_000, 480_000);
   const scheduler: QuerySchedulerStateV4 = {
     ...state.scheduler,
     startedAtMs: state.scheduler.startedAtMs > 0 ? state.scheduler.startedAtMs : nowMs,
@@ -917,30 +923,23 @@ export function scheduleComputerCommerceQueriesV4(
     exhaustedSlotIds: [...state.scheduler.exhaustedSlotIds],
     requestedAlternatives: { ...state.scheduler.requestedAlternatives },
   };
-  const alternativeIssued = Object.values(scheduler.alternativeAttemptsBySlot)
-    .reduce((sum, count) => sum + count, 0);
-  const baseIssued = Math.max(0, scheduler.totalIssued - alternativeIssued);
-  const hasPendingAlternative = Object.keys(scheduler.requestedAlternatives).some((slotId) =>
-    (scheduler.alternativeAttemptsBySlot[slotId] ?? 0) < 1);
+  const issued = new Set(scheduler.issuedFingerprints);
+  const hasPendingAlternative = blueprint.slots.some((slot) => {
+    const direction = scheduler.requestedAlternatives[slot.slotId];
+    return direction && nextUniqueAlternativeQueryForSlot(slot, issued, direction, scheduler.totalIssued + 1);
+  });
   let stopReason = state.stopReason;
-  if (!hasPendingAlternative
-    && state.coverage.pricing.verified >= state.coverage.pricing.required
-    && state.coverage.pricing.required > 0) {
-    stopReason = "all_slots_priced";
-  } else if (nowMs - scheduler.startedAtMs >= wallClockLimitMs) {
-    stopReason = "wall_clock_exhausted";
-  } else if (baseIssued >= maxTotalQueries && !hasPendingAlternative) {
-    stopReason = "query_budget_exhausted";
-  } else if (stopReason !== null) {
-    // An optimizer stop is terminal. Re-entering the scheduler must not issue
-    // hidden extra calls after a run has declared why it stopped.
+  if (stopReason === null) {
+    if (nowMs - scheduler.startedAtMs >= wallClockLimitMs) stopReason = "wall_clock_exhausted";
+    else if (scheduler.totalIssued >= maxTotalQueries) stopReason = "query_budget_exhausted";
+    else if (!hasPendingAlternative && state.coverage.pricing.verified >= state.coverage.pricing.required
+      && state.coverage.pricing.required > 0) stopReason = "all_slots_priced";
   }
   if (stopReason !== null) {
     const stoppedState = updateStateCoverage({ ...state, scheduler, stopReason });
     return { queryPlan: { queries: [] }, state: stoppedState, stopReason };
   }
 
-  const issued = new Set(scheduler.issuedFingerprints);
   const missingSlotIds = new Set(
     blueprint.slots
       .filter((slot) => slot.required)
@@ -951,7 +950,7 @@ export function scheduleComputerCommerceQueriesV4(
     .filter((slot) => slot.required && (
       missingSlotIds.has(slot.slotId)
       || (scheduler.requestedAlternatives[slot.slotId] !== undefined
-        && (scheduler.alternativeAttemptsBySlot[slot.slotId] ?? 0) < 1)
+        && Boolean(nextUniqueAlternativeQueryForSlot(slot, issued, scheduler.requestedAlternatives[slot.slotId]!, scheduler.totalIssued + 1)))
     ))
     .sort((left, right) => {
       const leftAttempts = missingSlotIds.has(left.slotId)
@@ -965,30 +964,24 @@ export function scheduleComputerCommerceQueriesV4(
     });
 
   const queries: ComputerCommerceQueryV4[] = [];
-  let scheduledBaseQueries = 0;
   for (const slot of eligibleSlots) {
-    if (queries.length >= maxWaveQueries) break;
+    if (queries.length >= maxWaveQueries || scheduler.totalIssued + queries.length >= maxTotalQueries) break;
     const attempts = scheduler.attemptsBySlot[slot.slotId] ?? 0;
     const requestedAlternative = scheduler.requestedAlternatives[slot.slotId];
     const useAlternative = requestedAlternative !== undefined
-      && (!missingSlotIds.has(slot.slotId) || attempts >= maxAttemptsPerSlot);
-    if (!useAlternative && baseIssued + scheduledBaseQueries >= maxTotalQueries) continue;
+      && (options.researchEnabled || !missingSlotIds.has(slot.slotId) || attempts >= maxAttemptsPerSlot);
     const proposal = useAlternative
       ? nextUniqueAlternativeQueryForSlot(
         slot,
-        scheduler.alternativeAttemptsBySlot[slot.slotId] ?? 0,
         issued,
         requestedAlternative,
-        attempts,
+        scheduler.totalIssued + queries.length + 1,
       )
       : nextUniqueQueryForSlot(
         slot,
         attempts,
-        maxAttemptsPerSlot,
+        options.researchEnabled ? 1 : maxAttemptsPerSlot,
         issued,
-        state.marketDiscoveries,
-        blueprint,
-        state.diagnostics.telemetry,
       );
     if (!proposal) {
       if (!scheduler.exhaustedSlotIds.includes(slot.slotId)) scheduler.exhaustedSlotIds.push(slot.slotId);
@@ -1000,7 +993,6 @@ export function scheduleComputerCommerceQueriesV4(
       scheduler.alternativeAttemptsBySlot[slot.slotId] = (scheduler.alternativeAttemptsBySlot[slot.slotId] ?? 0) + 1;
     } else {
       scheduler.attemptsBySlot[slot.slotId] = proposal.attempt;
-      scheduledBaseQueries += 1;
     }
     scheduler.issuedFingerprints.push(proposal.fingerprint);
     if (!useAlternative && proposal.attempt >= maxAttemptsPerSlot && !scheduler.exhaustedSlotIds.includes(slot.slotId)) {
@@ -1014,7 +1006,7 @@ export function scheduleComputerCommerceQueriesV4(
     || (scheduler.attemptsBySlot[slotId] ?? 0) >= maxAttemptsPerSlot,
   );
   if (queries.length === 0) {
-    stopReason = baseIssued + scheduledBaseQueries >= maxTotalQueries && !hasPendingAlternative
+    stopReason = scheduler.totalIssued >= maxTotalQueries
       ? "query_budget_exhausted"
       : allMissingExhausted
         ? "attempts_exhausted"
@@ -1057,13 +1049,14 @@ export function verifyComputerCandidateV4(
   const modelThreshold = query.stage === "spec_fallback"
     ? 0
     : slot.partType === "memory" && query.modelAnchors.length >= 2 ? 2 : 1;
-  const modelMatched = modelHits >= modelThreshold;
+  const modelMatched = modelHits >= modelThreshold && matchesCommerceIdentity(slot.partType, product.name, query.modelAnchors, query.keyword);
   const categoryMatched = Boolean(categoryHit && !negativeHit);
   checks.categoryMatched = categoryMatched;
   checks.modelMatched = query.stage === "spec_fallback" ? "unknown" : modelMatched;
   if (!categoryMatched) reasons.push("category_anchor_missing");
   if (query.stage !== "spec_fallback" && !modelMatched) reasons.push("model_anchor_missing");
   if (!checks.positivePrice) reasons.push("invalid_observed_price");
+  if (product.sourceKind === "browser" && hasAmbiguousModelPrice(slot.partType, product.name)) reasons.push("ambiguous_model_price");
   const priceFloor = minimumPlausiblePrice(slot.partType, coveredSlots.length);
   if (observedPrice !== undefined && observedPrice < priceFloor) reasons.push("implausibly_low_price");
 
@@ -1079,7 +1072,7 @@ export function verifyComputerCandidateV4(
   if (query.stage === "spec_fallback" && Object.keys(observedSpecs).length === 0) {
     reasons.push("spec_fallback_without_observed_specs");
   }
-  const compatibilityReasons = candidateCompatibilityConflicts(slot, observedSpecs);
+  const compatibilityReasons = candidateCompatibilityConflicts({ ...slot, requiredSpecs: query.plannedSpecs }, observedSpecs);
   if (compatibilityReasons.length > 0) reasons.push(...compatibilityReasons);
   checks.observedCompatibility = Object.keys(observedSpecs).length === 0
     ? "unknown"
@@ -1102,6 +1095,8 @@ export function verifyComputerCandidateV4(
     coveredSlotIds: uniqueStrings(query.coveredSlotIds.length > 0 ? query.coveredSlotIds : [slot.slotId]),
     partType: slot.partType,
     name: product.name,
+    ...(product.sourceKind ? { sourceKind: product.sourceKind } : {}),
+    ...(product.detailVerified !== undefined ? { detailVerified: product.detailVerified } : {}),
     ...(product.shopName ? { shopName: product.shopName } : {}),
     ...(product.brand ? { brand: product.brand } : {}),
     ...(product.imageUrl ? { imageUrl: product.imageUrl } : {}),
@@ -1112,7 +1107,7 @@ export function verifyComputerCandidateV4(
     comparablePrice: roundMoney(observedPrice ?? 0),
     hasCoupon: product.hasCoupon,
     stage: query.stage,
-    plannedSpecs: cloneRecord(slot.requiredSpecs),
+    plannedSpecs: cloneRecord(query.plannedSpecs),
     // Never fall back to product.requiredSpecs/plannedSpecs here. Those are
     // desired values copied into the query, not observations about a listing.
     observedSpecs,
@@ -1459,6 +1454,7 @@ export interface OptimizeComputerRecommendationInputV4 {
   wallClockLimitMs?: number;
   nowMs?: number;
   forceComplete?: boolean;
+  researchEnabled?: boolean;
 }
 
 export function optimizeComputerRecommendationV4(
@@ -1523,43 +1519,44 @@ export function optimizeComputerRecommendationV4(
   const missingSlots = blueprint.slots.filter((slot) => slot.required && !selectedSlotIds.has(slot.slotId));
   const required = blueprint.slots.filter((slot) => slot.required).length;
   const nowMs = finiteNumber(input.nowMs) ?? Date.now();
-  const wallClockLimitMs = clampInteger(input.wallClockLimitMs, 1_000, 120_000, 25_000);
-  let stopReason: ComputerAdvisorStopReasonV4 | null = null;
-  if (missingSlots.length === 0 && required > 0) stopReason = "all_slots_priced";
-  else if (scheduler.startedAtMs > 0 && nowMs - scheduler.startedAtMs >= wallClockLimitMs) stopReason = "wall_clock_exhausted";
-  else if (scheduler.totalIssued >= scheduler.maxTotalQueries) stopReason = "query_budget_exhausted";
-  else if (missingSlots.length > 0 && missingSlots.every((slot) => scheduler.exhaustedSlotIds.includes(slot.slotId))) {
-    stopReason = "attempts_exhausted";
-  }
+  const wallClockLimitMs = clampInteger(input.wallClockLimitMs, 1_000, 480_000, 480_000);
   const errors = readErrorStrings(input.errors);
-  const fatalCommerceFailure = errors.some((error) =>
-    /未启用|凭据|配置不完整|access\s*token|refresh\s*token|client\s*secret|授权失效|服务不可用/i.test(error));
-  if (products.length === 0 && fatalCommerceFailure) {
-    stopReason = "commerce_unavailable";
-  } else if (queries.length === 0 && products.length === 0 && errors.length > 0 && scheduler.totalIssued === 0) {
-    stopReason = "commerce_unavailable";
-  }
-  if (selection.budgetStatus === "verified_over_budget") {
-    for (const slot of blueprint.slots) {
-      if (slot.alternatives.some((alternative) => alternative.direction === "lower_cost")) {
-        scheduler.requestedAlternatives[slot.slotId] = "lower_cost";
-      }
-    }
-    // A complete but over-budget primary combination is not terminal while an
-    // approved lower-cost stage remains untried.
-    const hasUntriedLowerCost = blueprint.slots.some((slot) =>
-      (scheduler.alternativeAttemptsBySlot[slot.slotId] ?? 0) < 1);
-    if (hasUntriedLowerCost) stopReason = null;
-  }
-  if (input.forceComplete === true && stopReason === null) stopReason = "attempts_exhausted";
   const compatibilityIssues = validateBlueprintCompatibilityV4(blueprint, requirements);
   const compatibility = compatibilityStatus(compatibilityIssues);
+  scheduler.requestedAlternatives = {};
+  const budget = requirements.budget.amount;
+  const direction = selection.complete && budget !== undefined && selection.subtotal !== undefined
+    ? selection.subtotal > budget ? "lower_cost" : selection.subtotal < budget * 0.9 ? "higher_performance" : undefined
+    : undefined;
+  const issued = new Set(scheduler.issuedFingerprints);
+  const pending = direction && compatibility !== "blocked" ? blueprint.slots.filter((slot) => slot.required
+    && (input.researchEnabled ? (scheduler.researchAttemptsBySlot[slot.slotId] ?? 0) < 2
+      : nextUniqueAlternativeQueryForSlot(slot, issued, direction, scheduler.totalIssued + 1)))
+    .sort((left, right) => {
+      if (direction === "higher_performance") return right.utilityWeight - left.utilityWeight;
+      const cost = (slot: BlueprintSlotV4) => selection.selected.find((candidate) => candidate.coveredSlotIds.includes(slot.slotId))?.comparablePrice ?? 0;
+      return cost(right) / Math.max(1, right.utilityWeight) - cost(left) / Math.max(1, left.utilityWeight);
+    }) : [];
+  // Reassess the whole combination after each newly priced alternative, keeping all previous valid candidates.
+  if (pending[0] && direction) scheduler.requestedAlternatives[pending[0].slotId] = direction;
+  let stopReason: ComputerAdvisorStopReasonV4 | null = null;
+  if (errors.some((error) => /未启用|凭据|配置不完整|授权失效|服务不可用/i.test(error))) stopReason = "commerce_unavailable";
+  else if (scheduler.startedAtMs > 0 && nowMs - scheduler.startedAtMs >= wallClockLimitMs) stopReason = "wall_clock_exhausted";
+  else if (scheduler.totalIssued >= scheduler.maxTotalQueries) stopReason = "query_budget_exhausted";
+  else if (previous.stopReason === "research_unavailable") stopReason = "research_unavailable";
+  else if (missingSlots.length === 0 && required > 0 && pending.length === 0) stopReason = "all_slots_priced";
+  else if (missingSlots.length > 0 && missingSlots.every((slot) => input.researchEnabled
+    ? (scheduler.researchAttemptsBySlot[slot.slotId] ?? 0) >= 2
+    : scheduler.exhaustedSlotIds.includes(slot.slotId))) stopReason = "attempts_exhausted";
+  else if (selection.complete && scheduler.noProgressWaves >= (input.maxNoProgressWaves ?? 3)) stopReason = "no_progress";
+  if (input.forceComplete === true && stopReason === null) stopReason = "attempts_exhausted";
   const state: ComputerAdvisorStateV4 = updateStateCoverage({
     schemaVersion: "computer.advisor-state.v4",
     requirements,
     blueprint,
     scheduler,
     marketDiscoveries,
+    revisionNotes: previous.revisionNotes,
     candidatePool: pool,
     selectedCandidates: selection.selected,
     ...(selection.subtotal !== undefined ? { selectedSubtotal: selection.subtotal } : {}),
@@ -1587,11 +1584,12 @@ export function optimizeComputerRecommendationV4(
   });
   const shortlist = selection.selected.map(candidateToAffiliateProduct);
   const needsRepair = stopReason === null
-    && (missingSlots.length > 0 || selection.budgetStatus === "verified_over_budget");
+    && (missingSlots.length > 0 || pending.length > 0);
   return { state, shortlist, needsRepair };
 }
 
 export interface AssembleComputerReportInputV4 {
+  browserSource?: boolean;
   requirements: unknown;
   blueprint: unknown;
   state: unknown;
@@ -1612,186 +1610,56 @@ export function assembleComputerReportV4(
   const requirements = normalizeRequirementsObject(input.requirements);
   const guarded = guardComputerBlueprintV4(input.blueprint, requirements);
   const state = normalizeAdvisorStateV4(input.state ?? guarded.state, guarded.blueprint);
-  const promotedProducts = readAffiliateProducts(input.products);
-  const marketEvidence = readPublicMarketEvidence(input.marketEvidence, guarded.blueprint);
-  const marketBySlot = new Map(marketEvidence.map((item) => [item.slotId, item]));
-  const selectedKeys = new Set(state.selectedCandidates.map(candidateProductKey));
-  const fullyVerified = promotedProducts.filter((product) =>
-    Boolean(product.promotionUrl)
-    && selectedKeys.has(affiliateProductKey(product))
-    && state.selectedCandidates.some((candidate) =>
-      candidateProductKey(candidate) === affiliateProductKey(product)
-      && candidate.slotId === product.slotId),
-  );
-  const verifiedBySlot = new Map<string, AffiliateProduct>();
-  for (const product of fullyVerified) {
-    const coveredSlotIds = product.coveredSlotIds?.length
-      ? product.coveredSlotIds
-      : product.slotId ? [product.slotId] : [];
-    for (const slotId of coveredSlotIds) {
-      if (!verifiedBySlot.has(slotId)) verifiedBySlot.set(slotId, product);
-    }
+  const products = readAffiliateProducts(input.products).filter((product) => Boolean(productPurchaseUrl(product))
+    && state.selectedCandidates.some((candidate) => candidateProductKey(candidate) === affiliateProductKey(product)
+      && candidate.slotId === product.slotId && candidate.comparablePrice === product.price));
+  const bySlot = new Map<string, AffiliateProduct>();
+  for (const product of products) {
+    for (const id of product.coveredSlotIds ?? (product.slotId ? [product.slotId] : [])) if (!bySlot.has(id)) bySlot.set(id, product);
   }
-  const observedBySlot = new Map<string, VerifiedCandidateV4>();
-  for (const candidate of state.selectedCandidates) {
-    for (const slotId of candidate.coveredSlotIds) {
-      if (!observedBySlot.has(slotId)) observedBySlot.set(slotId, candidate);
-    }
-  }
-  const allowedLinks = uniqueStrings(
-    [
-      ...fullyVerified.map((product) => product.promotionUrl).filter((link): link is string => Boolean(link)),
-      ...marketEvidence.flatMap((item) => item.samples.map((sample) => sample.url)),
-    ],
-  );
-  const allowedCurrencyTokens: string[] = [];
-  const slotMarkers: string[] = [];
-  const tableRows = state.blueprint.slots
-    .filter((slot) => slot.required)
-    .map((slot) => {
-      const marker = `<!-- v4-slot:${slot.slotId} -->`;
-      slotMarkers.push(marker);
-      const product = verifiedBySlot.get(slot.slotId);
-      const market = marketBySlot.get(slot.slotId);
-      const marketCell = market ? formatMarketEvidenceCell(market, requirements.budget.currency, allowedCurrencyTokens) : "未取得可回溯公开报价";
-      if (!product || !product.promotionUrl) {
-        if (observedBySlot.has(slot.slotId)) {
-          return `| ${escapeMarkdownCell(PART_LABELS[slot.partType])} | ${escapeMarkdownCell(slot.primaryModel)} | ${marketCell} | 系统已匹配推广价，但链接生成失败 | 实价已观察（未展示） | — | ${marker}`;
-        }
-        return `| ${escapeMarkdownCell(PART_LABELS[slot.partType])} | ${escapeMarkdownCell(slot.primaryModel)} | ${marketCell} | 联盟推广商品池未命中 | 推广池无可用价 | — | ${marker}`;
-      }
-      if (product.slotId !== slot.slotId && (product.coveredSlotIds?.includes(slot.slotId) ?? false)) {
-        return `| ${escapeMarkdownCell(PART_LABELS[slot.partType])} | ${escapeMarkdownCell(slot.primaryModel)} | ${marketCell} | ${escapeMarkdownCell(product.name)} | 已包含于同一套装 | [同一推广链接](${product.promotionUrl}) | ${marker}`;
-      }
-      const priceToken = formatCurrency(product.price, requirements.budget.currency);
-      allowedCurrencyTokens.push(priceToken);
-      return `| ${escapeMarkdownCell(PART_LABELS[slot.partType])} | ${escapeMarkdownCell(slot.primaryModel)} | ${marketCell} | ${escapeMarkdownCell(product.name)} | ${priceToken} | [推广链接](${product.promotionUrl}) | ${marker}`;
-    });
-  const verifiedSubtotal = state.selectedSubtotal
-    ?? roundMoney(state.selectedCandidates.reduce((sum, candidate) => sum + candidate.comparablePrice, 0));
-  const requiredCount = state.blueprint.slots.filter((slot) => slot.required).length;
-  const pricedCount = observedBySlot.size;
-  const linkedCount = verifiedBySlot.size;
-  const marketPricedCount = marketBySlot.size;
-  const budgetLines: string[] = [];
-  if (pricedCount > 0) {
-    const subtotalToken = formatCurrency(verifiedSubtotal, requirements.budget.currency);
-    allowedCurrencyTokens.push(subtotalToken);
-    budgetLines.push(`- 已核验商品小计：${subtotalToken}（${pricedCount}/${requiredCount} 个目标部件）。`);
-    budgetLines.push(`- 推广链接验证覆盖：${linkedCount}/${requiredCount}。`);
-  } else {
-    budgetLines.push(`- 本轮联盟推广商品核验覆盖：0/${requiredCount}；技术蓝图仍完整保留。`);
-  }
-  if (requirements.budget.amount !== undefined) {
-    const budgetToken = formatCurrency(requirements.budget.amount, requirements.budget.currency);
-    allowedCurrencyTokens.push(budgetToken);
-    budgetLines.push(`- 用户总预算：${budgetToken}。`);
-  }
-  budgetLines.push(`- 公开市场参考价覆盖：${marketPricedCount}/${requiredCount}；该区间来自本轮网页摘要中的同型号人民币报价，不等同于可下单成交价。`);
-  if (marketPricedCount === requiredCount) {
-    const marketMin = roundMoney(marketEvidence.reduce((sum, item) => sum + item.minPrice, 0));
-    const marketMax = roundMoney(marketEvidence.reduce((sum, item) => sum + item.maxPrice, 0));
-    const minToken = formatCurrency(marketMin, requirements.budget.currency);
-    const maxToken = formatCurrency(marketMax, requirements.budget.currency);
-    allowedCurrencyTokens.push(minToken, maxToken);
-    budgetLines.push(`- 公开市场逐槽参考合计：${minToken}–${maxToken}（不替代联盟商品核验）。`);
-  }
-  if (pricedCount === requiredCount && requirements.budget.amount !== undefined) {
-    budgetLines.push(verifiedSubtotal <= requirements.budget.amount
-      ? "- 全部目标部件的本轮实价组合位于总预算内。"
-      : "- 全部目标部件的本轮实价组合超过总预算，已保留完整技术方案与预算冲突状态。");
-  } else if (pricedCount < requiredCount) {
-    budgetLines.push("- 核价覆盖不完整，因此不推算整机总价，也不声称满足硬预算。");
-  } else {
-    budgetLines.push("- 未提供总预算，不作预算内/外结论。");
-  }
-  const compatibilityLines = state.compatibilityIssues.length > 0
-    ? state.compatibilityIssues.map((issue) => `- ${issue.severity === "error" ? "冲突" : "提示"}：${issue.message}`)
-    : ["- 技术蓝图中的可静态判断约束未发现明确冲突。"];
-  const alternativeLines = state.blueprint.slots
-    .filter((slot) => slot.required && slot.alternatives.length > 0)
-    .slice(0, 4)
-    .map((slot) => {
-      const lower = slot.alternatives.find((item) => item.direction === "lower_cost");
-      const higher = slot.alternatives.find((item) => item.direction === "higher_performance");
-      return `- ${PART_LABELS[slot.partType]}：${[
-        lower ? `降本方向 ${lower.model}` : "",
-        higher ? `升级方向 ${higher.model}` : "",
-      ].filter(Boolean).join("；")}。`;
-    });
-  const systemStatusLines = uniqueStrings([
-    `系统检索：${describeStopReasonV4(state.stopReason, requirements.requiresCommerce)}`,
-    describeCommerceSourceCoverageV4(state),
-    ...state.diagnostics.commerceErrors.map((error) => `商品服务：${error}`),
-    ...readErrorStrings(input.marketErrors).map((error) => `公开市场：${error}`),
-    ...readErrorStrings(input.promotionErrors).map((error) => `推广链接：${error}`),
-  ].filter(Boolean)).slice(0, 4).map((line) => `- ${line}`);
-  const questions = requirements.userDecisionItems.slice(0, 3);
-  const questionLines = questions.length > 0
-    ? questions.map((question, index) => `${index + 1}. ${question}`)
-    : ["无。"];
-  const recommendation = state.coverage.compatibility === "blocked"
-    ? "技术清单已完整生成，但存在明确兼容冲突；报告保留全部槽位并标出冲突，不用缺失商品替代技术结论。"
-    : linkedCount === requiredCount
-      ? "技术清单完整，且全部目标部件已有本轮实时商品与推广链接证据。"
-      : pricedCount === requiredCount
-        ? "技术清单和实时价格证据完整；部分推广链接未生成，但不会抹掉系统已经完成的核价结果。"
-        : marketPricedCount > 0
-          ? "技术清单完整；公开市场参考价与联盟推广价已分离展示，推广池未命中不再抹掉已有市场价格证据。"
-          : "技术清单完整；联盟推广商品只作为增强信息，推广池未命中不等于商城全站无货。";
-  const markdown = [
-    "## 推荐结论",
-    "",
-    recommendation,
-    "",
-    "## 完整配置表",
-    "",
-    "| 部件 | 技术方案 | 公开市场参考价 | 联盟推广商品 | 推广价 | 链接 | 证据标记 |",
-    "|---|---|---:|---|---:|---|---|",
-    ...tableRows,
-    "",
-    "## 已核验商品和推广披露",
-    "",
-    linkedCount > 0
-      ? `以上共 ${fullyVerified.length} 个带链接商品覆盖 ${linkedCount} 个目标部件，来自本轮联盟接口；链接可能产生推广收益。`
-      : "本轮没有达到“型号、品类、价格、推广链接均通过”的可展示商品，未生成任何商品链接。",
-    marketPricedCount > 0
-      ? `另有 ${marketPricedCount}/${requiredCount} 个部件取得公开市场参考价；每个区间均保留本轮网页来源，和推广价不是同一证据等级。`
-      : "本轮公开市场搜索也没有取得可回溯的同型号人民币报价。",
-    ...(systemStatusLines.length > 0 ? ["", "运行状态：", ...systemStatusLines] : []),
-    "",
-    "## 预算状态",
-    "",
-    ...budgetLines,
-    "",
-    "## 兼容性与替代方案",
-    "",
-    ...compatibilityLines,
-    ...(alternativeLines.length > 0 ? ["", ...alternativeLines] : []),
-    "",
-    "## 问题与待确认项",
-    "",
-    ...questionLines,
-  ].join("\n");
+  const slots = state.blueprint.slots.filter((slot) => slot.required);
+  const counted = new Set<string>();
+  let total = 0;
+  const rows = slots.map((slot) => {
+    const product = bySlot.get(slot.slotId);
+    const marker = `<!-- v4-slot:${slot.slotId} -->`;
+    if (!product) return `| ${PART_LABELS[slot.partType]} | ${escapeMarkdownCell(slot.primaryModel)}（未核价） | — | — ${marker} |`;
+    const key = affiliateProductKey(product);
+    const bundled = counted.has(key);
+    if (!bundled) { total = roundMoney(total + product.price); counted.add(key); }
+    return `| ${PART_LABELS[slot.partType]} | ${escapeMarkdownCell(product.name)} | ${bundled ? "已含套装内" : formatCurrency(product.price, requirements.budget.currency)} | [直达](${productPurchaseUrl(product)}) ${marker} |`;
+  });
+  const priced = slots.filter((slot) => bySlot.has(slot.slotId)).length;
+  const complete = slots.length > 0 && priced === slots.length;
+  const money = (amount: number) => formatCurrency(amount, requirements.budget.currency);
+  const totalLine = complete ? `**总价：${money(total)}**`
+    : priced > 0 ? `**已核价小计：${money(total)}（${priced}/${slots.length} 项；总价暂无法计算）**`
+      : `**总价：暂无法计算（已核价 0/${slots.length} 项）**`;
+  const amount = requirements.budget.amount;
+  const budgetLine = amount === undefined ? "" : `预算 ${money(amount)}${complete
+    ? total > amount ? `，仍超出 ${money(total - amount)}。` : `，剩余 ${money(amount - total)}。` : "。"}`;
+  const summary = !complete ? "商品核价未完成，表中保留计划型号；暂不能判断整单是否符合预算。"
+    : amount !== undefined && total > amount ? "已尝试调整配置，当前可核价组合仍超预算，暂不建议按此单购买。"
+      : "按本轮商品页面价格计算，此方案可作为购买清单；结算价格以所选规格、优惠和运费为准。";
+  const failures = state.stopReason === "research_unavailable" ? "替代配置联网核实未完成，保留已核价项，未采用未经验证的新型号。"
+    : state.stopReason === "commerce_unavailable" ? "商城采集暂不可用，可在商城登录入口检查登录或验证状态后重试。"
+    : state.stopReason === "wall_clock_exhausted" ? "已达到采价时间上限，保留本轮最佳可用方案。"
+      : state.stopReason === "query_budget_exhausted" || state.stopReason === "no_progress" ? "已达到本轮检索上限，保留最佳可用方案。" : "";
+  const compatibility = state.compatibilityIssues.filter((issue) => issue.severity === "error");
+  const advice = compatibility.length ? `兼容性冲突：${compatibility.map((issue) => issue.message).join("；")}。`
+    : state.compatibilityIssues.length ? `兼容性提示：${state.compatibilityIssues[0]!.message}`
+      : "兼容性仅检查已识别的规格，尚缺参数不能视为已验证。";
+  const markdown = ["## 配置清单", "", "| 部件 | 商品名 | 价格 | 链接 |", "|---|---|---:|---|", ...rows,
+    "", totalLine, budgetLine, "", "## 总结与建议", "", summary, failures, advice,
+    ...requirements.userDecisionItems.slice(0, 3)].filter((line, index, lines) => line || lines[index - 1] !== "").join("\n");
   const report: DeterministicReportV4 = {
-    schemaVersion: "computer.report.v4",
-    markdown,
-    requiredSlotIds: state.blueprint.slots.filter((slot) => slot.required).map((slot) => slot.slotId),
-    allowedLinks,
-    // Keep multiplicity: the same observed price can legitimately appear in a
-    // row and in the subtotal, and the guard must notice either occurrence
-    // being removed or changed.
-    allowedCurrencyTokens: [...allowedCurrencyTokens],
-    slotMarkers,
+    schemaVersion: "computer.report.v4", markdown,
+    requiredSlotIds: slots.map((slot) => slot.slotId),
+    allowedLinks: uniqueStrings(products.map(productPurchaseUrl).filter((url): url is string => Boolean(url))),
+    allowedCurrencyTokens: extractCurrencyTokens(markdown),
+    slotMarkers: slots.map((slot) => `<!-- v4-slot:${slot.slotId} -->`),
   };
-  const polishPrompt = [
-    "在不改变事实的前提下润色下面的确定性 Markdown 报告。",
-    "必须保留全部章节、每个配置表行末的 HTML 证据标记、所有价格和链接；不得新增型号、价格、链接或问题；问题章节必须仍是最后一节且最多三项。",
-    "若无法严格保持这些约束，原样返回报告。",
-    "",
-    markdown,
-  ].join("\n");
-  return { report, polishPrompt };
+  return { report, polishPrompt: `保持表格、总价、链接与证据标记不变，只精简建议；无法保持则原样返回。\n\n${markdown}` };
 }
 
 export function guardComputerReportV4(
@@ -1804,14 +1672,7 @@ export function guardComputerReportV4(
   const violations: string[] = [];
   if (readErrorStrings(polishErrorValue).length > 0) violations.push("polisher_error");
   if (!candidate.trim()) violations.push("empty_candidate");
-  const requiredSections = [
-    "## 推荐结论",
-    "## 完整配置表",
-    "## 已核验商品和推广披露",
-    "## 预算状态",
-    "## 兼容性与替代方案",
-    "## 问题与待确认项",
-  ];
+  const requiredSections = report.markdown.match(/^## .+$/gm) ?? [];
   let previousIndex = -1;
   for (const section of requiredSections) {
     const index = candidate.indexOf(section);
@@ -1830,6 +1691,8 @@ export function guardComputerReportV4(
   for (const marker of report.slotMarkers) {
     if (countOccurrences(candidate, marker) !== 1) violations.push(`slot_row_changed:${marker}`);
   }
+  const baselineRows = report.markdown.split("\n").filter((line) => line.startsWith("|") || line.startsWith("**"));
+  for (const row of baselineRows) if (!candidate.split("\n").includes(row)) violations.push("table_or_total_changed");
   const candidateLinks = extractHttpLinks(candidate);
   for (const link of candidateLinks) {
     if (!report.allowedLinks.includes(link)) violations.push(`unapproved_link:${link}`);
@@ -1841,8 +1704,8 @@ export function guardComputerReportV4(
   const candidateCurrency = multiset(extractCurrencyTokens(candidate));
   if (!sameMultiset(baselineCurrency, candidateCurrency)) violations.push("currency_fact_changed");
   return violations.length === 0
-    ? { answer: candidate, accepted: true, violations: [] }
-    : { answer: report.markdown, accepted: false, violations: uniqueStrings(violations) };
+    ? { answer: candidate.replace(/\s*<!-- v4-slot:[^>]+ -->/g, ""), accepted: true, violations: [] }
+    : { answer: report.markdown.replace(/\s*<!-- v4-slot:[^>]+ -->/g, ""), accepted: false, violations: uniqueStrings(violations) };
 }
 
 const requirementPolicyV2Node = defineNode({
@@ -1938,10 +1801,11 @@ const querySchedulerNode = defineNode({
   description: "无价格边界、按尝试次数广度优先调度，禁止指纹重复。",
   kind: "pseudo",
   config: z.object({
+    researchEnabled: z.boolean().default(false),
     maxWaveQueries: z.number().int().min(1).max(8).default(8),
     maxTotalQueries: z.number().int().min(1).max(128).default(24),
     maxAttemptsPerSlot: z.number().int().min(1).max(5).default(5),
-    wallClockLimitMs: z.number().int().min(1_000).max(120_000).default(25_000),
+    wallClockLimitMs: z.number().int().min(1_000).max(480_000).default(480_000),
   }).passthrough(),
   ports: [
     { id: "in", direction: "input", kind: "control", label: "调度" },
@@ -1955,6 +1819,7 @@ const querySchedulerNode = defineNode({
   validateInput: false,
   run({ input, config }) {
     const result = scheduleComputerCommerceQueriesV4(input.blueprint, input.state, {
+      researchEnabled: config.researchEnabled === true,
       maxWaveQueries: Number(config.maxWaveQueries),
       maxTotalQueries: Number(config.maxTotalQueries),
       maxAttemptsPerSlot: Number(config.maxAttemptsPerSlot),
@@ -1984,8 +1849,9 @@ const optimizerV2Node = defineNode({
   description: "使用本轮实价做全局组合选择，并明确决定继续修复或终止。",
   kind: "pseudo",
   config: z.object({
+    researchEnabled: z.boolean().default(false),
     maxNoProgressWaves: z.number().int().min(1).max(16).default(2),
-    wallClockLimitMs: z.number().int().min(1_000).max(120_000).default(25_000),
+    wallClockLimitMs: z.number().int().min(1_000).max(480_000).default(480_000),
     forceComplete: z.boolean().default(false),
     terminal: z.boolean().default(false),
   }).passthrough(),
@@ -2015,6 +1881,7 @@ const optimizerV2Node = defineNode({
       telemetry: input.telemetry,
       errors: input.errors,
       previousState: input.previousState,
+      researchEnabled: config.researchEnabled === true,
       maxNoProgressWaves: Number(config.maxNoProgressWaves),
       wallClockLimitMs: Number(config.wallClockLimitMs),
       forceComplete: config.forceComplete === true || config.terminal === true,
@@ -2050,6 +1917,7 @@ const reportAssemblerNode = defineNode({
   title: "电脑确定性报告组装器",
   description: "零商品、部分商品或完整商品状态下都生成逐槽完整报告。",
   kind: "pseudo",
+  config: z.object({ browserSource: z.boolean().default(false) }),
   ports: [
     { id: "in", direction: "input", kind: "control", label: "组装" },
     { id: "requirements", direction: "input", kind: "data", label: "需求规格" },
@@ -2065,8 +1933,9 @@ const reportAssemblerNode = defineNode({
     { id: "summary", direction: "output", kind: "data", label: "Summary" },
   ],
   validateInput: false,
-  run({ input }) {
+  run({ input, config }) {
     const result = assembleComputerReportV4({
+      browserSource: config.browserSource,
       requirements: input.requirements,
       blueprint: input.blueprint,
       state: input.state,
@@ -2427,7 +2296,7 @@ function motherboardFormFactorRank(value: string): number {
   return 0;
 }
 
-function isSlotAlternativeCompatible(
+export function isSlotAlternativeCompatible(
   partType: ComputerPartTypeV4,
   model: string,
   requiredSpecs: Record<string, unknown>,
@@ -2546,6 +2415,7 @@ function createSchedulerStateV4(nowMs: number): QuerySchedulerStateV4 {
     startedAtMs: nowMs,
     attemptsBySlot: {},
     alternativeAttemptsBySlot: {},
+    researchAttemptsBySlot: {},
     issuedFingerprints: [],
     exhaustedSlotIds: [],
     noProgressWaves: 0,
@@ -2553,7 +2423,7 @@ function createSchedulerStateV4(nowMs: number): QuerySchedulerStateV4 {
   };
 }
 
-function normalizeAdvisorStateV4(stateValue: unknown, blueprintValue: unknown): ComputerAdvisorStateV4 {
+export function normalizeAdvisorStateV4(stateValue: unknown, blueprintValue?: unknown): ComputerAdvisorStateV4 {
   const outerStateRecord = asRecord(stateValue);
   const nestedStateRecord = asRecord(outerStateRecord?.state);
   const stateRecord = outerStateRecord?.schemaVersion === "computer.advisor-state.v4"
@@ -2561,7 +2431,7 @@ function normalizeAdvisorStateV4(stateValue: unknown, blueprintValue: unknown): 
     : nestedStateRecord?.schemaVersion === "computer.advisor-state.v4"
       ? nestedStateRecord
       : outerStateRecord;
-  const blueprint = normalizeBlueprintObject(blueprintValue ?? stateRecord?.blueprint);
+  const blueprint = normalizeBlueprintObject(stateRecord?.blueprint ?? blueprintValue);
   const requirements = normalizeRequirementsObject(stateRecord?.requirements ?? {
     intent: blueprint.route,
     targetParts: blueprint.slots.map((slot) => slot.partType),
@@ -2583,6 +2453,7 @@ function normalizeAdvisorStateV4(stateValue: unknown, blueprintValue: unknown): 
     "wall_clock_exhausted",
     "no_progress",
     "commerce_unavailable",
+    "research_unavailable",
   ] as const) ?? null;
   const candidatePool = readVerifiedCandidates(stateRecord.candidatePool);
   const selectedCandidates = readVerifiedCandidates(stateRecord.selectedCandidates);
@@ -2597,6 +2468,7 @@ function normalizeAdvisorStateV4(stateValue: unknown, blueprintValue: unknown): 
     startedAtMs: finiteNumber(schedulerRecord?.startedAtMs) ?? 0,
     attemptsBySlot: readNumberRecord(schedulerRecord?.attemptsBySlot),
     alternativeAttemptsBySlot: readNumberRecord(schedulerRecord?.alternativeAttemptsBySlot),
+    researchAttemptsBySlot: readNumberRecord(schedulerRecord?.researchAttemptsBySlot),
     issuedFingerprints: readStringArray(schedulerRecord?.issuedFingerprints, 256),
     exhaustedSlotIds: readStringArray(schedulerRecord?.exhaustedSlotIds, 32),
     noProgressWaves: nonNegativeInteger(schedulerRecord?.noProgressWaves),
@@ -2611,6 +2483,7 @@ function normalizeAdvisorStateV4(stateValue: unknown, blueprintValue: unknown): 
     blueprint,
     scheduler,
     marketDiscoveries,
+    revisionNotes: readStringArray(stateRecord.revisionNotes, 32),
     candidatePool,
     selectedCandidates,
     ...(selectedSubtotal !== undefined ? { selectedSubtotal } : {}),
@@ -2673,137 +2546,25 @@ function normalizeBlueprintObject(value: unknown): ComputerBlueprintV4 {
 }
 
 function nextUniqueQueryForSlot(
-  slot: BlueprintSlotV4,
-  priorAttempts: number,
-  maxAttempts: number,
-  issued: Set<string>,
-  marketDiscoveries: MarketDiscoveryClusterV4[],
-  blueprint: ComputerBlueprintV4,
-  telemetry: AffiliateSearchTelemetry[],
+  slot: BlueprintSlotV4, priorAttempts: number, maxAttempts: number, issued: Set<string>,
 ): ComputerCommerceQueryV4 | undefined {
-  const discoveries = marketDiscoveries
-    .filter((cluster) => cluster.slotId === slot.slotId)
-    .sort((left, right) => right.sampleCount - left.sampleCount
-      || left.medianPrice - right.medianPrice
-      || left.clusterId.localeCompare(right.clusterId));
-  for (let attemptIndex = priorAttempts; attemptIndex < maxAttempts; attemptIndex += 1) {
-    const attempt = attemptIndex + 1;
-    let query: ComputerCommerceQueryV4 | undefined;
-    const latestOutcome = [...telemetry].reverse().find((item) => item.slotId === slot.slotId);
-    const sourceReturnedWrongProducts = Boolean(latestOutcome
-      && latestOutcome.providerRawCount > 0
-      && latestOutcome.acceptedCount === 0
-      && latestOutcome.rejectedByCategory + latestOutcome.rejectedByModel > 0);
-    const adaptiveDiscovery = sourceReturnedWrongProducts
-      ? makeMarketDiscoveryQuery(slot, blueprint, attempt)
-      : undefined;
-    if (discoveries[0]) {
-      query = makeMarketConfirmationQuery(slot, discoveries[0], attempt);
-    } else if (attemptIndex === 0) {
-      query = makeComputerQuery(slot, "exact_model", attempt);
-    } else if (adaptiveDiscovery && !issued.has(adaptiveDiscovery.fingerprint)) {
-      // If an exact query returned only unrelated goods, changing to another
-      // exact spelling repeats the same failure mode. Discover the category
-      // supply first, then confirm the concrete model found there.
-      query = adaptiveDiscovery;
-    } else if (attemptIndex === 1) {
-      query = makeComputerQuery(slot, "approved_alternative", attempt, "lower_cost")
-        ?? makeComputerQuery(slot, "model_family", attempt);
-    } else if (attemptIndex === 2) {
-      query = makeComputerQuery(slot, "approved_alternative", attempt, "higher_performance")
-        ?? makeComputerQuery(slot, "model_family", attempt);
-    } else if (attemptIndex === 3) {
-      query = makeMarketDiscoveryQuery(slot, blueprint, attempt);
-    } else {
-      query = makeComputerQuery(slot, "model_family", attempt);
-    }
-    if (!query || issued.has(query.fingerprint)) continue;
-    return query;
+  // Search concrete models only; category scraping and board/CPU bundle repair belonged to the old affiliate flow.
+  for (let index = priorAttempts; index < Math.min(maxAttempts, 3); index++) {
+    const query = index === 0 ? makeComputerQuery(slot, "exact_model", index + 1)
+      : makeComputerQuery(slot, "approved_alternative", index + 1, index === 1 ? "lower_cost" : "higher_performance");
+    if (query && !issued.has(query.fingerprint)) return query;
   }
   return undefined;
 }
 
-function makeMarketDiscoveryQuery(
-  slot: BlueprintSlotV4,
-  blueprint: ComputerBlueprintV4,
-  attempt: number,
-): ComputerCommerceQueryV4 {
-  const genericKeywords: Record<ComputerPartTypeV4, string> = {
-    cpu: "CPU处理器",
-    cooler: "CPU散热器",
-    motherboard: "主板",
-    memory: "DDR5内存",
-    gpu: "显卡",
-    storage: "NVMe固态硬盘",
-    psu: "电脑电源",
-    case: "机箱",
-    monitor: "显示器",
-    keyboard: "键盘",
-    mouse: "鼠标",
-    system: "电脑整机",
-  };
-  const hasMotherboard = slot.partType === "cpu"
-    && blueprint.slots.some((candidate) => candidate.required && candidate.partType === "motherboard");
-  const coveredSlotIds = hasMotherboard
-    ? [slot.slotId, "slot-motherboard"]
-    : [slot.slotId];
-  const keyword = hasMotherboard ? "板U套装" : genericKeywords[slot.partType];
-  const fingerprint = `${slot.slotId}|market_discovery|${normalizeSearchText(keyword)}`;
-  return {
-    queryId: `v4-${slot.slotId}-${attempt}-${shortHash(fingerprint)}`,
-    slotId: slot.slotId,
-    coveredSlotIds,
-    partType: slot.partType,
-    stage: "market_discovery",
-    keyword,
-    modelAnchors: [],
-    categoryAnchors: [...CATEGORY_POLICY[slot.partType].anchors],
-    negativeTerms: categoryNegativeTerms(slot.partType, hasMotherboard),
-    attempt,
-    discoveryMode: "unbounded",
-    count: 5,
-    plannedSpecs: cloneRecord(slot.requiredSpecs),
-    fingerprint,
-  };
-}
-
-function makeMarketConfirmationQuery(
-  slot: BlueprintSlotV4,
-  discovery: MarketDiscoveryClusterV4,
-  attempt: number,
-): ComputerCommerceQueryV4 {
-  const fingerprint = `${slot.slotId}|market_confirmation|${discovery.clusterId}`;
-  return {
-    queryId: `v4-${slot.slotId}-${attempt}-${shortHash(fingerprint)}`,
-    slotId: slot.slotId,
-    coveredSlotIds: [...discovery.coveredSlotIds],
-    partType: slot.partType,
-    stage: "market_confirmation",
-    keyword: discovery.confirmationKeyword,
-    modelAnchors: [...discovery.modelAnchors],
-    categoryAnchors: [...CATEGORY_POLICY[slot.partType].anchors],
-    negativeTerms: categoryNegativeTerms(slot.partType, discovery.coveredSlotIds.length > 1),
-    attempt,
-    discoveryMode: "unbounded",
-    count: 5,
-    plannedSpecs: cloneRecord(slot.requiredSpecs),
-    fingerprint,
-  };
-}
-
 function nextUniqueAlternativeQueryForSlot(
-  slot: BlueprintSlotV4,
-  alternativeAttempts: number,
-  issued: Set<string>,
-  direction: "lower_cost" | "higher_performance",
-  baseAttempts: number,
+  slot: BlueprintSlotV4, issued: Set<string>, direction: "lower_cost" | "higher_performance", attempt: number,
 ): ComputerCommerceQueryV4 | undefined {
-  if (alternativeAttempts >= 1) return undefined;
-  const query = makeComputerQuery(slot, "approved_alternative", baseAttempts + alternativeAttempts + 1, direction);
+  const query = makeComputerQuery(slot, "approved_alternative", attempt, direction);
   return query && !issued.has(query.fingerprint) ? query : undefined;
 }
 
-function makeComputerQuery(
+export function makeComputerQuery(
   slot: BlueprintSlotV4,
   stage: CommerceQueryStageV4,
   attempt: number,
@@ -2844,7 +2605,7 @@ function makeComputerQuery(
     attempt,
     discoveryMode: "unbounded",
     count: 5,
-    plannedSpecs: cloneRecord(slot.requiredSpecs),
+    plannedSpecs: { ...slot.requiredSpecs, ...inferPlannedSpecsFromText(slot.partType, model) },
     fingerprint,
   };
 }
@@ -2878,7 +2639,7 @@ function marketplaceModelIdentity(
       /\b((?:core\s*)?ultra\s*[579]\s+\d{3}[a-z]{0,3})\b/i,
     );
     const identity = found?.[1]?.replace(/\s+/g, "") ?? model;
-    return { keyword: identity, anchors: [normalizeSearchText(identity).replace(/\s+/g, "")] };
+    return { keyword: `${identity} 处理器`, anchors: [normalizeSearchText(identity).replace(/\s+/g, "")] };
   }
 
   if (partType === "gpu") {
@@ -2897,8 +2658,7 @@ function marketplaceModelIdentity(
     const descriptor = normalized.match(/\b(?:mortar|tomahawk|ds3h|gaming|aorus|tuf|proart|strix)\b/)?.[0];
     if (code) {
       const aliases: Record<string, string> = { mortar: "迫击炮", tomahawk: "战斧导弹" };
-      const keywordDescriptor = descriptor && aliases[descriptor] ? aliases[descriptor] : descriptor?.toUpperCase();
-      const keyword = [code.toUpperCase(), keywordDescriptor].filter(Boolean).join(" ");
+      const keyword = model;
       const base = `${code}${descriptor ?? ""}`;
       return {
         keyword,
@@ -2930,7 +2690,7 @@ function marketplaceModelIdentity(
 
   if (partType === "memory") {
     const seriesPairs = [
-      ["fury", "beast"], ["金百达", "银爵"], ["芝奇", "幻锋戟"], ["英睿达", "5600"],
+      ["fury", "beast"], ["光威", "天策"], ["金百达", "银爵"], ["芝奇", "幻锋戟"], ["英睿达", "5600"],
     ];
     const pair = seriesPairs.find((items) => items.every((item) => normalized.includes(item)));
     if (pair) {
@@ -3138,6 +2898,11 @@ function candidateCompatibilityConflicts(
       conflicts.push("observed_spec_conflict:capacityGB");
     }
   }
+  if (slot.partType === "gpu") {
+    const plannedVram = finiteNumber(slot.requiredSpecs.vramGB);
+    const actualVram = finiteNumber(observed.vramGB);
+    if (plannedVram !== undefined && actualVram !== undefined && plannedVram !== actualVram) conflicts.push("observed_spec_conflict:vramGB");
+  }
   if (slot.partType === "psu") {
     const plannedWattage = finiteNumber(slot.requiredSpecs.wattage);
     const actualWattage = finiteNumber(observed.wattage);
@@ -3166,7 +2931,11 @@ function candidateUtility(slots: BlueprintSlotV4[], query: ComputerCommerceQuery
     spec_fallback: 0.82,
     approved_alternative: 0.88,
   };
-  return Math.round(slots.reduce((sum, slot) => sum + slot.utilityWeight, 0) * stageFactor[query.stage] * 1_000) / 1_000;
+  const factor = query.stage === "approved_alternative" && slots.some((slot) => slot.alternatives.some((alternative) =>
+    alternative.direction === "higher_performance"
+    && normalizeSearchText(marketplaceModelIdentity(slot.partType, alternative.model).keyword) === normalizeSearchText(query.keyword)))
+    ? 1.15 : stageFactor[query.stage];
+  return Math.round(slots.reduce((sum, slot) => sum + slot.utilityWeight, 0) * factor * 1_000) / 1_000;
 }
 
 interface SelectionState {
@@ -3279,7 +3048,9 @@ function candidateToAffiliateProduct(candidate: VerifiedCandidateV4): AffiliateP
     ...(candidate.promotionUrl ? { promotionUrl: candidate.promotionUrl } : {}),
     hasCoupon: candidate.hasCoupon,
     capturedAt: candidate.capturedAt,
-    affiliate: true,
+    affiliate: candidate.sourceKind !== "browser",
+    ...(candidate.sourceKind ? { sourceKind: candidate.sourceKind } : {}),
+    ...(candidate.detailVerified !== undefined ? { detailVerified: candidate.detailVerified } : {}),
     queryId: candidate.queryId,
     slotId: candidate.slotId,
     coveredSlotIds: [...candidate.coveredSlotIds],
@@ -3432,116 +3203,6 @@ function countOccurrences(text: string, needle: string): number {
   }
 }
 
-function describeStopReasonV4(
-  reason: ComputerAdvisorStopReasonV4 | null,
-  commerceRequested: boolean,
-): string {
-  if (!commerceRequested) return "本轮按需求策略不调用实时商品服务";
-  switch (reason) {
-    case "all_slots_priced":
-      return "所有目标槽位均已取得本轮价格证据";
-    case "attempts_exhausted":
-      return "未命中槽位已完成市场泛搜、在售型号复搜、蓝图型号与批准替代型号检索";
-    case "query_budget_exhausted":
-      return "已达到本轮有界查询调用上限";
-    case "wall_clock_exhausted":
-      return "已达到本轮实时核价时限";
-    case "commerce_unavailable":
-      return "联盟商品服务不可用，已保留完整技术蓝图";
-    case "no_progress":
-      return "没有剩余可执行的新检索阶段";
-    default:
-      return "本轮检索已结束并进入确定性报告";
-  }
-}
-
-function readPublicMarketEvidence(
-  value: unknown,
-  blueprint: ComputerBlueprintV4,
-): PublicMarketPriceEvidence[] {
-  if (!Array.isArray(value)) return [];
-  const slots = new Map(blueprint.slots.map((slot) => [slot.slotId, slot]));
-  const evidence: PublicMarketPriceEvidence[] = [];
-  for (const item of value) {
-    const record = asRecord(item);
-    const slotId = readText(record?.slotId, 200);
-    const slot = slots.get(slotId);
-    const model = readText(record?.model, 500);
-    if (!record || !slot || normalizeSearchText(model) !== normalizeSearchText(slot.primaryModel)) continue;
-    const samples = Array.isArray(record.samples) ? record.samples.flatMap((sample): PublicMarketPriceEvidence["samples"] => {
-      const row = asRecord(sample);
-      const price = positiveMoney(row?.price);
-      const title = readText(row?.title, 500);
-      const url = safeMarketHttpUrl(readText(row?.url, 2_000));
-      const capturedAt = readText(row?.capturedAt, 100);
-      return price !== undefined && title && url
-        ? [{ price, title, url, capturedAt: capturedAt || new Date(0).toISOString() }]
-        : [];
-    }) : [];
-    const uniqueSamples = [...new Map(samples.map((sample) => [sample.url, sample])).values()]
-      .sort((left, right) => left.price - right.price)
-      .slice(0, 5);
-    if (uniqueSamples.length === 0) continue;
-    const prices = uniqueSamples.map((sample) => sample.price);
-    evidence.push({
-      slotId,
-      partType: slot.partType,
-      model: slot.primaryModel,
-      query: readText(record.query, 500),
-      minPrice: prices[0]!,
-      medianPrice: prices[Math.floor(prices.length / 2)]!,
-      maxPrice: prices.at(-1)!,
-      samples: uniqueSamples,
-      confidence: uniqueSamples.length >= 2 ? "multi_source" : "single_source",
-    });
-  }
-  return [...new Map(evidence.map((item) => [item.slotId, item])).values()];
-}
-
-function formatMarketEvidenceCell(
-  evidence: PublicMarketPriceEvidence,
-  currency: string,
-  allowedCurrencyTokens: string[],
-): string {
-  const minToken = formatCurrency(evidence.minPrice, currency);
-  const maxToken = formatCurrency(evidence.maxPrice, currency);
-  const priceText = evidence.minPrice === evidence.maxPrice
-    ? minToken
-    : `${minToken}–${maxToken}`;
-  allowedCurrencyTokens.push(minToken);
-  if (maxToken !== minToken) allowedCurrencyTokens.push(maxToken);
-  const links = evidence.samples.map((sample, index) => `[来源${index + 1}](${sample.url})`).join(" ");
-  return `${priceText}（${evidence.confidence === "multi_source" ? `${evidence.samples.length} 源` : "单源"}） ${links}`;
-}
-
-function safeMarketHttpUrl(value: string): string | undefined {
-  try {
-    const url = new URL(value);
-    return url.protocol === "https:" || url.protocol === "http:" ? url.href : undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function describeCommerceSourceCoverageV4(state: ComputerAdvisorStateV4): string {
-  const telemetry = state.diagnostics.telemetry;
-  if (telemetry.length === 0) return "";
-  const rawZero = telemetry.filter((item) => item.providerRawCount === 0).length;
-  const rawPositiveNoAccept = telemetry.filter((item) =>
-    item.providerRawCount > 0 && item.acceptedCount === 0).length;
-  const accepted = telemetry.reduce((sum, item) => sum + Math.max(0, item.acceptedCount), 0);
-  const providers = uniqueStrings(telemetry.map((item) => item.provider === "pdd"
-    ? "拼多多多多进宝推广商品池"
-    : "京东联盟推广商品池")).join("、");
-  if (accepted === 0) {
-    return `供给源诊断：${providers}共执行 ${telemetry.length} 次查询，其中 ${rawZero} 次原始返回为空、${rawPositiveNoAccept} 次仅返回不匹配商品；该接口不代表商城全站库存，当前缺口来自推广商品池，不转交用户核价。`;
-  }
-  if (rawZero > 0 || rawPositiveNoAccept > 0) {
-    return `供给源诊断：${providers} ${telemetry.length} 次查询中，${rawZero} 次原始返回为空、${rawPositiveNoAccept} 次仅返回不匹配商品；该接口不代表商城全站库存。`;
-  }
-  return "";
-}
-
 function formatCurrency(value: number, currency: string): string {
   const formatted = roundMoney(value).toLocaleString("en-US", {
     minimumFractionDigits: Number.isInteger(value) ? 0 : 2,
@@ -3551,7 +3212,7 @@ function formatCurrency(value: number, currency: string): string {
 }
 
 function escapeMarkdownCell(value: string): string {
-  return value.replace(/\|/g, "\\|").replace(/[\r\n]+/g, " ").trim();
+  return value.replace(/([\\\[\]`|])/g, "\\$1").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/[\r\n]+/g, " ").trim();
 }
 
 function candidateProductKey(candidate: VerifiedCandidateV4): string {
@@ -3601,7 +3262,7 @@ function readAffiliateProducts(value: unknown): AffiliateProduct[] {
   return value.filter((item): item is AffiliateProduct => {
     const record = asRecord(item);
     return Boolean(record
-      && (record.provider === "jd" || record.provider === "pdd")
+      && (record.provider === "jd" || record.provider === "pdd" || record.provider === "taobao")
       && typeof record.productId === "string"
       && typeof record.name === "string"
       && typeof record.price === "number");
@@ -3648,7 +3309,7 @@ function readVerifiedCandidates(value: unknown): VerifiedCandidateV4[] {
   const candidates: VerifiedCandidateV4[] = [];
   for (const item of value) {
     const record = asRecord(item);
-    const provider = readEnum(record?.provider, ["jd", "pdd"] as const);
+    const provider = readEnum(record?.provider, ["jd", "pdd", "taobao"] as const);
     const partType = normalizePart(record?.partType);
     const stage = readEnum(record?.stage, ["market_discovery", "market_confirmation", "exact_model", "model_family", "spec_fallback", "approved_alternative"] as const);
     const price = positiveMoney(record?.comparablePrice);
@@ -3663,6 +3324,7 @@ function readVerifiedCandidates(value: unknown): VerifiedCandidateV4[] {
     candidates.push({
       candidateId,
       provider,
+      ...(record.sourceKind === "browser" ? { sourceKind: "browser" as const, detailVerified: record.detailVerified === true } : {}),
       productId,
       queryId,
       slotId,
@@ -3733,7 +3395,7 @@ function readTelemetry(value: unknown): AffiliateSearchTelemetry[] {
   if (!Array.isArray(value)) return [];
   return value.filter((item): item is AffiliateSearchTelemetry => {
     const record = asRecord(item);
-    return Boolean(record && typeof record.keyword === "string" && (record.provider === "jd" || record.provider === "pdd"));
+    return Boolean(record && typeof record.keyword === "string" && (record.provider === "jd" || record.provider === "pdd" || record.provider === "taobao"));
   });
 }
 

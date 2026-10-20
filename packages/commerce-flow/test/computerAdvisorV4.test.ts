@@ -6,7 +6,6 @@ import {
   type ComputerCommerceQueryV4,
   type ComputerRequirementsV4,
   assembleComputerReportV4,
-  discoverMarketClustersV4,
   guardComputerBlueprintV4,
   guardComputerReportV4,
   normalizeComputerRequirementV4,
@@ -147,6 +146,116 @@ function scheduleFullAttempt(
   return scheduled;
 }
 
+function pricedBuild(prices: number[], budget = 8000) {
+  const fixture = makeFullBuild();
+  fixture.requirements.budget.amount = budget;
+  fixture.state.requirements = fixture.requirements;
+  const scheduled = scheduleComputerCommerceQueriesV4(fixture.blueprint, fixture.state, { maxWaveQueries: 8, nowMs: 1000 });
+  const products = scheduled.queryPlan.queries.map((query, index) => makeProduct(query, {
+    name: `${fixture.blueprint.slots[index]!.primaryModel} ${query.categoryAnchors[0]}`, price: prices[index]!,
+  }));
+  const result = optimizeComputerRecommendationV4({ ...fixture, queries: scheduled.queryPlan, products,
+    previousState: scheduled.state, nowMs: 1100 });
+  expect(result.state.diagnostics.candidateRejections).toEqual([]);
+  return { ...fixture, state: result.state };
+}
+
+function priceNext(fixture: ReturnType<typeof pricedBuild>, price: number) {
+  const scheduled = scheduleComputerCommerceQueriesV4(fixture.blueprint, fixture.state, { maxWaveQueries: 1, nowMs: 1200 });
+  const query = scheduled.queryPlan.queries[0]!;
+  expect(query).toBeDefined();
+  const slot = fixture.blueprint.slots.find((item) => item.slotId === query.slotId)!;
+  const direction = fixture.state.scheduler.requestedAlternatives[slot.slotId];
+  const result = optimizeComputerRecommendationV4({ ...fixture, queries: scheduled.queryPlan,
+    products: [makeProduct(query, { name: `${slot.alternatives.find((item) => item.direction === direction)!.model} ${query.categoryAnchors[0]}`, price })],
+    previousState: scheduled.state, nowMs: 1300 });
+  return { ...fixture, state: result.state };
+}
+
+describe("budget feedback loop", () => {
+  it("upgrades multiple useful parts until a complete 8000-budget build reaches the target band", () => {
+    const initial = pricedBuild([800, 100, 600, 400, 2000, 400, 300, 200]);
+    expect(initial.state.selectedSubtotal).toBe(4800);
+    expect(initial.state.scheduler.requestedAlternatives).toEqual({ "slot-gpu": "higher_performance" });
+    const gpu = priceNext(initial, 3500);
+    expect(gpu.state.selectedSubtotal).toBe(6300);
+    expect(gpu.state.scheduler.requestedAlternatives).toEqual({ "slot-cpu": "higher_performance" });
+    const cpu = priceNext(gpu, 1800);
+    expect(cpu.state.selectedSubtotal).toBe(7300);
+    expect(cpu.state.coverage.budget).toBe("verified_within_budget");
+    expect(cpu.state.stopReason).toBe("all_slots_priced");
+    expect(cpu.state.candidatePool.length).toBeGreaterThan(initial.state.candidatePool.length);
+  });
+
+  it("reduces several parts using real prices while retaining a complete configuration", () => {
+    let fixture = pricedBuild([1500, 300, 1800, 700, 4000, 800, 700, 700]);
+    expect(fixture.state.selectedSubtotal).toBe(10500);
+    expect(fixture.state.stopReason).toBeNull();
+    let rounds = 0;
+    while (fixture.state.stopReason === null && rounds++ < 8) {
+      const slotId = Object.keys(fixture.state.scheduler.requestedAlternatives)[0]!;
+      expect(fixture.state.scheduler.requestedAlternatives[slotId]).toBe("lower_cost");
+      const oldPrice = fixture.state.selectedCandidates.find((item) => item.slotId === slotId)!.comparablePrice;
+      fixture = priceNext(fixture, Math.round(oldPrice * 0.5));
+    }
+    expect(rounds).toBeGreaterThan(1);
+    expect(fixture.state.coverage.pricing.verified).toBe(8);
+    expect(fixture.state.selectedSubtotal).toBeLessThanOrEqual(8000);
+    expect(fixture.state.coverage.budget).toBe("verified_within_budget");
+  });
+
+  it("keeps the affordable original when an upgrade is too expensive", () => {
+    const fixture = pricedBuild([800, 100, 600, 400, 2000, 400, 300, 200]);
+    const attempted = priceNext(fixture, 7000);
+    expect(attempted.state.selectedSubtotal).toBe(4800);
+    expect(attempted.state.selectedCandidates.find((item) => item.partType === "gpu")?.name)
+      .toBe(fixture.state.selectedCandidates.find((item) => item.partType === "gpu")?.name);
+  });
+
+  it.each(["commerce_unavailable", "wall_clock_exhausted", "query_budget_exhausted"] as const)("cannot override %s to keep repairing an over-budget build", (reason) => {
+    const fixture = pricedBuild([1500, 300, 1800, 700, 4000, 800, 700, 700]);
+    if (reason === "query_budget_exhausted") fixture.state.scheduler.totalIssued = fixture.state.scheduler.maxTotalQueries;
+    const result = optimizeComputerRecommendationV4({ ...fixture, previousState: fixture.state,
+      nowMs: reason === "wall_clock_exhausted" ? 600000 : 1300,
+      errors: reason === "commerce_unavailable" ? ["商品服务不可用：需要登录"] : [] });
+    expect(result.state.stopReason).toBe(reason);
+    expect(result.needsRepair).toBe(false);
+    expect(scheduleComputerCommerceQueriesV4(fixture.blueprint, result.state, { nowMs: 1400 }).queryPlan.queries).toEqual([]);
+  });
+
+  it("does not infer spare budget from a partial subtotal", () => {
+    const fixture = makeFullBuild();
+    const scheduled = scheduleComputerCommerceQueriesV4(fixture.blueprint, fixture.state, { maxWaveQueries: 1, nowMs: 1000 });
+    const result = optimizeComputerRecommendationV4({ ...fixture, queries: scheduled.queryPlan,
+      products: [makeProduct(scheduled.queryPlan.queries[0]!, { price: 800 })], previousState: scheduled.state, nowMs: 1100 });
+    expect(result.state.scheduler.requestedAlternatives).toEqual({});
+    expect(result.needsRepair).toBe(true);
+  });
+
+  it("rejects one display price shared by multiple CPU models", () => {
+    const fixture = makeFullBuild();
+    const query = scheduleComputerCommerceQueriesV4(fixture.blueprint, fixture.state, { nowMs: 1000 }).queryPlan.queries[0]!;
+    expect(verifyComputerCandidateV4({ query, slot: fixture.blueprint.slots[0]!, product: makeProduct(query, {
+      sourceKind: "browser", detailVerified: true, name: "R5-7500F R5-7400F R5-8400F R5-7600 R5-7600X R5-8500G", price: 480,
+    }) })).toMatchObject({ reasons: expect.arrayContaining(["ambiguous_model_price"]) });
+  });
+
+  it("prints only linked, selected rows and computes their subtotal without public estimates", () => {
+    const fixture = pricedBuild([800, 100, 600, 400, 2000, 400, 300, 200]);
+    const selected = fixture.state.selectedCandidates.find((candidate) => candidate.partType === "cpu")!;
+    const report = assembleComputerReportV4({ ...fixture, products: [{
+      provider: selected.provider, productId: selected.productId, slotId: selected.slotId, name: selected.name,
+      price: selected.comparablePrice, hasCoupon: false, affiliate: false, sourceKind: "browser", detailVerified: true,
+      sourceUrl: "https://mobile.yangkeduo.com/goods.html?goods_id=123", capturedAt: selected.capturedAt,
+    }] }).report;
+    expect(report.markdown).toContain("已核价小计：¥800（1/8 项");
+    expect(report.markdown).not.toContain("¥4,800");
+    expect(report.markdown.match(/^## /gm)).toHaveLength(2);
+    expect(report.markdown).not.toMatch(/推广|公开市场|供给源诊断/);
+    expect(guardComputerReportV4(report, report.markdown).accepted).toBe(true);
+  });
+});
+
 describe("computer advisor V4 structural policies", () => {
   it("falls back to deterministic requirement rules when the LLM draft is invalid", () => {
     const result = normalizeComputerRequirementV4(
@@ -271,7 +380,7 @@ describe("computer advisor V4 structural policies", () => {
     expect(result.state.coverage.compatibility).toBe("passed");
   });
 
-  it("searches three concrete technical models before broad market fallback", () => {
+  it("bounds missing-product searches to concrete primary and alternative models", () => {
     const { blueprint, state: initialState } = makeFullBuild();
     let state = initialState;
     const issued: ComputerCommerceQueryV4[] = [];
@@ -288,36 +397,17 @@ describe("computer advisor V4 structural policies", () => {
       state = scheduled.state;
     }
 
-    expect(issued).toHaveLength(39);
+    expect(issued.length).toBeGreaterThanOrEqual(16);
+    expect(issued.length).toBeLessThanOrEqual(24);
     expect(issued.slice(0, 8).every((query) => query.attempt === 1)).toBe(true);
-    expect(issued.findIndex((query) => query.attempt === 2)).toBe(8);
-    expect(issued.filter((query) => query.attempt === 1).map((query) => query.slotId))
-      .toEqual(blueprint.slots.map((slot) => slot.slotId));
-    expect(issued.filter((query) => query.attempt === 2).map((query) => query.slotId))
-      .toEqual(blueprint.slots.map((slot) => slot.slotId));
-    expect(issued.filter((query) => query.attempt === 3).map((query) => query.slotId))
-      .toEqual(blueprint.slots.map((slot) => slot.slotId));
-    expect(issued.filter((query) => query.attempt === 4).map((query) => query.slotId))
-      .toEqual(blueprint.slots.map((slot) => slot.slotId));
-    expect(issued.filter((query) => query.attempt === 5).map((query) => query.slotId))
-      .toEqual(blueprint.slots.filter((slot) => slot.partType !== "psu").map((slot) => slot.slotId));
-    expect(new Set(issued.map((query) => query.stage))).toEqual(new Set([
-      "market_discovery",
-      "exact_model",
-      "model_family",
-      "approved_alternative",
-    ]));
+    expect(new Set(issued.map((query) => query.stage))).toEqual(new Set(["exact_model", "approved_alternative"]));
+    expect(state.stopReason).toBe("attempts_exhausted");
     const cpuExact = issued.find((query) => query.partType === "cpu" && query.attempt === 1)!;
     const gpuExact = issued.find((query) => query.partType === "gpu" && query.attempt === 1)!;
-    expect(cpuExact).toMatchObject({ stage: "exact_model", keyword: "7500F", modelAnchors: ["7500f"] });
+    expect(cpuExact).toMatchObject({ stage: "exact_model", keyword: "7500F 处理器", modelAnchors: ["7500f"] });
     expect(gpuExact.keyword).toBe("RX 7800 XT");
     expect(gpuExact.modelAnchors).toEqual(["7800xt"]);
     expect(new Set(issued.map((query) => query.fingerprint)).size).toBe(issued.length);
-    for (const slot of blueprint.slots) {
-      expect(new Set(
-        issued.filter((query) => query.slotId === slot.slotId).map((query) => query.keyword.toLowerCase()),
-      ).size).toBe(slot.partType === "psu" ? 4 : 5);
-    }
     for (const query of issued) {
       expect(query).not.toHaveProperty("minPrice");
       expect(query).not.toHaveProperty("maxPrice");
@@ -350,89 +440,7 @@ describe("computer advisor V4 structural policies", () => {
     expect(("reasons" in result ? result.reasons : []).join(" ")).toContain("拆机");
   });
 
-  it("uses a concise model alias when the economy blueprint has no distinct lower candidate", () => {
-    const { requirements, blueprint, state } = makeSingleStorageBuild();
-    const exact = scheduleComputerCommerceQueriesV4(blueprint, state, {
-      maxWaveQueries: 1,
-      maxTotalQueries: 5,
-      maxAttemptsPerSlot: 5,
-      wallClockLimitMs: 120_000,
-      nowMs: 50_000,
-    });
-    expect(exact.queryPlan.queries[0]?.stage).toBe("exact_model");
-    expect(exact.queryPlan.queries[0]?.keyword.toLowerCase()).toContain("exceria g2");
 
-    const afterEmptyExact = optimizeComputerRecommendationV4({
-      requirements,
-      blueprint,
-      queries: exact.queryPlan,
-      products: [],
-      previousState: exact.state,
-      maxNoProgressWaves: 2,
-      wallClockLimitMs: 120_000,
-      nowMs: 50_010,
-    });
-    expect(afterEmptyExact.state.stopReason).toBeNull();
-    expect(afterEmptyExact.needsRepair).toBe(true);
-    expect(afterEmptyExact.state.scheduler.noProgressWaves).toBe(1);
-
-    const family = scheduleComputerCommerceQueriesV4(blueprint, afterEmptyExact.state, {
-      maxWaveQueries: 1,
-      maxTotalQueries: 5,
-      maxAttemptsPerSlot: 5,
-      wallClockLimitMs: 120_000,
-      nowMs: 50_020,
-    });
-    expect(family.stopReason).toBeNull();
-    expect(family.queryPlan.queries[0]?.stage).toBe("model_family");
-    expect(family.queryPlan.queries[0]?.attempt).toBe(2);
-    expect(family.queryPlan.queries[0]?.keyword.toLowerCase()).toContain("exceria g2");
-  });
-
-  it("changes strategy inside the loop when the provider returns only wrong-category goods", () => {
-    const fixture = makeSingleStorageBuild();
-    const exact = scheduleComputerCommerceQueriesV4(fixture.blueprint, fixture.state, {
-      maxWaveQueries: 1,
-      maxTotalQueries: 5,
-      maxAttemptsPerSlot: 5,
-      nowMs: 60_000,
-    });
-    const optimized = optimizeComputerRecommendationV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      queries: exact.queryPlan,
-      products: [],
-      telemetry: [{
-        queryId: exact.queryPlan.queries[0]?.queryId,
-        slotId: "slot-storage",
-        partType: "storage",
-        stage: "exact_model",
-        attempt: 1,
-        keyword: exact.queryPlan.queries[0]?.keyword ?? "",
-        provider: "pdd",
-        providerRawCount: 15,
-        structurallyValidCount: 15,
-        rejectedByCategory: 15,
-        rejectedByModel: 0,
-        rejectedByPrice: 0,
-        acceptedCount: 0,
-      }],
-      previousState: exact.state,
-      nowMs: 60_010,
-    });
-    const adaptive = scheduleComputerCommerceQueriesV4(fixture.blueprint, optimized.state, {
-      maxWaveQueries: 1,
-      maxTotalQueries: 5,
-      maxAttemptsPerSlot: 5,
-      nowMs: 60_020,
-    });
-
-    expect(adaptive.queryPlan.queries[0]).toMatchObject({
-      partType: "storage",
-      stage: "market_discovery",
-      keyword: "NVMe固态硬盘",
-    });
-  });
 
   it("rejects a USB external drive before it can enter the NVMe candidate pool", () => {
     const { blueprint, state } = makeSingleStorageBuild();
@@ -465,7 +473,7 @@ describe("computer advisor V4 structural policies", () => {
 
   it("rejects a Mini-ITX-only case for an ATX build before it can become a priced candidate", () => {
     const fixture = makeFullBuild();
-    const discovery = scheduleFullAttempt(fixture.blueprint, fixture.state, 4, 85_000);
+    const discovery = scheduleFullAttempt(fixture.blueprint, fixture.state, 1, 85_000);
     const query = discovery.queryPlan.queries.find((item) => item.partType === "case")!;
     const slot = fixture.blueprint.slots.find((item) => item.partType === "case")!;
     const result = verifyComputerCandidateV4({
@@ -484,96 +492,8 @@ describe("computer advisor V4 structural policies", () => {
     }
   });
 
-  it("drops phone, tablet, and laptop coolers during broad market discovery", () => {
-    const fixture = makeFullBuild();
-    const scheduled = scheduleFullAttempt(fixture.blueprint, fixture.state, 4, 85_000);
-    const coolerQuery = scheduled.queryPlan.queries.find((query) => query.partType === "cooler")!;
-    const clusters = discoverMarketClustersV4(fixture.blueprint, scheduled.queryPlan, [
-      makeProduct(coolerQuery, {
-        productId: "tablet-cooler",
-        name: "嘉华彩 45W 磁吸 iPad 平板半导体散热器 120帧",
-        price: 102,
-      }),
-      makeProduct(coolerQuery, {
-        productId: "laptop-cooler",
-        name: "绿巨能 V10 笔记本电脑外置涡轮散热器",
-        price: 209,
-      }),
-    ]);
 
-    expect(clusters).toEqual([]);
-  });
 
-  it("extracts the SSD model code instead of using brand and capacity as its identity", () => {
-    const fixture = makeFullBuild();
-    const scheduled = scheduleFullAttempt(fixture.blueprint, fixture.state, 4, 87_000);
-    const storageQuery = scheduled.queryPlan.queries.find((query) => query.partType === "storage")!;
-    const clusters = discoverMarketClustersV4(fixture.blueprint, scheduled.queryPlan, [
-      makeProduct(storageQuery, {
-        productId: "nv3-sample",
-        name: "金士顿 1TB 固态硬盘 M.2 NVMe PCIe 4.0 NV3 系列",
-        price: 720,
-      }),
-    ]);
-
-    expect(clusters).toHaveLength(1);
-    expect(clusters[0]?.identity.toLowerCase()).toBe("nv3");
-    expect(clusters[0]?.confirmationKeyword.toLowerCase()).toContain("nv3");
-    expect(clusters[0]?.confirmationKeyword).not.toContain("金士顿1tb");
-  });
-
-  it("treats a confirmed board-and-CPU bundle as one price covering two slots", () => {
-    const fixture = makeFullBuild();
-    const discoverySchedule = scheduleFullAttempt(fixture.blueprint, fixture.state, 4, 90_000);
-    const bundleDiscovery = discoverySchedule.queryPlan.queries.find((query) => query.partType === "cpu")!;
-    expect(bundleDiscovery.keyword).toContain("板U套装");
-    expect(bundleDiscovery.coveredSlotIds).toEqual(["slot-cpu", "slot-motherboard"]);
-    const sample = makeProduct(bundleDiscovery, {
-      productId: "bundle-sample",
-      name: "AMD Ryzen 5 7500F 搭 微星 B650M MORTAR WIFI 主板 板U套装",
-      price: 2_099,
-    });
-    const discovered = optimizeComputerRecommendationV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      queries: discoverySchedule.queryPlan,
-      products: [sample],
-      previousState: discoverySchedule.state,
-      nowMs: 90_010,
-    });
-    expect(discovered.state.coverage.pricing.verified).toBe(0);
-    expect(discovered.state.marketDiscoveries[0]?.coveredSlotIds)
-      .toEqual(["slot-cpu", "slot-motherboard"]);
-
-    const confirmationSchedule = scheduleComputerCommerceQueriesV4(fixture.blueprint, discovered.state, {
-      maxWaveQueries: 8,
-      maxTotalQueries: 40,
-      maxAttemptsPerSlot: 5,
-      wallClockLimitMs: 120_000,
-      nowMs: 90_020,
-    });
-    const bundleConfirmation = confirmationSchedule.queryPlan.queries.find((query) =>
-      query.stage === "market_confirmation" && query.coveredSlotIds.length === 2)!;
-    const confirmed = makeProduct(bundleConfirmation, {
-      productId: "bundle-confirmed",
-      name: "AMD Ryzen 5 7500F 搭 微星 B650M MORTAR WIFI 主板 板U套装",
-      price: 2_099,
-    });
-    const optimized = optimizeComputerRecommendationV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      queries: confirmationSchedule.queryPlan,
-      products: [confirmed],
-      previousState: confirmationSchedule.state,
-      nowMs: 90_030,
-    });
-
-    expect(optimized.state.selectedCandidates).toHaveLength(1);
-    expect(optimized.state.selectedCandidates[0]?.coveredSlotIds)
-      .toEqual(["slot-cpu", "slot-motherboard"]);
-    expect(optimized.state.coverage.pricing.verified).toBe(2);
-    expect(optimized.state.selectedSubtotal).toBe(2_099);
-  });
 
   it("keeps all eight technical rows when commerce returns zero products", () => {
     const fixture = makeFullBuild();
@@ -588,142 +508,18 @@ describe("computer advisor V4 structural policies", () => {
     expect(assembled.report.requiredSlotIds).toHaveLength(8);
     expect(assembled.report.slotMarkers).toHaveLength(8);
     expect((markdown.match(/<!-- v4-slot:/g) ?? [])).toHaveLength(8);
-    expect((markdown.match(/联盟推广商品池未命中/g) ?? [])).toHaveLength(8);
+    expect((markdown.match(/（未核价）/g) ?? [])).toHaveLength(8);
     for (const label of ["处理器", "散热器", "主板", "内存", "显卡", "存储", "电源", "机箱"]) {
       expect(markdown).toContain(`| ${label} |`);
     }
-    expect(markdown).toContain("本轮联盟推广商品核验覆盖：0/8");
-    expect(markdown).toContain("技术蓝图仍完整保留");
+    expect(markdown).toContain("已核价 0/8 项");
+    expect(markdown).toContain("表中保留计划型号");
     expect(markdown).not.toContain("待实时核价");
     expectNoUserVerificationHandoff(markdown);
   });
 
-  it("attributes empty pricing coverage to the alliance source instead of the user", () => {
-    const fixture = makeFullBuild();
-    const assembled = assembleComputerReportV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      state: {
-        ...fixture.state,
-        stopReason: "attempts_exhausted",
-        diagnostics: {
-          ...fixture.state.diagnostics,
-          telemetry: [
-            { keyword: "14600K", provider: "pdd", providerRawCount: 0, structurallyValidCount: 0, rejectedByCategory: 0, rejectedByModel: 0, rejectedByPrice: 0, acceptedCount: 0 },
-            { keyword: "sn580 1tb", provider: "pdd", providerRawCount: 15, structurallyValidCount: 15, rejectedByCategory: 15, rejectedByModel: 0, rejectedByPrice: 0, acceptedCount: 0 },
-          ],
-        },
-      },
-      products: [],
-    });
 
-    expect(assembled.report.markdown).toContain("供给源诊断：拼多多多多进宝推广商品池共执行 2 次查询");
-    expect(assembled.report.markdown).toContain("该接口不代表商城全站库存");
-    expect(assembled.report.markdown).toContain("当前缺口来自推广商品池，不转交用户核价");
-  });
 
-  it("shows cited public market prices separately from missing affiliate prices", () => {
-    const fixture = makeFullBuild();
-    const cpu = fixture.blueprint.slots.find((slot) => slot.partType === "cpu")!;
-    const assembled = assembleComputerReportV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      state: fixture.state,
-      products: [],
-      marketEvidence: [{
-        slotId: cpu.slotId,
-        partType: "cpu",
-        model: cpu.primaryModel,
-        query: `${cpu.primaryModel} 处理器 价格`,
-        minPrice: 999,
-        medianPrice: 1049,
-        maxPrice: 1099,
-        confidence: "multi_source",
-        samples: [
-          { price: 999, title: `${cpu.primaryModel} 报价`, url: "https://shop-a.example/cpu", capturedAt: "2026-08-12T12:00:00.000Z" },
-          { price: 1099, title: `${cpu.primaryModel} 价格`, url: "https://shop-b.example/cpu", capturedAt: "2026-08-12T12:00:00.000Z" },
-        ],
-      }],
-    });
-
-    expect(assembled.report.markdown).toContain("| 公开市场参考价 | 联盟推广商品 | 推广价 |");
-    expect(assembled.report.markdown).toContain("¥999–¥1,099（2 源）");
-    expect(assembled.report.markdown).toContain("[来源1](https://shop-a.example/cpu)");
-    expect(assembled.report.markdown).toContain("公开市场参考价覆盖：1/8");
-    expect(assembled.report.markdown).toContain("联盟推广商品池未命中");
-    expect(assembled.report.allowedLinks).toEqual(expect.arrayContaining([
-      "https://shop-a.example/cpu",
-      "https://shop-b.example/cpu",
-    ]));
-  });
-
-  it("reports only the verified subtotal for partial pricing without inventing a whole-build total", () => {
-    const fixture = makeFullBuild();
-    const discoverySchedule = scheduleFullAttempt(fixture.blueprint, fixture.state, 4, 100_000);
-    const discoveryQuery = discoverySchedule.queryPlan.queries.find((query) => query.partType === "storage")!;
-    const marketSample = makeProduct(discoveryQuery, {
-      productId: "market-nvme",
-      name: "西部数据 WD_BLACK SN770 1TB 固态硬盘 SSD NVMe M.2 内置",
-      price: 499,
-    });
-    const discovered = optimizeComputerRecommendationV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      queries: discoverySchedule.queryPlan,
-      products: [marketSample],
-      previousState: discoverySchedule.state,
-      maxNoProgressWaves: 2,
-      wallClockLimitMs: 120_000,
-      nowMs: 100_010,
-    });
-    expect(discovered.state.coverage.pricing.verified).toBe(0);
-    expect(discovered.state.marketDiscoveries).toHaveLength(1);
-    const confirmationSchedule = scheduleComputerCommerceQueriesV4(fixture.blueprint, discovered.state, {
-      maxWaveQueries: 8,
-      maxTotalQueries: 40,
-      maxAttemptsPerSlot: 5,
-      wallClockLimitMs: 120_000,
-      nowMs: 100_020,
-    });
-    const storageQuery = confirmationSchedule.queryPlan.queries.find((query) => query.partType === "storage")!;
-    expect(storageQuery.stage).toBe("market_confirmation");
-    const confirmedProduct = makeProduct(storageQuery, {
-      productId: "verified-nvme",
-      name: "西部数据 WD_BLACK SN770 1TB 固态硬盘 SSD NVMe M.2 内置",
-      price: 499,
-    });
-    const optimized = optimizeComputerRecommendationV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      queries: confirmationSchedule.queryPlan,
-      products: [confirmedProduct],
-      previousState: confirmationSchedule.state,
-      maxNoProgressWaves: 2,
-      wallClockLimitMs: 120_000,
-      nowMs: 100_030,
-    });
-    expect(optimized.state.coverage.pricing.verified).toBe(1);
-    const promoted = {
-      ...confirmedProduct,
-      promotionUrl: "https://mobile.yangkeduo.com/promotion/verified-nvme",
-    };
-    const assembled = assembleComputerReportV4({
-      requirements: fixture.requirements,
-      blueprint: fixture.blueprint,
-      state: optimized.state,
-      products: [promoted],
-    });
-    const markdown = assembled.report.markdown;
-
-    expect((markdown.match(/<!-- v4-slot:/g) ?? [])).toHaveLength(8);
-    expect((markdown.match(/联盟推广商品池未命中/g) ?? [])).toHaveLength(7);
-    expect(markdown).toContain("已核验商品小计");
-    expect(markdown).toContain("（1/8 个目标部件）");
-    expect(markdown).toContain("核价覆盖不完整，因此不推算整机总价，也不声称满足硬预算");
-    expect(markdown).not.toMatch(/整机总价[：:]\s*(?:¥|￥|CNY|\d)/i);
-    expect(markdown).toContain(promoted.promotionUrl);
-    expectNoUserVerificationHandoff(markdown);
-  });
 
   it("falls back to the deterministic baseline when polishing deletes rows, changes prices, adds URLs, or fails", () => {
     const fixture = makeFullBuild();
@@ -751,7 +547,7 @@ describe("computer advisor V4 structural policies", () => {
     ];
     for (const attempt of attempts) {
       expect(attempt.accepted).toBe(false);
-      expect(attempt.answer).toBe(baseline);
+      expect(attempt.answer).toBe(baseline.replace(/\s*<!-- v4-slot:[^>]+ -->/g, ""));
       expect(attempt.violations.length).toBeGreaterThan(0);
     }
     expect(attempts[0]?.violations).toEqual(expect.arrayContaining([

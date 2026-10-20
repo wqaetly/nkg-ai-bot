@@ -4,8 +4,25 @@ import { describe, expect, it } from "vitest";
 import { MarkdownContent } from "../src/MarkdownContent";
 import { ReasoningPanel } from "../src/ReasoningPanel";
 import { SearchReferencesPanel } from "../src/SearchReferencesPanel";
+import { ConversationFlowConfigDialog } from "../src/ConversationFlowConfigDialog";
+import { COMPUTER_CONFIG_FLOW } from "../src/builtinFlows";
+import { flowConfigurableVariables } from "../src/conversationFlowConfig";
 
 describe("chat response presentation", () => {
+  it("renders the marketplace selector and login action from the current computer Flow", () => {
+    const html = renderToStaticMarkup(createElement(ConversationFlowConfigDialog, {
+      flowName: "电脑配置顾问",
+      definitions: flowConfigurableVariables(COMPUTER_CONFIG_FLOW),
+      values: { COMPUTER_SHOPPING_PLATFORM: "jd" },
+      onCancel: () => {},
+      onSave: async () => {},
+    }));
+    expect(html).toContain("打开所选商城 / 登录");
+    expect(html).toContain("拼多多");
+    expect(html).toContain("淘宝");
+    expect(html).toContain('<option value="string:jd" selected="">京东</option>');
+  });
+
   it("renders GitHub-flavored Markdown without executing raw HTML", () => {
     const html = renderToStaticMarkup(createElement(MarkdownContent, {
       content: [

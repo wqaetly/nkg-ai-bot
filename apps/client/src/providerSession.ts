@@ -3,6 +3,8 @@ import { invoke } from "@tauri-apps/api/core";
 import {
   AFFILIATE_ENV_KEYS,
   PUBLIC_MARKET_SEARCH_ENV_KEYS,
+  checkSearchResponse,
+  SearchResponseError,
   createPddAccessToken,
   generatePddAuthorizationUrl,
   refreshPddAccessToken,
@@ -469,13 +471,13 @@ export class ProviderSession {
       }, options);
       const runOptions = context.flowId !== COMPUTER_CONFIG_FLOW_ID
         ? result.options
-        : await this.prepareCommerceRunOptions(vault, result.options);
+        : await this.prepareMarketSearchRunOptions(vault, result.options);
       this.hostedRunAuthorizations.set(runOptions, result.authorization.authorizationId);
       return runOptions;
     }
     const providerOptions = await withProviderEnvironment(selected, vault, options, model);
     if (context.flowId !== COMPUTER_CONFIG_FLOW_ID) return providerOptions;
-    return this.prepareCommerceRunOptions(vault, providerOptions);
+    return this.prepareMarketSearchRunOptions(vault, providerOptions);
   }
 
   async completeRunOptions(options: FlowInvokeOptions): Promise<void> {
@@ -1445,7 +1447,10 @@ export async function fetchSearxngResults(
     const detail = response.status === 401 ? "，请检查 API Key" : "";
     throw new Error(`SearXNG 搜索失败：HTTP ${response.status}${detail}`);
   }
-  const payload = await response.json() as unknown;
+  let payload: unknown;
+  try { payload = await response.json(); }
+  catch { throw new SearchResponseError("invalid_response", "搜索服务未返回有效 JSON，请检查服务配置。"); }
+  checkSearchResponse(payload);
   const rows = payload && typeof payload === "object"
     && Array.isArray((payload as { results?: unknown }).results)
     ? (payload as { results: unknown[] }).results
@@ -1471,7 +1476,7 @@ export async function fetchSearxngResults(
     });
     if (results.length >= maxResults) break;
   }
-  if (!results.length) throw new Error("SearXNG 返回成功，但没有可用的搜索结果");
+  if (!results.length) throw new SearchResponseError("invalid_response", "搜索返回的条目缺少有效标题或网页地址，无法使用。");
   return results;
 }
 

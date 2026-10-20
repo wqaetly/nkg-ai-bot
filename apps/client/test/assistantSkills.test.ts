@@ -13,6 +13,11 @@ import { COMPUTER_CONFIG_FLOW_ID, COMPUTER_CONFIG_FLOW_VERSION } from "../src/bu
 import type { DatabaseClient } from "../src/storage/database";
 
 describe("built-in Assistant Skills", () => {
+  it("versions the computer assistant with its Flow so existing immutable records cannot retain an old graph", () => {
+    expect(COMPUTER_CONFIG_ASSISTANT_VERSION).toBe(COMPUTER_CONFIG_FLOW_VERSION);
+    expect(COMPUTER_CONFIG_ASSISTANT_VERSION).not.toBe("4.4.0");
+  });
+
   it("seeds the general assistant and selectable computer configuration advisor", async () => {
     const execute = vi.fn(async () => ({ rowsAffected: 1 }));
     const database: DatabaseClient = {
@@ -55,6 +60,11 @@ describe("built-in Assistant Skills", () => {
       "4.2.2",
       "4.3.0",
       "4.3.1",
+      "4.4.0",
+      "4.5.0",
+      "4.6.0",
+      "4.7.0",
+      "4.7.1",
       expect.any(Number),
     ]);
     expect(argumentsByCall).toContainEqual([
@@ -107,10 +117,10 @@ describe("built-in Assistant Skills", () => {
 
   it("requires compatibility checks and evidence-aware pricing", () => {
     expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("兼容性");
-    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("联网搜索");
-    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("联网网页价格不得冒充核价结果");
-    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("不要编造来源、跑分、商品链接或优惠");
-    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("局部配件和升级只回答目标部件");
-    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("硬预算不得超出");
+    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("联网信息");
+    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("禁止用搜索摘要价");
+    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("不新增型号、价格或链接");
+    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("已有部件与排除项");
+    expect(COMPUTER_CONFIG_SYSTEM_PROMPT).toContain("保留已验证的预算内方案");
   });
 });

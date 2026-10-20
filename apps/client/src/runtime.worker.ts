@@ -14,6 +14,9 @@ import {
   createAffiliateCommerceNode,
   createComputerPromotionResolverNode,
   createPublicMarketSearchNode,
+  createComputerRevisionNodes,
+  createBrowserCommerceNode,
+  createComputerProductLinksNode,
 } from "@nkg-ai-bot/commerce-flow";
 import { createComputerAdvisorNodes } from "@nkg-ai-bot/commerce-flow/computer-advisor";
 import { createComputerAdvisorV4Nodes } from "@nkg-ai-bot/commerce-flow/computer-advisor-v4";
@@ -29,6 +32,9 @@ attachRuntimeWorker({
     createAffiliateCommerceNode(fetchImpl),
     createComputerPromotionResolverNode(fetchImpl),
     createPublicMarketSearchNode(fetchImpl),
+    ...createComputerRevisionNodes(fetchImpl),
+    createBrowserCommerceNode(fetchImpl),
+    createComputerProductLinksNode(),
     ...createComputerAdvisorNodes(),
     ...createComputerAdvisorV4Nodes(),
   ],

@@ -135,7 +135,8 @@ function requiredForNode(
 ): ProductCapability[] {
   const required = new Set<ProductCapability>();
   if (type === "http") required.add("network.http");
-  if (type === "affiliate_commerce" || type === "public_market_search") {
+  if (type === "browser_commerce") required.add("network.http");
+  if (type === "affiliate_commerce" || type === "public_market_search" || type === "computer_revision_search") {
     required.add("network.http");
     required.add("secret.read");
   }

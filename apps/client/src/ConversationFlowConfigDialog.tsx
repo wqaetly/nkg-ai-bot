@@ -1,4 +1,6 @@
 import { useMemo, useState } from "react";
+import { invoke, isTauri } from "@tauri-apps/api/core";
+import { SHOPPING_PLATFORM_VARIABLE } from "@nkg-ai-bot/commerce-flow";
 import type {
   FlowConfigurableVariable,
   FlowConfigurableVariableValue,
@@ -20,7 +22,7 @@ export function ConversationFlowConfigDialog({
   definitions: readonly FlowConfigurableVariable[];
   values: ConversationFlowVariables;
   onCancel: () => void;
-  onSave: (values: ConversationFlowVariables) => Promise<void>;
+  onSave: (values: ConversationFlowVariables, close?: boolean) => Promise<void>;
 }) {
   const initial = useMemo(
     () => normalizeConversationFlowVariables(definitions, values),
@@ -29,7 +31,32 @@ export function ConversationFlowConfigDialog({
   const [draft, setDraft] = useState<ConversationFlowVariables>(initial);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState("");
+  const [openingShop, setOpeningShop] = useState(false);
+  const [shopNotice, setShopNotice] = useState("");
   const overrideCount = Object.keys(draft).length;
+  const shopping = definitions.find((definition) => definition.name === SHOPPING_PLATFORM_VARIABLE);
+
+  async function openShop() {
+    setError("");
+    setShopNotice("");
+    if (!isTauri()) {
+      setError("请在桌面客户端中打开商城登录窗口。");
+      return;
+    }
+    setOpeningShop(true);
+    try {
+      const provider = draft[SHOPPING_PLATFORM_VARIABLE] ?? shopping?.defaultValue ?? "pdd";
+      await onSave(normalizeConversationFlowVariables(definitions, {
+        ...draft, [SHOPPING_PLATFORM_VARIABLE]: provider,
+      }), false);
+      await invoke("commerce_browser_login", { provider });
+      setShopNotice("所选商城已保存，商城窗口已打开。完成登录后返回对话发送推荐请求。");
+    } catch (cause: unknown) {
+      setError(`商城窗口打开失败：${cause instanceof Error ? cause.message : String(cause)}`);
+    } finally {
+      setOpeningShop(false);
+    }
+  }
 
   async function save() {
     setSaving(true);
@@ -74,6 +101,11 @@ export function ConversationFlowConfigDialog({
           />
         ))}
       </div>
+      {shopping ? <div className="conversation-flow-config-field">
+        <p>打开商城时自动保存平台选择。关闭商城窗口会在本机记住登录，临时登录状态最多保留 7 天；商城要求验证或登录失效时需重新登录。</p>
+        <button className="ghost-button" disabled={saving || openingShop} type="button" onClick={() => void openShop()}>{openingShop ? "正在打开商城…" : "打开所选商城 / 登录"}</button>
+        {shopNotice ? <small role="status">{shopNotice}</small> : null}
+      </div> : null}
       {error ? <p className="conversation-flow-config-error">{error}</p> : null}
       <footer>
         <button

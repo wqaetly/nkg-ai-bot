@@ -464,6 +464,25 @@ describe("ProviderSession", () => {
     expect((error as Error).message).not.toContain("never-print-this");
   });
 
+  it.each([
+    [{ results: [], unresponsive_engines: [["google", "CAPTCHA https://private/?key=SECRET"], ["brave", "请求过于频繁"]] }, "upstream_unavailable", "验证码、限流"],
+    [{ results: [] }, "no_results", "关键词"],
+    [{ message: "SECRET" }, "invalid_response", "格式异常"],
+    [{ results: [{ title: "bad", url: "javascript:SECRET" }] }, "invalid_response", "网页地址"],
+  ])("distinguishes empty results, upstream failures and invalid responses without echoing payloads", async (payload, code, message) => {
+    const error = await fetchSearxngResults("https://search.example.test", "never-print-this", "AMD 7500F",
+      async () => Response.json(payload)).catch((cause: unknown) => cause);
+    expect(error).toMatchObject({ code, message: expect.stringContaining(String(message)) });
+    expect(String(error)).not.toMatch(/SECRET|private|never-print-this/);
+  });
+
+  it("keeps valid results when only some upstream engines fail", async () => {
+    const results = await fetchSearxngResults("https://search.example.test", "key", "AMD 7500F", async () => Response.json({
+      results: [{ title: "AMD", url: "https://example.test/cpu" }], unresponsive_engines: [["google", "CAPTCHA"]],
+    }));
+    expect(results).toHaveLength(1);
+  });
+
   it("stores affiliate credentials in the vault and uses them for PDD search and promotion", async () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
@@ -545,22 +564,17 @@ describe("ProviderSession", () => {
     expect(computerOptions).toMatchObject({
         envOverrides: {
           variables: {
-            AFFILIATE_COMMERCE_ENABLED: true,
-            AFFILIATE_COMMERCE_PROVIDER: "pdd",
-            AFFILIATE_PDD_PID: "100_200",
             PUBLIC_MARKET_SEARCH_ENABLED: true,
             PUBLIC_MARKET_SEARCH_MODE: "searxng",
             PUBLIC_MARKET_SEARCH_BASE_URL: "https://search.example.test",
           },
           secrets: {
-            AFFILIATE_PDD_CLIENT_ID: "pdd-client-id",
-            AFFILIATE_PDD_CLIENT_SECRET: "pdd-client-secret",
-            AFFILIATE_PDD_ACCESS_TOKEN: "pdd-access-token",
             PUBLIC_MARKET_SEARCH_API_KEY: "market-search-secret",
           },
         },
       });
     const ordinaryOptions = await session.createRunOptions({}, { flowId: "builtin_chat" });
+    expect(computerOptions.envOverrides?.secrets).not.toHaveProperty("AFFILIATE_PDD_CLIENT_SECRET");
     expect(ordinaryOptions.envOverrides?.secrets).not.toHaveProperty("AFFILIATE_PDD_CLIENT_SECRET");
     expect(products).toEqual([expect.objectContaining({
       name: "七彩虹 RTX 4060 8GB 游戏显卡",
@@ -569,7 +583,7 @@ describe("ProviderSession", () => {
     })]);
   });
 
-  it("blocks computer advisor runs until affiliate credentials are saved", async () => {
+  it("allows computer advisor runs without affiliate credentials", async () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
     const session = new ProviderSession(store, async () => vault, vi.fn());
@@ -584,7 +598,7 @@ describe("ProviderSession", () => {
     });
 
     await expect(session.createRunOptions({}, { flowId: "computer_config_advisor" }))
-      .rejects.toThrow("尚未完成安全初始化");
+      .resolves.toMatchObject({ envOverrides: { secrets: { LLM_API_KEY: "model-secret" } } });
   });
 
   it("moves a one-time PDD bootstrap directly into Stronghold-backed storage", async () => {
@@ -709,7 +723,7 @@ describe("ProviderSession", () => {
     });
   });
 
-  it("refreshes an expiring PDD OAuth token before a computer advisor run", async () => {
+  it("does not refresh obsolete affiliate credentials for browser shopping", async () => {
     const vault = new MemoryVault();
     const store = new MemoryStore();
     store.commerceConfig = {
@@ -753,11 +767,9 @@ describe("ProviderSession", () => {
 
     const options = await session.createRunOptions({}, { flowId: "computer_config_advisor" });
 
-    expect(request).toHaveBeenCalledTimes(1);
-    expect(vault.values.get("commerce:pdd:access-token")).toBe("fresh-access-token");
-    expect(vault.values.get("commerce:pdd:refresh-token")).toBe("fresh-refresh-token");
-    expect(store.commerceConfig?.pdd?.accessTokenExpiresAt).not.toBe("2020-01-01T00:00:00.000Z");
-    expect(options.envOverrides?.secrets?.AFFILIATE_PDD_ACCESS_TOKEN).toBe("fresh-access-token");
+    expect(request).not.toHaveBeenCalled();
+    expect(vault.values.get("commerce:pdd:access-token")).toBe("expired-access-token");
+    expect(options.envOverrides?.secrets).not.toHaveProperty("AFFILIATE_PDD_ACCESS_TOKEN");
   });
 
   it("generates images with an enabled model and the selected provider secret", async () => {

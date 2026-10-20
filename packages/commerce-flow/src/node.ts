@@ -350,7 +350,7 @@ function readProducts(value: unknown): AffiliateProduct[] {
   ));
 }
 
-function readQueries(value: unknown, maxQueries: number): AffiliateProductQuery[] {
+export function readQueries(value: unknown, maxQueries: number): AffiliateProductQuery[] {
   const source = value && typeof value === "object" && !Array.isArray(value)
     ? (value as { queries?: unknown }).queries
     : value;

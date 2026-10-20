@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { SearchResponseError } from "@nkg-ai-bot/commerce-flow";
 import type { NodeEvent } from "@nkg-ai-bot/runtime-router";
 import { buildChatPrompt, LocalChatSession, type ChatStore } from "../src/chatSession";
 import type {
@@ -767,6 +768,55 @@ describe("LocalChatSession", () => {
         url: "https://mirror.example.test/releases/1",
       })]),
     }));
+  });
+
+  it("saves pre-Flow search failures for retry and stops extra queries on upstream blocking", async () => {
+    const store = memoryStore();
+    store.finishAssistantRun = vi.fn(store.finishAssistantRun);
+    const runtime = { stream: vi.fn(async function* (flowId: string) {
+      yield event("run_finished", { output: flowId === "builtin_web_search_planner"
+        ? '{"queries":["AMD 7500F","8000元配置","2K游戏"]}' : "已联网回答" });
+    }) };
+    let recovered = false;
+    const search = { searchWeb: vi.fn(async () => {
+      if (!recovered) throw new SearchResponseError("upstream_unavailable", "搜索上游暂不可用（验证码、限流）");
+      return [{ title: "AMD", url: "https://example.test/cpu", content: "AM5" }];
+    }) };
+    const session = new LocalChatSession("c1", runtime, store, search);
+    const failed = await session.send("8000元推荐电脑", { webSearch: true });
+    expect(failed.failed).toBe(true);
+    expect(failed.assistant.content).toMatchObject({ failed: true, text: expect.stringContaining("验证码、限流") });
+    expect(search.searchWeb).toHaveBeenCalledTimes(1);
+    expect(runtime.stream).toHaveBeenCalledTimes(1); // No unresearched hardware recommendation.
+    expect(store.finishAssistantRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ status: "failed" }));
+    recovered = true;
+    const retried = await session.regenerate(failed.assistant.id, { webSearch: true });
+    expect(retried.failed).toBeUndefined();
+    expect(retried.assistant.id).toBe(failed.assistant.id);
+    expect(store.messages).toHaveLength(2);
+  });
+
+  it("tries the next planned query for a genuine empty result", async () => {
+    const runtime = { stream: vi.fn(async function* (flowId: string) {
+      yield event("run_finished", { output: flowId === "builtin_web_search_planner" ? '{"queries":["narrow query","broad query"]}' : "回答" });
+    }) };
+    const search = { searchWeb: vi.fn(async (query: string) => {
+      if (query === "narrow query") throw new SearchResponseError("no_results", "无结果");
+      return [{ title: "Source", url: "https://example.test", content: "Evidence" }];
+    }) };
+    const result = await new LocalChatSession("c1", runtime, memoryStore(), search).send("帮我查询", { webSearch: true });
+    expect(result.failed).toBeUndefined();
+    expect(search.searchWeb).toHaveBeenCalledTimes(2);
+  });
+
+  it("records cancellation during search without creating a failure reply", async () => {
+    const store = memoryStore();
+    store.finishAssistantRun = vi.fn(store.finishAssistantRun);
+    const runtime = { stream: vi.fn(async function* () { yield event("run_finished", { output: '{"queries":["query"]}' }); }) };
+    const search = { searchWeb: vi.fn(async () => { throw new DOMException("cancelled", "AbortError"); }) };
+    await expect(new LocalChatSession("c1", runtime, store, search).send("帮我查询", { webSearch: true })).rejects.toMatchObject({ name: "AbortError" });
+    expect(store.messages).toHaveLength(1);
+    expect(store.finishAssistantRun).toHaveBeenCalledWith(expect.any(String), expect.objectContaining({ status: "cancelled" }));
   });
 
   it("skips SearXNG when the planner decides the request needs no external facts", async () => {

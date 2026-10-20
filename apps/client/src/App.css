@@ -1553,6 +1553,8 @@ svg { width: 20px; height: 20px; fill: none; stroke: currentColor; stroke-lineca
 /* Flow-owned, conversation-scoped Runtime variables. */
 .chat-header-left { flex: 1 1 auto; overflow: hidden; }
 .chat-header-actions { flex: 0 0 auto; display: flex; align-items: center; gap: 7px; margin-left: 10px; }
+.chat-shop-login-button { height: 32px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; color: var(--accent-strong); background: var(--accent-soft); font: inherit; font-size: 11px; white-space: nowrap; cursor: pointer; }
+.chat-shop-login-button:disabled { opacity: .45; cursor: default; }
 .chat-flow-config-button { position: relative; width: 32px; height: 32px; display: grid; place-items: center; padding: 0; border: 1px solid var(--border); border-radius: 8px; color: var(--text-secondary); background: color-mix(in srgb, var(--surface) 84%, transparent); cursor: pointer; transition: border-color .16s, color .16s, background .16s, transform .16s; }
 .chat-flow-config-button:hover:not(:disabled) { border-color: color-mix(in srgb, var(--accent) 48%, var(--border)); color: var(--accent); background: var(--accent-soft); transform: translateY(-1px); }
 .chat-flow-config-button:disabled { color: var(--text-tertiary); opacity: .42; cursor: not-allowed; }

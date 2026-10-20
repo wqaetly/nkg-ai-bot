@@ -43,11 +43,11 @@ describe("Flow capability policy", () => {
     expect(listener).toHaveBeenCalledTimes(2);
   });
 
-  it("declares affiliate commerce as a network and run-secret node", () => {
+  it.each(["affiliate_commerce", "public_market_search", "computer_revision_search"])("declares %s as a network and run-secret node", (type) => {
     const report = analyzeFlowCapabilities({
       id: "computer_config_advisor",
       version: "2.0.0",
-      nodes: [{ id: "affiliate_products", type: "affiliate_commerce", config: {} }],
+      nodes: [{ id: "affiliate_products", type, config: {} }],
     }, "android");
 
     expect(report.required).toEqual(["network.http", "secret.read"]);

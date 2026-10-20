@@ -68,18 +68,20 @@ describe("built-in Flow catalog", () => {
       }),
     ]);
     const computerNodeIds = COMPUTER_CONFIG_FLOW.nodes.map((node) => node.id);
-    expect(COMPUTER_CONFIG_FLOW_VERSION).toBe("4.4.0");
+    expect(COMPUTER_CONFIG_FLOW_VERSION).toBe("4.7.2");
     expect(computerNodeIds).toEqual(expect.arrayContaining([
       "requirement_policy_v2",
       "blueprint_guard",
-      "public_market_search",
+      "revision_search",
+      "revision_planner",
+      "revision_guard",
       "commerce_loop_begin",
       "query_scheduler_loop",
-      "affiliate_discovery_loop",
+      "product_search_loop",
       "optimizer_v2_loop",
       "commerce_loop_end",
       "selection_merge",
-      "promotion_resolver",
+      "product_links",
       "commerce_report_assembler",
       "commerce_report_guard",
       "final_answer_merge",
@@ -90,19 +92,19 @@ describe("built-in Flow catalog", () => {
       .toHaveLength(1);
     expect(COMPUTER_CONFIG_FLOW.nodes.filter((node) => node.type === "computer_recommendation_optimizer_v2"))
       .toHaveLength(1);
-    expect(COMPUTER_CONFIG_FLOW.nodes.filter((node) => node.type === "affiliate_commerce"))
+    expect(COMPUTER_CONFIG_FLOW.nodes.filter((node) => node.type === "browser_commerce"))
       .toHaveLength(1);
     expect(COMPUTER_CONFIG_FLOW.nodes.filter((node) => node.type === "public_market_search"))
-      .toHaveLength(1);
-    expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "affiliate_discovery_loop"))
+      .toHaveLength(0);
+    expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "product_search_loop"))
       .toMatchObject({
-        type: "affiliate_commerce",
-        config: { maxQueries: 4, concurrency: 4, resolvePromotion: false },
+        type: "browser_commerce",
+        config: { maxQueries: 1 },
       });
     expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "query_scheduler_loop"))
       .toMatchObject({
         type: "commerce_query_scheduler",
-        config: { maxWaveQueries: 4, maxTotalQueries: 40, maxAttemptsPerSlot: 5 },
+        config: { maxWaveQueries: 1, maxTotalQueries: 32, maxAttemptsPerSlot: 3 },
       });
     expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "requirement_planner"))
       .toMatchObject({ config: {
@@ -113,7 +115,7 @@ describe("built-in Flow catalog", () => {
         runtimeTimeoutMs: 120000,
       } });
     expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "commerce_loop_begin"))
-      .toMatchObject({ type: "loop_begin", config: { maxIterations: 10, timeoutMs: 90000 } });
+      .toMatchObject({ type: "loop_begin", config: { maxIterations: 32, timeoutMs: 480000 } });
     expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "commerce_loop_end"))
       .toMatchObject({ type: "loop_end", config: { condition: "nextState.continue == true" } });
     expect(COMPUTER_CONFIG_FLOW.nodes.find((node) => node.id === "direct_model"))
@@ -133,6 +135,9 @@ describe("built-in Flow catalog", () => {
           expect.objectContaining({ value: 32000 }),
         ]),
       }),
+      expect.objectContaining({ name: "COMPUTER_SHOPPING_PLATFORM", type: "select", options: [
+        { label: "拼多多", value: "pdd" }, { label: "京东", value: "jd" }, { label: "淘宝", value: "taobao" },
+      ] }),
     ]);
   });
 

@@ -14,6 +14,11 @@ import {
   createAffiliateCommerceNode,
   createComputerPromotionResolverNode,
   createPublicMarketSearchNode,
+  createComputerRevisionNodes,
+  createBrowserCommerceNode,
+  createComputerProductLinksNode,
+  BROWSER_COMMERCE_ENDPOINT,
+  SHOPPING_PLATFORM_VARIABLE,
 } from "@nkg-ai-bot/commerce-flow";
 import { createComputerAdvisorNodes } from "@nkg-ai-bot/commerce-flow/computer-advisor";
 import { createComputerAdvisorV4Nodes } from "@nkg-ai-bot/commerce-flow/computer-advisor-v4";
@@ -52,17 +57,15 @@ describe("computer commerce Flow V4", () => {
     expect(prompts[1]).toContain("电脑技术蓝图规划器");
     expect(request).not.toHaveBeenCalled();
     expectCompleteTowerReport(result.output);
-    expect(result.output).toContain("本轮联盟推广商品核验覆盖：0/8");
-    expect(result.output).toContain("技术蓝图仍完整保留");
-    expect(result.output).toContain("本轮按需求策略不调用实时商品服务");
+    expect(result.output).toContain("已核价 0/8 项");
+    expect(result.output).toContain("表中保留计划型号");
+    expect(result.output).toContain("总价：暂无法计算");
     expect(result.output).not.toContain("用户总预算");
   });
 
   it("bounds zero-result commerce and still reports every full-build slot", async () => {
     const prompts: string[] = [];
-    const request = vi.fn(async () => jsonResponse({
-      goods_search_response: { search_id: "empty-search", goods_list: [] },
-    }));
+    const request = vi.fn(async () => jsonResponse({ status: "empty", products: [] }));
     const llmProvider = createTaskAwareLlm(prompts, {
       requirement: fullBuildRequirement(8_000),
       blueprint: emptyBlueprint("diy_full"),
@@ -77,19 +80,16 @@ describe("computer commerce Flow V4", () => {
     expect(prompts.every((prompt) =>
       prompt.includes("电脑购买需求规格化器") || prompt.includes("电脑技术蓝图规划器"),
     )).toBe(true);
-    const methods = requestedPddMethods(request);
-    expect(methods.length).toBeGreaterThan(0);
-    expect(methods.length).toBeLessThanOrEqual(40);
-    expect(methods.every((method) => method === "pdd.ddk.oauth.goods.search")).toBe(true);
-    expect(methods).not.toContain("pdd.ddk.oauth.goods.prom.url.generate");
+    expect(request.mock.calls.length).toBeGreaterThan(0);
+    expect(request.mock.calls.length).toBeLessThanOrEqual(24);
     expectCompleteTowerReport(result.output);
-    expect(result.output).toContain("本轮联盟推广商品核验覆盖：0/8");
-    expect(result.output).toContain("未生成任何商品链接");
-    expect(result.output).toContain("未命中槽位已完成市场泛搜");
-    expect(result.output).toContain("当前缺口来自推广商品池，不转交用户核价");
+    expect(result.output).toContain("已核价 0/8 项");
+    expect(result.output).toContain("商品核价未完成");
+    expect(result.output).toContain("总价：暂无法计算");
+    expect(result.output).toContain("## 总结与建议");
   });
 
-  it("keeps public market price ranges when the affiliate pool returns no products", async () => {
+  it("uses fresh search for replacement planning but never treats snippet prices as quotes", async () => {
     const request = vi.fn(async (input: RequestInfo | URL) => {
       const url = new URL(String(input));
       if (url.hostname === "search.example.test") {
@@ -100,7 +100,7 @@ describe("computer commerce Flow V4", () => {
           url: `https://prices.example.test/${encodeURIComponent(query)}`,
         }] });
       }
-      return jsonResponse({ goods_search_response: { goods_list: [] } });
+      return jsonResponse({ status: "empty", products: [] });
     });
     const runtime = await createComputerFlowRuntime(createTaskAwareLlm([], {
       requirement: fullBuildRequirement(8_000),
@@ -110,66 +110,115 @@ describe("computer commerce Flow V4", () => {
     const result = await invokeComputerFlow(runtime, "预算 8000 元，只要主机，2K 游戏", true, true);
 
     expect(result.succeeded).toBe(true);
-    expect(result.output).toContain("公开市场参考价覆盖：8/8");
-    expect(result.output).toContain("公开市场逐槽参考合计：¥7,992–¥7,992");
-    expect(result.output).toContain("联盟推广商品池未命中");
-    expect(result.output).toContain("[来源1](https://prices.example.test/");
+    expect(request.mock.calls.some((call) => String(call[0]).startsWith("https://search.example.test"))).toBe(true);
+    expect(result.output).not.toContain("¥999");
+    expect(result.output).not.toContain("公开市场");
+    expect(result.output).toContain("总价：暂无法计算");
   });
 
-  it("searches the exact technical model and resolves a link only for the selected product", async () => {
-    const prompts: string[] = [];
-    const request = vi.fn(async (input: string | URL | Request) => {
-      const method = new URL(String(input)).searchParams.get("type");
-      if (method === "pdd.ddk.oauth.goods.search") {
-        return jsonResponse({
-          goods_search_response: {
-            search_id: "gpu-search",
-            goods_list: [{
-              goods_name: "七彩虹 RTX 4060 8GB 游戏显卡",
-              goods_sign: "gpu-selected",
-              min_group_price: 299_900,
-              has_coupon: false,
-              mall_name: "品牌旗舰店",
-              merchant_type: 3,
-            }],
-          },
-        });
-      }
-      if (method === "pdd.ddk.oauth.goods.prom.url.generate") {
-        return jsonResponse({
-          goods_promotion_url_generate_response: {
-            goods_promotion_url_list: [{ short_url: "https://p.pinduoduo.com/v4-selected" }],
-          },
-        });
-      }
-      return new Response("unexpected affiliate method", { status: 500 });
+  it.each([
+    ["pdd", "https://mobile.yangkeduo.com/goods.html?goods_id=123"],
+    ["jd", "https://item.jd.com/123.html"],
+    ["taobao", "https://item.taobao.com/item.htm?id=123"],
+  ])("collects %s details and delivers a direct product link without affiliate credentials", async (provider, url) => {
+    const calls: Array<Record<string, unknown>> = [];
+    const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      expect(String(input)).toBe(BROWSER_COMMERCE_ENDPOINT);
+      const body = JSON.parse(String(init?.body));
+      calls.push(body);
+      expect(body.provider).toBe(provider);
+      return jsonResponse({ status: "ok", products: [{ title: "七彩虹 RTX 4060 8GB 游戏显卡", price: body.url ? 2999 : null, url }] });
     });
-    const llmProvider = createTaskAwareLlm(prompts, {
-      requirement: singleGpuRequirement(3_500),
-      blueprint: singleGpuBlueprint(),
-    });
-    const runtime = await createComputerFlowRuntime(llmProvider, request);
-
-    const result = await invokeComputerFlow(runtime, "预算 3500 元，只推荐一张适合 2K 游戏的 RTX 4060 显卡", true);
-
+    const runtime = await createComputerFlowRuntime(createTaskAwareLlm([], {
+      requirement: singleGpuRequirement(3500), blueprint: singleGpuBlueprint(),
+    }), request);
+    const result = await invokeComputerFlow(runtime, "预算 3500，只推荐 RTX 4060 显卡", false, false, provider);
     expect(result.error).toBeUndefined();
     expect(result.succeeded).toBe(true);
-    expect(prompts).toHaveLength(2);
-    expect(requestedPddMethods(request)).toEqual([
-      "pdd.ddk.oauth.goods.search",
-      "pdd.ddk.oauth.goods.prom.url.generate",
-    ]);
-    const exactModelUrl = new URL(String(request.mock.calls[0]?.[0]));
-    expect(exactModelUrl.searchParams.has("range_list")).toBe(false);
-    expect(exactModelUrl.searchParams.get("keyword")?.toLowerCase()).toContain("rtx 4060");
-    expect(exactModelUrl.searchParams.get("keyword")).not.toBe("独立显卡");
-    const promotionUrl = new URL(String(request.mock.calls[1]?.[0]));
-    expect(promotionUrl.searchParams.get("search_id")).toBe("gpu-search");
-    expect(result.output).toContain("七彩虹 RTX 4060 8GB 游戏显卡");
+    expect(calls).toHaveLength(2); // Search is disabled: do not silently change models.
+    expect(calls[0]?.keyword).toMatch(/4060/);
+    expect(calls[1]?.url).toBe(url);
+    expect(result.output).toContain("[直达](" + url + ")");
     expect(result.output).toContain("¥2,999");
-    expect(result.output).toContain("[推广链接](https://p.pinduoduo.com/v4-selected)");
-    expect(result.output.match(/<!-- v4-slot:/g)).toHaveLength(1);
-    expectNoUserVerification(result.output);
+    expect(result.output).toContain("**总价：¥2,999**");
+    expect(result.output).toContain("结算价格以所选规格");
+    expect(result.output).not.toContain("推广链接");
+  });
+
+  it.each(["login_required", "verification_required", "parser_unmatched"])("stops %s instead of repeatedly searching or losing the blueprint", async (status) => {
+    const request = vi.fn(async () => jsonResponse({ status, products: [] }));
+    const runtime = await createComputerFlowRuntime(createTaskAwareLlm([], {
+      requirement: fullBuildRequirement(8000), blueprint: emptyBlueprint("diy_full"),
+    }), request);
+    const result = await invokeComputerFlow(runtime, "预算8000配整机", false);
+    expect(result.succeeded).toBe(true);
+    expect(request).toHaveBeenCalledTimes(1);
+    expectCompleteTowerReport(result.output);
+    expect(result.output).toContain("商城采集暂不可用");
+  });
+
+  it.each([3400, 7000])("rechecks an upgrade at %s and renders the best affordable combination", async (upgradePrice) => {
+    const keywords: string[] = [];
+    const request = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(_input).startsWith("https://search.example.test")) return jsonResponse({ results: [{ title: "RTX 4070 12GB 升级性能", content: "RTX 4070 适合游戏", url: "https://review.example.test/4070" }] });
+      const body = JSON.parse(String(init?.body));
+      if (body.keyword) keywords.push(body.keyword);
+      const upgrade = body.url ? body.url.includes("4070") : body.keyword.includes("4070");
+      return jsonResponse({ status: "ok", products: [{ title: upgrade ? "七彩虹 RTX 4070 12GB 显卡" : "七彩虹 RTX 4060 8GB 显卡",
+        price: upgrade ? upgradePrice : 2999, url: `https://item.jd.com/${upgrade ? "4070" : "4060"}.html` }] });
+    });
+    const runtime = await createComputerFlowRuntime(createTaskAwareLlm([], {
+      requirement: singleGpuRequirement(3500), blueprint: singleGpuBlueprint(),
+      revisions: [{ model: "RTX 4070 12GB", sources: ["https://review.example.test/4070"], reason: "预算内升级" }],
+    }), request);
+    const result = await invokeComputerFlow(runtime, "预算3500元，给我显卡推荐", false, true, "jd");
+    expect(result.succeeded).toBe(true);
+    expect(keywords).toEqual(["RTX 4060", "RTX 4070"]);
+    expect(result.output).toContain(upgradePrice <= 3500 ? "**总价：¥3,400**" : "**总价：¥2,999**");
+    expect(result.output).not.toContain("¥7,000");
+    expect(result.output).not.toContain("v4-slot:");
+    expect(String(result.output).match(/^## /gm)).toHaveLength(2);
+  });
+
+  it("researches new models and reprices two expensive parts until the whole build fits the budget", async () => {
+    const sequence: string[] = [];
+    const models = [
+      { title: "RTX 4070 12GB 显卡", price: 6500, id: "4070" },
+      { title: "金百达 银爵 DDR5 6000 32GB 内存", price: 2500, id: "32" },
+      { title: "RTX 4060 Ti 16GB 显卡", price: 6000, id: "4060" },
+      { title: "光威 天策 DDR5 6000 32GB 内存", price: 1800, id: "33" },
+    ];
+    const request = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      if (String(input).startsWith("https://search.example.test")) {
+        sequence.push("web");
+        return jsonResponse({ results: models.slice(2).map((item) => ({ title: item.title, content: "同平台性能与价格比较", url: `https://review.example.test/${item.id}` })) });
+      }
+      const body = JSON.parse(String(init?.body));
+      const item = body.url ? models.find((item) => body.url === `https://item.jd.com/${item.id}.html`)!
+        : models.find((item) => body.keyword.includes("4060") ? item.id === "4060" : body.keyword.includes("4070") ? item.id === "4070" : body.keyword.includes("光威") ? item.id === "33" : item.id === "32")!;
+      if (body.keyword) sequence.push(item.id);
+      return jsonResponse({ status: "ok", products: [{ ...item, url: `https://item.jd.com/${item.id}.html` }] });
+    });
+    const prompts: string[] = [];
+    const runtime = await createComputerFlowRuntime(createTaskAwareLlm(prompts, {
+      requirement: { ...singleGpuRequirement(8000), targetParts: ["gpu", "memory"] },
+      blueprint: { route: "parts", slots: [
+        { partType: "gpu", primaryModel: "RTX 4070 12GB", utilityWeight: 30, requiredSpecs: { vramGB: 12 }, alternatives: [] },
+        { partType: "memory", primaryModel: "金百达 银爵 DDR5 6000 32GB", utilityWeight: 12, requiredSpecs: { memoryType: "DDR5", capacityGB: 32 }, alternatives: [] },
+      ] },
+      revisions: [
+        { model: "RTX 4060 Ti 16GB", sources: ["https://review.example.test/4060"], reason: "先降低显卡档位节省500元" },
+        { model: "光威 天策 DDR5 6000 32GB", sources: ["https://review.example.test/33"], reason: "保留容量并更换低溢价内存" },
+      ],
+    }), request);
+    const result = await invokeComputerFlow(runtime, "8000元升级显卡和内存，其他部件已有", false, true, "jd");
+    expect(result.succeeded).toBe(true);
+    expect(sequence).toEqual(["4070", "32", "web", "web", "4060", "web", "web", "33"]);
+    expect(prompts.filter((prompt) => prompt.includes("电脑配置替代分析器"))).toHaveLength(2);
+    expect(result.output).toContain("**总价：¥7,800**");
+    expect(result.output).toContain("光威 天策");
+    expect(result.output).not.toContain("RTX 4070");
+    expect(result.output).not.toContain("v4-slot:");
   });
 
   it.each([
@@ -206,6 +255,7 @@ function createTaskAwareLlm(
     requirement: unknown;
     blueprint: unknown;
     fail?: "requirement" | "blueprint";
+    revisions?: unknown[];
   },
 ): LlmProvider {
   return {
@@ -219,6 +269,7 @@ function createTaskAwareLlm(
         if (responses.fail === "blueprint") throw new Error("blueprint planner unavailable");
         return { text: JSON.stringify(responses.blueprint) };
       }
+      if (completion.prompt.includes("电脑配置替代分析器")) return { text: JSON.stringify(responses.revisions?.shift() ?? null) };
       throw new Error(`unexpected unrestricted LLM task: ${completion.prompt.slice(0, 120)}`);
     },
   };
@@ -232,9 +283,12 @@ async function createComputerFlowRuntime(
     llmProvider,
     fetch: request,
     nodes: [
+      createBrowserCommerceNode(request),
+      createComputerProductLinksNode(),
       createAffiliateCommerceNode(request),
       createComputerPromotionResolverNode(request),
       createPublicMarketSearchNode(request),
+      ...createComputerRevisionNodes(request),
       ...createComputerAdvisorNodes(),
       ...createComputerAdvisorV4Nodes(),
     ],
@@ -256,6 +310,7 @@ async function invokeComputerFlow(
   input: string,
   commerceEnabled: boolean,
   marketSearchEnabled = false,
+  shoppingPlatform = "pdd",
 ) {
   return runtime.invocationRouter.invoke({
     flowId: COMPUTER_CONFIG_FLOW_ID,
@@ -264,6 +319,7 @@ async function invokeComputerFlow(
     variables: new InMemoryVariableStore([
       { name: "LLM_BASE_URL", value: "https://model.example.test/v1" },
       { name: "LLM_DEFAULT_MODEL", value: "test-model" },
+      { name: SHOPPING_PLATFORM_VARIABLE, value: shoppingPlatform },
       { name: AFFILIATE_ENV_KEYS.enabled, value: commerceEnabled },
       { name: AFFILIATE_ENV_KEYS.pddPid, value: "100_200" },
       { name: PUBLIC_MARKET_SEARCH_ENV_KEYS.enabled, value: marketSearchEnabled },
@@ -272,9 +328,6 @@ async function invokeComputerFlow(
     ]),
     secrets: new InMemoryVariableStore([
       { name: "LLM_API_KEY", value: "model-secret" },
-      { name: AFFILIATE_ENV_KEYS.pddClientId, value: "pdd-client" },
-      { name: AFFILIATE_ENV_KEYS.pddClientSecret, value: "pdd-secret" },
-      { name: AFFILIATE_ENV_KEYS.pddAccessToken, value: "pdd-access-token" },
     ]),
   });
 }
@@ -359,8 +412,9 @@ function singleGpuBlueprint() {
 function expectCompleteTowerReport(output: unknown) {
   expect(typeof output).toBe("string");
   const markdown = String(output);
-  expect(markdown).toContain("## 完整配置表");
-  expect(markdown.match(/<!-- v4-slot:/g)).toHaveLength(8);
+  expect(markdown).toContain("## 配置清单");
+  expect(markdown).not.toContain("<!-- v4-slot:");
+  expect(markdown.split("\n").filter((line) => /^\| /.test(line))).toHaveLength(9);
   for (const label of FULL_TOWER_LABELS) {
     expect(markdown).toContain(`| ${label} |`);
   }

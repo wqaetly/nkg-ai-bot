@@ -1,6 +1,7 @@
 /** Low-level affiliate API adapter used by the affiliate_commerce Flow node. */
 
 export type CommerceProvider = "jd" | "pdd";
+export type ProductProvider = CommerceProvider | "taobao";
 
 export const DEFAULT_COMMERCE_PROVIDER: CommerceProvider = "pdd";
 
@@ -77,7 +78,7 @@ export interface NormalizedAffiliateProductQuery {
 }
 
 export interface AffiliateProduct {
-  provider: CommerceProvider;
+  provider: ProductProvider;
   productId: string;
   name: string;
   price: number;
@@ -93,7 +94,9 @@ export interface AffiliateProduct {
   rating?: number;
   hasCoupon: boolean;
   capturedAt: string;
-  affiliate: true;
+  affiliate: boolean;
+  sourceKind?: "browser" | "affiliate";
+  detailVerified?: boolean;
   queryId?: string;
   slotId?: string;
   coveredSlotIds?: string[];
@@ -143,13 +146,40 @@ export interface AffiliateSearchTelemetry {
   stage?: AffiliateProductQuery["stage"];
   attempt?: number;
   keyword: string;
-  provider: CommerceProvider;
+  provider: ProductProvider;
+  sourceKind?: "browser" | "affiliate";
   providerRawCount: number;
   structurallyValidCount: number;
   rejectedByCategory: number;
   rejectedByModel: number;
   rejectedByPrice: number;
   acceptedCount: number;
+  browserPages?: BrowserPageDiagnostic[];
+  browserCandidates?: {
+    productId: string;
+    title: string;
+    rank: number;
+    hints: string[];
+    outcome: "detail_pending" | "detail_priced" | "detail_unresolved" | "not_visited_budget" | "detail_failed";
+  }[];
+}
+
+export interface BrowserPageDiagnostic {
+  phase: "search" | "detail";
+  status: string;
+  pageUrl?: string;
+  elapsedMs?: number;
+  readyState?: string;
+  responses?: number;
+  jsonp?: number;
+  parseErrors?: number;
+  productLinks?: number;
+  productCount?: number;
+  missingTitle?: number;
+  missingPrice?: number;
+  rejectedIdentity?: number;
+  sources?: string[];
+  shapes?: string[];
 }
 
 export interface PddAccessTokenResult {

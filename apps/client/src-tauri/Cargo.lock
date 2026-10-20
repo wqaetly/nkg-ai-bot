@@ -2764,6 +2764,7 @@ version = "0.1.5"
 dependencies = [
  "base64 0.22.1",
  "chacha20poly1305",
+ "cookie",
  "libc",
  "mdns-sd",
  "rand 0.8.7",
@@ -2781,6 +2782,8 @@ dependencies = [
  "tokio",
  "url",
  "uuid",
+ "webview2-com",
+ "windows 0.61.3",
  "x25519-dalek",
  "zvec-rust",
 ]

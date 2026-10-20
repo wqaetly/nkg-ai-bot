@@ -1,5 +1,11 @@
 mod lan_sync;
 mod memory_index;
+#[cfg(desktop)]
+mod commerce_browser;
+#[cfg(desktop)]
+mod commerce_session;
+#[cfg(desktop)]
+use commerce_browser::{commerce_browser_login, commerce_browser_collect, commerce_browser_cancel};
 #[cfg(all(desktop, feature = "desktop-power"))]
 mod runtime_sidecar;
 mod runtime_tools;
@@ -386,7 +392,13 @@ fn stage_app_import(
 }
 
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
+async fn restart_app(app: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let handle = app.clone();
+        tauri::async_runtime::spawn_blocking(move || commerce_browser::remember_all_sessions(&handle))
+            .await.map_err(|_| "无法保存商城登录状态")??;
+    }
     app.restart();
 }
 
@@ -517,7 +529,10 @@ pub fn run() {
             lan_sync_receive,
             runtime_tool_call,
             runtime_sidecar_start,
-            runtime_sidecar_stop
+            runtime_sidecar_stop,
+            commerce_browser_login,
+            commerce_browser_collect,
+            commerce_browser_cancel
         ]);
 
     #[cfg(all(desktop, not(feature = "desktop-power")))]
@@ -539,7 +554,10 @@ pub fn run() {
         lan_sync_share_status,
         lan_sync_discover,
         lan_sync_receive,
-        runtime_tool_call
+        runtime_tool_call,
+        commerce_browser_login,
+        commerce_browser_collect,
+        commerce_browser_cancel
     ]);
 
     #[cfg(mobile)]
@@ -563,6 +581,9 @@ pub fn run() {
         lan_sync_receive,
         runtime_tool_call
     ]);
+
+    #[cfg(desktop)]
+    let builder = builder.on_window_event(commerce_browser::on_window_event);
 
     builder
         .run(tauri::generate_context!())

@@ -1,4 +1,6 @@
 import type { AppPlatform } from "@nkg-ai-bot/runtime-router";
+import { invoke } from "@tauri-apps/api/core";
+import { withBrowserCommerce } from "./browserCommerceHost";
 
 /**
  * Delegate outbound model requests to Tauri's Rust HTTP backend on every
@@ -11,5 +13,6 @@ export async function getPlatformFetch(
   _platform: AppPlatform,
 ): Promise<typeof globalThis.fetch> {
   const { fetch: nativeFetch } = await import("@tauri-apps/plugin-http");
-  return nativeFetch as typeof globalThis.fetch;
+  return withBrowserCommerce(nativeFetch as typeof globalThis.fetch, invoke,
+    ["windows", "macos", "linux"].includes(_platform));
 }
